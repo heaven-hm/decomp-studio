@@ -91,6 +91,19 @@ install either manually under its applicable license, then configure it as an
 optional analysis adapter. Binary Ninja is detected locally at
 `/Applications/Binary Ninja.app` but is not a build requirement.
 
+### Automated bootstrap
+
+Use the portable bootstrapper to inspect or install the free toolchain:
+
+```sh
+./scripts/bootstrap.sh            # dry-run: show exactly what will happen
+./scripts/bootstrap.sh --install  # install free dependencies and isolated Python tools
+```
+
+It supports macOS/Homebrew and Linux systems using APT, DNF, or Pacman. Python
+analysis packages are installed under `.tools/python` by default, never into a
+shared Python environment. Set `RECOMP_STUDIO_PREFIX` to relocate that folder.
+
 ## CLI workflow
 
 ```sh

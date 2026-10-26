@@ -9,3 +9,4 @@ PROMPT.md
 APPS.MD
 *.log
 .cache/
+.tools/

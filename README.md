@@ -54,6 +54,43 @@ cd recomp-studio
 ./scripts/test.sh
 ```
 
+## Analysis toolchain
+
+The core demo builds with CMake, Ninja, C++20, and Python 3. The following
+open-source tools support deeper intake, disassembly, lifting, emulation, and
+verification work:
+
+| Tool | Purpose | Install |
+| --- | --- | --- |
+| LIEF | PE/ELF/Mach-O parsing | `brew install lief` |
+| Capstone | Instruction decoding | `python3 -m pip install --user capstone` |
+| Zydis | Independent x86 decoder | `brew install zydis` |
+| Ghidra | Optional CFG/function recovery | `brew install ghidra` |
+| Radare2 | Optional analysis cross-check | `brew install radare2` |
+| Unicorn | Reference CPU emulation | `python3 -m pip install --user unicorn` |
+| angr | Symbolic analysis/lifting | `python3 -m pip install --user angr` |
+| Z3 | Constraint/equivalence checks | `brew install z3 && python3 -m pip install --user z3-solver` |
+| Frida | Optional runtime instrumentation | `python3 -m pip install --user frida-tools` |
+
+Verify the current installation with:
+
+```sh
+ghidraRun --help
+r2 -v
+z3 --version
+frida --version
+python3 -c 'import angr, unicorn, capstone, z3; print(angr.__version__)'
+```
+
+Use a Python virtual environment for analysis packages on shared development
+machines, because `angr` can require versions that conflict with unrelated
+Python applications.
+
+Binary Ninja and IDA are proprietary. Recomp Studio does not download them;
+install either manually under its applicable license, then configure it as an
+optional analysis adapter. Binary Ninja is detected locally at
+`/Applications/Binary Ninja.app` but is not a build requirement.
+
 ## CLI workflow
 
 ```sh

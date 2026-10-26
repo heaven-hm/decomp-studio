@@ -81,6 +81,9 @@ Recompile and verify the bundled fixtures by hand:
 
 ## CLI
 
+Full documentation, with a worked example for every command and every supported
+operating system and processor, is in [MANUAL.md](MANUAL.md).
+
 ```
 recomp-studio doctor                              Host and toolchain capability
 recomp-studio inspect   <image>                   PE structure, imports, hashes
@@ -129,8 +132,9 @@ retry. It never marks a translation verified merely because it compiled.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the layer map, the guest execution
-model, extension points, and the advanced roadmap (flag liveness, jump-table
+See [MANUAL.md](MANUAL.md) for the complete command reference and platform
+support table, and [ARCHITECTURE.md](ARCHITECTURE.md) for the layer map, the
+guest execution model, extension points, and the advanced roadmap (flag liveness, jump-table
 recovery, x87/SSE, hash-guarded native replacement, relocatable overlays, an
 interpreter fallback, and more targets).
 

@@ -125,6 +125,27 @@ int analyze(const std::filesystem::path& path, bool json) {
   }
 }
 
+int cfg(const std::filesystem::path& path, bool json) {
+  try {
+    const auto image = recomp::binary::parse_pe(path);
+    const auto result = recomp::discovery::analyze_entry(image);
+    std::ostringstream dot;
+    dot << "digraph cfg {\n  entry [label=\"" << hex_rva(image.entry_rva) << "\\n";
+    for (const auto& instruction : result.instructions) dot << instruction.mnemonic << "\\n";
+    dot << "\"];\n}\n";
+    if (json) {
+      std::cout << "{\"status\":\"ok\",\"entry_rva\":" << recomp::common::quote_json(hex_rva(image.entry_rva))
+                << ",\"block_count\":" << result.block_count << ",\"dot\":" << recomp::common::quote_json(dot.str()) << "}" << '\n';
+    } else {
+      std::cout << "[loading] parsing executable\n[working] recovering entry-rooted CFG\n[complete] blocks=" << result.block_count << "\n\n" << dot.str();
+    }
+    return 0;
+  } catch (const recomp::binary::ParseError& error) {
+    if (json) std::cout << recomp::common::to_json({"error", error.message, 1}) << '\n'; else std::cerr << "[error] " << error.message << '\n';
+    return 1;
+  }
+}
+
 int lift(const std::filesystem::path& path, bool json) {
   try {
     const auto image = recomp::binary::parse_pe(path);
@@ -286,6 +307,10 @@ int main(int argc, char** argv) {
   if (first == "lift") {
     if (argc < 3) return unsupported("lift requires a PE file", json);
     return lift(argv[2], json);
+  }
+  if (first == "cfg") {
+    if (argc < 3) return unsupported("cfg requires a PE file", json);
+    return cfg(argv[2], json);
   }
   if (first == "translate") {
     if (argc < 7) return unsupported("translate requires <file> --target macos-arm64 --output <directory>", json);

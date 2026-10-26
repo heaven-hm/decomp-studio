@@ -41,5 +41,7 @@ TranslateReport translate(const std::filesystem::path& input, const std::filesys
 BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration);
 RunReport run(const std::filesystem::path& output_directory);
 void write_manifest(const TranslateReport& report, const std::filesystem::path& output_directory);
+void write_project_configuration(const common::Configuration& configuration, const std::filesystem::path& output_directory);
+common::Configuration load_project_configuration(const std::filesystem::path& output_directory);
 
 }  // namespace recomp::pipeline

@@ -1,5 +1,6 @@
 #include "core/common/configuration.hpp"
 
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -23,13 +24,13 @@ std::uint64_t parse_integer(const std::string& value) {
   return std::stoull(value, nullptr, 0);
 }
 
-std::vector<std::string> parse_string_array(const std::string& value) {
+std::vector<std::string> split_items(const std::string& value) {
   std::vector<std::string> items;
   std::string current;
-  bool inside = false;
+  bool inside_quotes = false;
   for (const char character : value) {
-    if (character == '"') { inside = !inside; continue; }
-    if (character == ',' && !inside) {
+    if (character == '"') { inside_quotes = !inside_quotes; continue; }
+    if (character == ',' && !inside_quotes) {
       if (!trim(current).empty()) items.push_back(unquote(trim(current)));
       current.clear();
       continue;
@@ -39,6 +40,10 @@ std::vector<std::string> parse_string_array(const std::string& value) {
   }
   if (!trim(current).empty()) items.push_back(unquote(trim(current)));
   return items;
+}
+
+std::uint8_t parse_byte(const std::string& token) {
+  return static_cast<std::uint8_t>(std::stoul(token, nullptr, 16));
 }
 
 }  // namespace
@@ -56,6 +61,7 @@ Configuration Configuration::load(const std::filesystem::path& path) {
     const auto key = trim(line.substr(0, separator));
     const auto value = trim(line.substr(separator + 1));
     if (key.empty() || value.empty()) continue;
+
     if (key == "name") configuration.name = unquote(value);
     else if (key == "format") configuration.input_format = unquote(value);
     else if (key == "architecture") configuration.architecture = unquote(value);
@@ -66,9 +72,30 @@ Configuration Configuration::load(const std::filesystem::path& path) {
     else if (key == "heap_base") configuration.heap_base = parse_integer(value);
     else if (key == "entry_point_rva") configuration.entry_point_rva = static_cast<std::uint32_t>(parse_integer(value));
     else if (key == "runtime_directory") configuration.runtime_directory = unquote(value);
-    else if (key == "compile_flags") configuration.compile_flags = parse_string_array(value);
-    else if (key == "extra_sources")
-      for (const auto& item : parse_string_array(value)) configuration.extra_source_files.emplace_back(item);
+    else if (key == "compile_flags") {
+      for (const auto& item : split_items(value)) configuration.compile_flags.push_back(item);
+    } else if (key == "extra_sources") {
+      for (const auto& item : split_items(value)) configuration.extra_source_files.emplace_back(item);
+    } else if (key == "stub_function") {
+      for (const auto& item : split_items(value)) configuration.stubbed_functions.push_back(parse_integer(item));
+    } else if (key == "instruction_patch") {
+      for (const auto& item : split_items(value)) {
+        const auto colon = item.find(':');
+        if (colon == std::string::npos) continue;
+        InstructionPatch patch;
+        patch.address = parse_integer(trim(item.substr(0, colon)));
+        std::istringstream bytes(trim(item.substr(colon + 1)));
+        std::string token;
+        while (bytes >> token) patch.replacement_bytes.push_back(parse_byte(token));
+        if (!patch.replacement_bytes.empty()) configuration.instruction_patches.push_back(std::move(patch));
+      }
+    } else if (key == "native_override") {
+      for (const auto& item : split_items(value)) {
+        const auto colon = item.find(':');
+        if (colon == std::string::npos) continue;
+        configuration.native_overrides[parse_integer(trim(item.substr(0, colon)))] = trim(item.substr(colon + 1));
+      }
+    }
   }
   return configuration;
 }

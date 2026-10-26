@@ -2,11 +2,17 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace recomp::common {
+
+struct InstructionPatch {
+  std::uint64_t address{};
+  std::vector<std::uint8_t> replacement_bytes;
+};
 
 struct Configuration {
   std::string name = "recomp-project";
@@ -21,6 +27,11 @@ struct Configuration {
   std::vector<std::string> compile_flags;
   std::string compiler = "clang++";
   std::filesystem::path runtime_directory;
+
+  // Advanced, config-driven recompilation controls (N64Recomp/igi-recomp parity).
+  std::vector<InstructionPatch> instruction_patches;
+  std::vector<std::uint64_t> stubbed_functions;
+  std::map<std::uint64_t, std::string> native_overrides;  // guest address -> host symbol
 
   static Configuration load(const std::filesystem::path& path);
 };

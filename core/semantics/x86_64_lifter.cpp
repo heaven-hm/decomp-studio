@@ -745,8 +745,23 @@ std::string X86_64Lifter::lift_function(const RecoveredFunction& function) const
 std::string X86_64Lifter::lift_all_functions(bool strict) const {
   std::string declarations;
   std::string definitions;
+  for (const auto& [address, symbol] : native_overrides_) {
+    (void)address;
+    declarations += "extern \"C\" void " + symbol + "(GuestContext* context);\n";
+  }
+  if (!native_overrides_.empty()) declarations += "\n";
   for (const auto& [address, function] : discovery_.functions()) {
     declarations += "static void " + guest_function_name(address) + "(GuestContext* context);\n";
+    if (native_overrides_.count(address) != 0) {
+      definitions += "static void " + guest_function_name(address) + "(GuestContext* context) { " +
+                     native_overrides_.at(address) + "(context); }\n\n";
+      continue;
+    }
+    if (stubbed_functions_.count(address) != 0) {
+      definitions += "static void " + guest_function_name(address) +
+                     "(GuestContext* context) { context->registers[4] += 8; context->registers[0] = 0; return; }\n\n";
+      continue;
+    }
     try {
       definitions += lift_function(function);
       definitions += "\n";

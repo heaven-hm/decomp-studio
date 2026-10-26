@@ -4,8 +4,10 @@
 #include "core/common/sha256.hpp"
 #include "core/discovery/function_discovery.hpp"
 #include "core/pipeline.hpp"
+#ifdef RECOMP_HAS_UNICORN
 #include "core/harness/repair_harness.hpp"
 #include "core/verification/differential_harness.hpp"
+#endif
 
 #include <filesystem>
 #include <fstream>
@@ -200,7 +202,10 @@ int command_translate(const std::filesystem::path& input, const std::filesystem:
 }
 
 int command_build(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json) {
-  auto configuration = make_configuration(config_path, "", project);
+  auto configuration = config_path.empty() ? recomp::pipeline::load_project_configuration(project)
+                                           : make_configuration(config_path, "", project);
+  if (configuration.compiler.empty()) configuration.compiler = "clang++";
+  if (configuration.target.empty()) configuration.target = "native";
   const auto report = recomp::pipeline::build(project, configuration);
   if (json) {
     std::cout << "{\"status\":\"ok\",\"executable\":" << recomp::common::quote_json(report.executable.string())
@@ -228,6 +233,7 @@ int command_report(const std::filesystem::path& project, bool json) {
   return 0;
 }
 
+#ifdef RECOMP_HAS_UNICORN
 int command_verify(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json) {
   auto configuration = make_configuration(config_path, "", project);
   const auto result = recomp::verification::compare_project(project, configuration);
@@ -245,7 +251,9 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
   }
   return result.outputs_match ? 0 : 1;
 }
+#endif
 
+#ifdef RECOMP_HAS_UNICORN
 int command_repair(const std::filesystem::path& input, const std::filesystem::path& output,
                    const std::filesystem::path& config_path, std::size_t budget, const std::string& agent, bool json) {
   const auto configuration = make_configuration(config_path, "native", output);
@@ -270,6 +278,7 @@ int command_repair(const std::filesystem::path& input, const std::filesystem::pa
   }
   return report.verified ? 0 : 1;
 }
+#endif
 
 int command_examples(bool json) {
   if (json) {
@@ -297,7 +306,11 @@ int main(int argc, char** argv) {
 
   try {
     if (command == "--help" || command == "help") { print_help(); return 0; }
-    if (command == "--version") { std::cout << kVersion << "\n"; return 0; }
+    if (command == "--version") {
+      if (json) std::cout << "{\"status\":\"ok\",\"version\":\"" << kVersion << "\"}\n";
+      else std::cout << kVersion << "\n";
+      return 0;
+    }
     if (command == "doctor") return command_doctor(json);
     if (command == "examples" && argc >= 3 && std::string{argv[2]} == "list") return command_examples(json);
     if (command == "inspect") {

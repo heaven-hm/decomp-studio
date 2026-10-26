@@ -4,23 +4,20 @@ project(recomp_studio VERSION 0.2.0 LANGUAGES CXX)
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-# Capstone provides the x86-64 decoder used by function discovery.
+# Unicorn (GPL-2.0) powers the differential verification backend. It is optional
+# so the core recompiler and CLI can be built without it.
+option(RECOMP_ENABLE_UNICORN "Build the Unicorn-based verification backend (GPL-2.0)" ON)
+
+# Capstone (BSD-3-Clause) provides the x86-64 decoder used by function discovery.
 find_path(CAPSTONE_INCLUDE_DIR capstone/capstone.h
   HINTS /opt/homebrew/include /usr/local/include /usr/include)
 find_library(CAPSTONE_LIBRARY NAMES capstone
   HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
-find_path(UNICORN_INCLUDE_DIR unicorn/unicorn.h
-  HINTS /opt/homebrew/include /usr/local/include /usr/include)
-find_library(UNICORN_LIBRARY NAMES unicorn
-  HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
 if(NOT CAPSTONE_INCLUDE_DIR OR NOT CAPSTONE_LIBRARY)
   message(FATAL_ERROR "Capstone not found. Install it (brew install capstone) or set CAPSTONE_INCLUDE_DIR/CAPSTONE_LIBRARY.")
 endif()
-if(NOT UNICORN_INCLUDE_DIR OR NOT UNICORN_LIBRARY)
-  message(FATAL_ERROR "Unicorn not found. Install it (brew install unicorn) or set UNICORN_INCLUDE_DIR/UNICORN_LIBRARY.")
-endif()
 
-add_executable(recomp-studio
+set(RECOMP_SOURCES
   apps/cli/main.cpp
   core/binary/pe.cpp
   core/codegen/project_generator.cpp
@@ -28,14 +25,33 @@ add_executable(recomp-studio
   core/common/diagnostic.cpp
   core/common/sha256.cpp
   core/discovery/function_discovery.cpp
-  core/harness/repair_harness.cpp
   core/pipeline.cpp
   core/semantics/x86_64_lifter.cpp
-  core/verification/differential_harness.cpp
 )
+set(RECOMP_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CAPSTONE_INCLUDE_DIR})
+set(RECOMP_LIBRARIES ${CAPSTONE_LIBRARY})
+
+if(RECOMP_ENABLE_UNICORN)
+  find_path(UNICORN_INCLUDE_DIR unicorn/unicorn.h
+    HINTS /opt/homebrew/include /usr/local/include /usr/include)
+  find_library(UNICORN_LIBRARY NAMES unicorn
+    HINTS /opt/homebrew/lib /usr/local/lib /usr/lib)
+  if(UNICORN_INCLUDE_DIR AND UNICORN_LIBRARY)
+    list(APPEND RECOMP_SOURCES
+      core/harness/repair_harness.cpp
+      core/verification/differential_harness.cpp)
+    list(APPEND RECOMP_INCLUDE_DIRS ${UNICORN_INCLUDE_DIR})
+    list(APPEND RECOMP_LIBRARIES ${UNICORN_LIBRARY})
+    add_compile_definitions(RECOMP_HAS_UNICORN=1)
+  else()
+    message(WARNING "Unicorn not found; building without the verification backend (brew install unicorn).")
+  endif()
+endif()
+
+add_executable(recomp-studio ${RECOMP_SOURCES})
 target_compile_features(recomp-studio PRIVATE cxx_std_20)
-target_include_directories(recomp-studio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CAPSTONE_INCLUDE_DIR} ${UNICORN_INCLUDE_DIR})
-target_link_libraries(recomp-studio PRIVATE ${CAPSTONE_LIBRARY} ${UNICORN_LIBRARY})
+target_include_directories(recomp-studio PRIVATE ${RECOMP_INCLUDE_DIRS})
+target_link_libraries(recomp-studio PRIVATE ${RECOMP_LIBRARIES})
 target_compile_options(recomp-studio PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(recomp-studio PRIVATE
   RECOMP_DEFAULT_RUNTIME_DIR="${CMAKE_CURRENT_SOURCE_DIR}/runtime")

@@ -272,7 +272,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
   };
 
-  if (string_operation_sizes().count(mnemonic) != 0 && operands.empty()) {
+  if (string_operation_sizes().count(mnemonic) != 0 &&
+      !((mnemonic == "movsd" || mnemonic == "cmpsd") && !operands.empty() && is_vector_register(operands[0]))) {
     const auto byte_count = string_operation_sizes().at(mnemonic);
     const auto helper = mnemonic.substr(0, 4) == "movs" ? "string_move"
                         : mnemonic.substr(0, 4) == "stos" ? "string_store"
@@ -284,7 +285,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
 
-  if ((mnemonic == "movaps" || mnemonic == "movups" || mnemonic == "movdqa" || mnemonic == "movdqu") &&
+  if ((mnemonic == "movaps" || mnemonic == "movups" || mnemonic == "movdqa" || mnemonic == "movdqu" ||
+       mnemonic == "movapd" || mnemonic == "movupd") &&
       operands.size() == 2 && (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
     emit_vector_move(operands[0], operands[1], 16);
     return;
@@ -627,6 +629,101 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "int3" || mnemonic == "hlt" || mnemonic == "ud2" || mnemonic == "ud1" || mnemonic == "ud0") {
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     emit("return;");
+    return;
+  }
+
+  if ((mnemonic == "vpxor" || mnemonic == "vandps" || mnemonic == "vpor") && operands.size() == 3 &&
+      is_vector_register(operands[0])) {
+    const std::string helper = mnemonic == "vpxor" ? "vector_bitwise_xor" : mnemonic == "vandps" ? "vector_bitwise_and" : "vector_bitwise_or";
+    emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) + "], context->vector_registers[" +
+         std::to_string(vector_index(operands[1])) + "], 16);");
+    if (is_vector_register(operands[2])) {
+      emit(helper + "(context, " + std::to_string(vector_index(operands[0])) + ", " + std::to_string(vector_index(operands[2])) + ");");
+    } else if (operands[2].kind == discovery::Operand::Kind::Memory) {
+      emit(helper + "_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+           effective_address_expression(instruction, operands[2]) + ", 16);");
+    }
+    return;
+  }
+  {
+    static const std::map<std::string, std::string> double_helpers = {
+        {"addsd", "vector_add_doubles"}, {"subsd", "vector_subtract_doubles"},
+        {"mulsd", "vector_multiply_doubles"}, {"divsd", "vector_divide_doubles"}};
+    static const std::map<std::string, std::string> float_helpers = {
+        {"addss", "vector_add_floats"}, {"subss", "vector_subtract_floats"},
+        {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"}};
+    const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
+                         : float_helpers.count(mnemonic) != 0 ? &float_helpers
+                                                             : nullptr;
+    if (helpers != nullptr && operands.size() == 2 && is_vector_register(operands[0])) {
+      if (is_vector_register(operands[1])) {
+        emit(helpers->at(mnemonic) + "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             std::to_string(vector_index(operands[1])) + ");");
+      } else if (operands[1].kind == discovery::Operand::Kind::Memory) {
+        emit(helpers->at(mnemonic) + "_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             effective_address_expression(instruction, operands[1]) + ");");
+      }
+      return;
+    }
+  }
+  if (mnemonic == "cvtsi2sd" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto source_width = operand_width(operands[1], 4);
+    const auto source = operand_read_expression(instruction, operands[1], source_width);
+    const auto signed_value = source_width == 8 ? "static_cast<std::int64_t>(" + source + ")"
+                                                : "static_cast<std::int64_t>(static_cast<std::int32_t>(" + source + "))";
+    emit("vector_set_double(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<double>(" +
+         signed_value + "));");
+    return;
+  }
+  if (mnemonic == "cvttsd2si" && operands.size() == 2) {
+    const auto width = operand_width(operands[0], 4);
+    const auto source = operands[1].kind == discovery::Operand::Kind::Memory
+        ? "load_guest_double(context, " + effective_address_expression(instruction, operands[1]) + ")"
+        : "vector_get_double(context, " + std::to_string(vector_index(operands[1])) + ")";
+    emit(operand_write_statement(instruction, operands[0],
+         "static_cast<std::uint64_t>(static_cast<std::int64_t>(" + source + "))", width));
+    return;
+  }
+  if (mnemonic == "cvtsd2ss" && operands.size() == 2 && is_vector_register(operands[0])) {
+    emit("vector_set_float(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<float>(vector_get_double(context, " +
+         std::to_string(vector_index(operands[1])) + ")));");
+    return;
+  }
+  if (mnemonic == "cvtss2sd" && operands.size() == 2 && is_vector_register(operands[0])) {
+    emit("vector_set_double(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<double>(vector_get_float(context, " +
+         std::to_string(vector_index(operands[1])) + ")));");
+    return;
+  }
+  if ((mnemonic == "bsr" || mnemonic == "bsf") && operands.size() == 2) {
+    const auto width = operand_width(operands[0], 8);
+    if (mnemonic == "bsr") {
+      emit(operand_write_statement(instruction, operands[0],
+           "bit_scan_reverse(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
+               std::to_string(width) + ")", width));
+    } else {
+      emit(operand_write_statement(instruction, operands[0],
+           "bit_scan_forward(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
+               std::to_string(width) + ")", width));
+    }
+    return;
+  }
+  if ((mnemonic == "xadd" || mnemonic == "cmpxchg") && operands.size() == 2) {
+    const auto width = operand_width(operands[1], 8);
+    const auto mask = width >= 8 ? std::string("~0ull") : format_hex((1ull << (width * 8)) - 1);
+    const auto destination = operand_read_expression(instruction, operands[0], width);
+    const auto source = operand_read_expression(instruction, operands[1], width);
+    if (mnemonic == "xadd") {
+      emit("{ const std::uint64_t source_value = " + source + "; const std::uint64_t original = " + destination +
+           "; " + operand_write_statement(instruction, operands[0],
+                   "add_with_flags(context, original, source_value, " + std::to_string(width) + ")", width) +
+           " " + operand_write_statement(instruction, operands[1], "original", width) + " }");
+    } else {
+      emit("{ const std::uint64_t accumulator = context->registers[0] & " + mask + "; const std::uint64_t original = " +
+           destination + "; compare_with_flags(context, accumulator, original, " + std::to_string(width) + "); "
+           "if (context->zero_flag) { " +
+           operand_write_statement(instruction, operands[0], source, width) +
+           " } else { context->registers[0] = original & " + mask + "; } }");
+    }
     return;
   }
 

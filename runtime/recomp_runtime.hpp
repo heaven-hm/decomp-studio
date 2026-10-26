@@ -443,6 +443,15 @@ inline std::uint64_t bit_scan_reverse(GuestContext* context, std::uint64_t value
   for (std::uint64_t probe = value; probe > 0; probe >>= 1) ++index;
   return static_cast<std::uint64_t>(index - 1);
 }
+
+inline std::uint64_t bit_scan_forward(GuestContext* context, std::uint64_t value, int width) {
+  value &= value_mask(width);
+  if (value == 0) { context->zero_flag = 1; return value; }
+  context->zero_flag = 0;
+  std::uint64_t index = 0;
+  while ((value & 1u) == 0) { value >>= 1; ++index; }
+  return index;
+}
 inline void store_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {
   if (address + static_cast<std::uint64_t>(byte_count) > guest_memory_size) {
     report_guest_memory_fault(context, address, byte_count, 1);

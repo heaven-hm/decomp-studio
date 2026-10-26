@@ -1,0 +1,47 @@
+# Example recomp-studio project configuration.
+#
+#   recomp-studio translate <image> --output <dir> --config recomp.toml
+#   recomp-studio build <dir>
+#   recomp-studio verify <dir>
+#
+# The effective configuration is copied into the generated project so that
+# `build` reproduces the same settings without repeating --config.
+
+name = "arith"
+target = "macos-arm64"
+
+# "pe" (PE32/PE32+) is the only input format enabled in this build.
+format = "pe"
+# "auto" derives the architecture from the image (x86_64 for PE32+).
+architecture = "auto"
+
+# Fail the whole translation when any instruction is unsupported. Set to false
+# to emit a diagnostic stub for the affected function instead.
+strict = true
+
+# Guest stack and heap placement inside the flat guest address space.
+# stack_top = 0x170000000
+# heap_base = 0x168000000
+
+# Override the entry point (RVA) instead of using the PE header value.
+# entry_point_rva = 0x1c30
+
+# Host toolchain for the generated project.
+compiler = "clang++"
+compile_flags = ["-O2"]
+
+# --- Advanced recompilation controls -------------------------------------
+
+# Replace a guest function with a returning no-op.
+# stub_function = [0x140001000]
+
+# Replace a guest function with a hand-written host implementation (HLE). The
+# symbol must be provided by one of extra_sources and must have the signature
+# `extern "C" void symbol(GuestContext* context);`.
+# native_override = ["0x140001530: my_is_prime"]
+
+# Rewrite instruction bytes in the image before discovery and lifting.
+# instruction_patch = ["0x140001001: b9 f4 ff ff ff"]
+
+# Additional C++ sources compiled into the generated project.
+# extra_sources = ["src/my_is_prime.cpp"]

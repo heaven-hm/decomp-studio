@@ -366,6 +366,8 @@ void signed_multiply_single(GuestContext* context, std::uint64_t operand, int wi
     context->registers[2] = static_cast<std::uint64_t>(product >> 64);
     context->carry_flag = context->overflow_flag =
         product != static_cast<__int128>(static_cast<std::int64_t>(context->registers[0]));
+    context->auxiliary_flag = 0;
+    update_zero_sign_parity(context, context->registers[0], 8);
     return;
   }
   const auto product = sign_extend(context->registers[0], width) * sign_extend(operand, width);
@@ -373,6 +375,8 @@ void signed_multiply_single(GuestContext* context, std::uint64_t operand, int wi
   context->registers[0] = static_cast<std::uint64_t>(product) & mask;
   context->registers[2] = (static_cast<std::uint64_t>(product) >> (width * 8)) & mask;
   context->carry_flag = context->overflow_flag = product != sign_extend(context->registers[0], width);
+  context->auxiliary_flag = 0;
+  update_zero_sign_parity(context, context->registers[0], width);
 }
 
 std::uint64_t signed_multiply_two(GuestContext* context, std::uint64_t left, std::uint64_t right, int width) {
@@ -382,12 +386,16 @@ std::uint64_t signed_multiply_two(GuestContext* context, std::uint64_t left, std
     const __int128 product = static_cast<__int128>(left_value) * static_cast<__int128>(right_value);
     const auto result = static_cast<std::uint64_t>(product);
     context->carry_flag = context->overflow_flag = product != static_cast<__int128>(static_cast<std::int64_t>(result));
+    context->auxiliary_flag = 0;
+    update_zero_sign_parity(context, result, 8);
     return result;
   }
   const auto product = left_value * right_value;
   const auto mask = value_mask(width);
   const auto result = static_cast<std::uint64_t>(product) & mask;
   context->carry_flag = context->overflow_flag = product != sign_extend(result, width);
+  context->auxiliary_flag = 0;
+  update_zero_sign_parity(context, result, width);
   return result;
 }
 
@@ -399,6 +407,8 @@ void unsigned_multiply_single(GuestContext* context, std::uint64_t operand, int 
   context->registers[0] = static_cast<std::uint64_t>(product) & mask;
   context->registers[2] = static_cast<std::uint64_t>(product >> (width * 8)) & mask;
   context->carry_flag = context->overflow_flag = (product >> (width * 8)) != 0;
+  context->auxiliary_flag = 0;
+  update_zero_sign_parity(context, context->registers[0], width);
 }
 
 void unsigned_divide(GuestContext* context, std::uint64_t divisor, int width) {

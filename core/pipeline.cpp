@@ -204,6 +204,17 @@ void write_manifest(const TranslateReport& report, const std::filesystem::path& 
   output << "  \"entry_point_rva\": \"0x" << std::hex << report.entry_point_rva << std::dec << "\",\n";
   output << "  \"function_count\": " << report.function_count << ",\n";
   output << "  \"import_count\": " << report.import_count << ",\n";
+  output << "  \"unsupported_mnemonics\": [";
+  {
+    bool first_mnemonic = true;
+    for (const auto& [mnemonic, count] : report.unsupported_mnemonics) {
+      (void)count;
+      if (!first_mnemonic) output << ", ";
+      first_mnemonic = false;
+      output << quote_json(mnemonic);
+    }
+  }
+  output << "],\n";
   output << "  \"unsupported\": {";
   bool first = true;
   for (const auto& [mnemonic, count] : report.unsupported_mnemonics) {

@@ -99,6 +99,31 @@ void FunctionDiscovery::discover() {
   for (const auto rva : executable_.tls_callback_rvas)
     if (contains_code(rva)) pending_entries.push_back(executable_.image_base + rva);
 
+  // Function pointers stored in initialised data. A 64-bit or 32-bit base
+  // relocation whose stored value points into an executable section is a
+  // precise, provenance-backed code pointer (a hand-written function table, a
+  // vtable, a callback) that plain recursive descent from the entry point can
+  // never reach.
+  constexpr std::uint16_t kRelocationHighLow = 3;
+  constexpr std::uint16_t kRelocationDir64 = 10;
+  for (const auto& relocation : executable_.base_relocations) {
+    std::uint64_t target = 0;
+    if (relocation.type == kRelocationDir64) {
+      const auto value = executable_.read_u64(relocation.rva);
+      if (!value) continue;
+      target = *value;
+    } else if (relocation.type == kRelocationHighLow) {
+      const auto value = executable_.read_u32(relocation.rva);
+      if (!value) continue;
+      target = *value;
+    } else {
+      continue;
+    }
+    if (target >= executable_.image_base &&
+        contains_code(static_cast<std::uint32_t>(target - executable_.image_base)))
+      pending_entries.push_back(target);
+  }
+
   std::set<std::uint64_t> known_entries(pending_entries.begin(), pending_entries.end());
   constexpr std::size_t kMaximumInstructions = 2'000'000;
   std::size_t recovered_instruction_count = 0;

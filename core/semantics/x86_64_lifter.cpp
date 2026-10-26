@@ -520,6 +520,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("context->registers[" + std::to_string(kRegisterRdx) + "] = static_cast<std::uint64_t>(static_cast<std::int64_t>(context->registers[" + std::to_string(kRegisterRax) + "]) >> 63);");
     return;
   }
+  if (mnemonic == "lahf") {
+    emit("context->registers[0] = (context->registers[0] & ~0xff00ull) | ((static_cast<std::uint64_t>("
+         "(context->sign_flag << 7) | (context->zero_flag << 6) | (context->auxiliary_flag << 4) | "
+         "(context->parity_flag << 2) | 0x02u | context->carry_flag) << 8));");
+    return;
+  }
+  if (mnemonic == "sahf") {
+    emit("{ const std::uint64_t ah = (context->registers[0] >> 8) & 0xffull; "
+         "context->sign_flag = (ah >> 7) & 1; context->zero_flag = (ah >> 6) & 1; "
+         "context->auxiliary_flag = (ah >> 4) & 1; context->parity_flag = (ah >> 2) & 1; "
+         "context->carry_flag = ah & 1; }");
+    return;
+  }
   if (mnemonic == "cwde") {
     emit("context->registers[" + std::to_string(kRegisterRax) + "] = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int16_t>(context->registers[" + std::to_string(kRegisterRax) + "])));");
     return;

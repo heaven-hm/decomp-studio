@@ -237,19 +237,32 @@ int command_report(const std::filesystem::path& project, bool json) {
 int command_verify(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json) {
   auto configuration = make_configuration(config_path, "", project);
   const auto result = recomp::verification::compare_project(project, configuration);
+  const bool verified = result.verified();
   if (json) {
-    std::cout << "{\"status\":\"" << (result.outputs_match ? "pass" : "fail")
-              << "\",\"executed_instructions\":" << result.executed_instructions
+    std::cout << "{\"status\":\"" << (verified ? "pass" : "fail")
+              << "\",\"reference_completed\":" << (result.reference_completed ? "true" : "false")
+              << ",\"candidate_completed\":" << (result.candidate_completed ? "true" : "false")
+              << ",\"outputs_match\":" << (result.outputs_match ? "true" : "false")
+              << ",\"candidate_exit_code\":" << result.candidate_exit_code
+              << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
-              << ",\"candidate_bytes\":" << result.candidate_output.size() << "}\n";
+              << ",\"candidate_bytes\":" << result.candidate_output.size()
+              << ",\"unsupported_mnemonics\":[";
+    for (std::size_t index = 0; index < result.unsupported_mnemonics.size(); ++index) {
+      if (index != 0) std::cout << ",";
+      std::cout << recomp::common::quote_json(result.unsupported_mnemonics[index]);
+    }
+    std::cout << "]}\n";
   } else {
     std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"
+              << "reference completed: " << (result.reference_completed ? "yes" : "no") << "\n"
+              << "candidate completed: " << (result.candidate_completed ? "yes" : "no") << "\n"
               << "reference output: " << result.reference_output.size() << " bytes\n"
               << "candidate output: " << result.candidate_output.size() << " bytes\n"
-              << (result.outputs_match ? "VERIFY: PASS (identical output)\n" : "VERIFY: FAIL\n");
+              << (verified ? "VERIFY: PASS (identical output)\n" : "VERIFY: FAIL\n");
     if (!result.diagnosis.empty()) std::cout << result.diagnosis << "\n";
   }
-  return result.outputs_match ? 0 : 1;
+  return verified ? 0 : 1;
 }
 #endif
 

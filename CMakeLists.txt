@@ -56,11 +56,27 @@ target_compile_options(recomp-studio PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(recomp-studio PRIVATE
   RECOMP_DEFAULT_RUNTIME_DIR="${CMAKE_CURRENT_SOURCE_DIR}/runtime")
 
+add_test(NAME preflight_prerequisites
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/preflight/prerequisites_test.py
+          $<TARGET_FILE:recomp-studio>)
+
 add_test(NAME cli_version_contract
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli/version_test.py
           $<TARGET_FILE:recomp-studio>)
+
+add_test(NAME fixture_reproducibility
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/reproducibility/fixtures_test.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
 add_test(NAME fixture_recompile_end_to_end
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/recompile_test.py
           $<TARGET_FILE:recomp-studio>
-          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps
-          ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
+add_test(NAME negative_inputs
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/negative/negative_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
+set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
+set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)

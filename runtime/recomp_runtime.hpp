@@ -96,7 +96,8 @@ inline void update_zero_sign_parity(GuestContext* context, std::uint64_t result,
   result &= value_mask(width);
   context->zero_flag = result == 0;
   context->sign_flag = static_cast<std::uint32_t>((result >> (width * 8 - 1)) & 1);
-  context->parity_flag = static_cast<std::uint32_t>(__builtin_parity(static_cast<unsigned>(result & 0xff)));
+  context->parity_flag =
+      static_cast<std::uint32_t>(__builtin_parity(static_cast<unsigned>(result & 0xff)) ^ 1);
 }
 
 inline std::uint64_t add_with_flags(GuestContext* context, std::uint64_t left, std::uint64_t right, int width) {
@@ -181,7 +182,7 @@ inline std::uint64_t negate_with_flags(GuestContext* context, std::uint64_t valu
   const auto result = (-value) & mask;
   context->carry_flag = value != 0;
   context->overflow_flag = value == (1ull << (width * 8 - 1));
-  context->auxiliary_flag = static_cast<std::uint32_t>((value ^ result) & 0x10);
+  context->auxiliary_flag = static_cast<std::uint32_t>(((value ^ result) >> 4) & 1);
   update_zero_sign_parity(context, result, width);
   return result;
 }
@@ -199,6 +200,7 @@ inline std::uint64_t shift_left(GuestContext* context, std::uint64_t value, std:
   const auto result = (value << effective) & mask;
   context->carry_flag = static_cast<std::uint32_t>((value >> (bits - effective)) & 1);
   context->overflow_flag = static_cast<std::uint32_t>(((result >> (bits - 1)) ^ context->carry_flag) & 1);
+  context->auxiliary_flag = 0;
   update_zero_sign_parity(context, result, width);
   return result;
 }
@@ -213,6 +215,7 @@ inline std::uint64_t shift_right_logical(GuestContext* context, std::uint64_t va
   const auto result = value >> effective;
   context->carry_flag = static_cast<std::uint32_t>((value >> (effective - 1)) & 1);
   context->overflow_flag = static_cast<std::uint32_t>((value >> (bits - 1)) & 1);
+  context->auxiliary_flag = 0;
   update_zero_sign_parity(context, result, width);
   return result;
 }
@@ -226,6 +229,7 @@ inline std::uint64_t shift_right_arithmetic(GuestContext* context, std::uint64_t
   const auto result = extended >> effective;
   context->carry_flag = static_cast<std::uint32_t>((extended >> (effective - 1)) & 1);
   context->overflow_flag = 0;
+  context->auxiliary_flag = 0;
   update_zero_sign_parity(context, static_cast<std::uint64_t>(result), width);
   return static_cast<std::uint64_t>(result);
 }
@@ -239,6 +243,7 @@ inline std::uint64_t rotate_left(GuestContext* context, std::uint64_t value, std
   const auto result = ((value << effective) | (value >> (bits - effective))) & mask;
   context->carry_flag = static_cast<std::uint32_t>(result & 1);
   context->overflow_flag = static_cast<std::uint32_t>(((result >> (bits - 1)) ^ context->carry_flag) & 1);
+  context->auxiliary_flag = 0;
   return result;
 }
 
@@ -252,6 +257,7 @@ inline std::uint64_t rotate_right(GuestContext* context, std::uint64_t value, st
   context->carry_flag = static_cast<std::uint32_t>((result >> (bits - 1)) & 1);
   context->overflow_flag =
       static_cast<std::uint32_t>(((result >> (bits - 1)) ^ ((result >> (bits - 2)) & 1)) & 1);
+  context->auxiliary_flag = 0;
   return result;
 }
 

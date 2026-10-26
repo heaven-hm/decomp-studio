@@ -52,6 +52,27 @@ std::map<std::string, std::string> read_manifest(const std::filesystem::path& pr
   return values;
 }
 
+std::vector<std::string> read_unsupported_mnemonics(const std::filesystem::path& project_directory) {
+  std::vector<std::string> mnemonics;
+  std::ifstream input(project_directory / "recomp-manifest.json");
+  if (!input) return mnemonics;
+  std::string content{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  const auto key = content.find("\"unsupported_mnemonics\"");
+  if (key == std::string::npos) return mnemonics;
+  const auto open = content.find('[', key);
+  const auto close = content.find(']', open == std::string::npos ? key : open);
+  if (open == std::string::npos || close == std::string::npos) return mnemonics;
+  const auto body = content.substr(open + 1, close - open - 1);
+  std::size_t position = 0;
+  while ((position = body.find('"', position)) != std::string::npos) {
+    const auto end = body.find('"', position + 1);
+    if (end == std::string::npos) break;
+    mnemonics.push_back(body.substr(position + 1, end - position - 1));
+    position = end + 1;
+  }
+  return mnemonics;
+}
+
 std::uint64_t parse_hex(const std::map<std::string, std::string>& values, const std::string& key,
                         std::uint64_t fallback) {
   const auto iterator = values.find(key);
@@ -123,11 +144,13 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
   (void)size;
   auto& state = *static_cast<ReferenceState*>(user_data);
   ++state.instruction_count;
-  if (state.trace != nullptr && state.trace->size() < state.trace_limit) state.trace->push_back(address);
   if (address >= kImportThunkBase && address < kImportThunkBase + 0x10000) {
     emulate_shim(state, address);
     return;
   }
+  // Only genuine guest instructions enter the trace: import thunks are host
+  // bridges and never appear in the candidate's executed-address stream.
+  if (state.trace != nullptr && state.trace->size() < state.trace_limit) state.trace->push_back(address);
   if (state.instruction_count > kInstructionBudget) {
     state.finished = true;
     uc_emu_stop(engine);
@@ -139,9 +162,12 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
 ReferenceRun run_reference(const binary::PortableExecutable& executable,
                            const binary::LoadedImage& loaded_image, std::uint64_t stack_top,
                            std::uint64_t heap_base, std::size_t trace_limit) {
+  ReferenceRun run;
   uc_engine* engine = nullptr;
-  if (uc_open(UC_ARCH_X86, UC_MODE_64, &engine) != UC_ERR_OK)
-    throw std::runtime_error("unicorn: failed to open x86-64 engine");
+  if (uc_open(UC_ARCH_X86, UC_MODE_64, &engine) != UC_ERR_OK) {
+    run.failure_reason = "unicorn: failed to open x86-64 engine";
+    return run;
+  }
   map_region(engine, executable.image_base, loaded_image.image_bytes.size());
   uc_mem_write(engine, executable.image_base, loaded_image.image_bytes.data(), loaded_image.image_bytes.size());
   map_region(engine, stack_top - kStackSize, kStackSize);
@@ -181,14 +207,21 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   uc_hook hook = 0;
   uc_hook_add(engine, &hook, UC_HOOK_CODE, reinterpret_cast<void*>(code_hook), &state, 1, 0);
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);
-  if (error != UC_ERR_OK && !state.finished)
-    throw std::runtime_error(std::string("unicorn: ") + uc_strerror(error));
-
-  ReferenceRun run;
   run.output = state.output;
   run.instruction_count = state.instruction_count;
   run.trace = std::move(trace);
   uc_close(engine);
+  if (error != UC_ERR_OK && !state.finished) {
+    run.completed = false;
+    run.failure_reason = std::string("unicorn: ") + uc_strerror(error);
+    return run;
+  }
+  if (!state.finished) {
+    run.completed = false;
+    run.failure_reason = "instruction budget exhausted before ExitProcess";
+    return run;
+  }
+  run.completed = true;
   return run;
 }
 
@@ -206,20 +239,34 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   const auto stack_top = parse_hex(manifest, "stack_top", 0x0000000168000000ull);
   const auto heap_base = parse_hex(manifest, "heap_base", 0x0000000160000000ull);
 
-  try {
-    const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, 0);
-    result.executed_instructions = reference.instruction_count;
-    result.reference_output = reference.output;
-  } catch (const std::exception& error) {
-    result.completed = false;
-    result.diagnosis = std::string("reference execution did not complete: ") + error.what();
+  result.unsupported_mnemonics = read_unsupported_mnemonics(project_directory);
+
+  const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, 0);
+  result.executed_instructions = reference.instruction_count;
+  result.reference_output = reference.output;
+  result.reference_completed = reference.completed;
+  if (!reference.completed) {
+    result.diagnosis = "reference execution did not complete: " + reference.failure_reason;
     return result;
   }
 
   const auto candidate = pipeline::run(project_directory);
   result.candidate_output = candidate.standard_output;
-  result.completed = true;
+  result.candidate_error = candidate.standard_error;
+  result.candidate_exit_code = candidate.exit_code;
+  result.candidate_completed = candidate.exit_code == 0;
+  {
+    std::filesystem::create_directories(project_directory / "reports");
+    std::ofstream(project_directory / "reports" / "reference.txt") << result.reference_output;
+    std::ofstream(project_directory / "reports" / "candidate.txt") << result.candidate_output;
+  }
   result.outputs_match = result.reference_output == result.candidate_output;
+  if (!result.candidate_completed) {
+    result.outputs_match = false;
+    result.diagnosis = "candidate execution failed with exit code " + std::to_string(candidate.exit_code) +
+                       (candidate.standard_error.empty() ? "" : ": " + candidate.standard_error);
+    return result;
+  }
 
   if (!result.outputs_match) {
     std::size_t offset = 0;
@@ -250,13 +297,11 @@ TraceComparison compare_execution_traces(const std::filesystem::path& project_di
   if (input_iterator == manifest.end()) throw std::runtime_error("manifest is missing input_path");
   const auto executable = binary::PortableExecutable::parse(input_iterator->second);
   const auto loaded_image = binary::load_image(executable, executable.image_base);
-  ReferenceRun reference;
-  try {
-    reference = run_reference(executable, loaded_image, parse_hex(manifest, "stack_top", 0x0000000168000000ull),
-                              parse_hex(manifest, "heap_base", 0x0000000160000000ull), trace_limit);
-  } catch (const std::exception&) {
-    return comparison;
-  }
+  const auto reference = run_reference(executable, loaded_image,
+                                       parse_hex(manifest, "stack_top", 0x0000000168000000ull),
+                                       parse_hex(manifest, "heap_base", 0x0000000160000000ull), trace_limit);
+  if (!reference.completed) return comparison;
+  comparison.available = true;
 
   const auto trace_path = project_directory / "candidate.trace";
   const auto executable_path = project_directory / "recomp-guest";

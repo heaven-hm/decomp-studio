@@ -92,8 +92,8 @@ RepairReport run_repair(const std::filesystem::path& input, const std::filesyste
     }
 
     const auto verification = verification::compare_project(output_directory, configuration);
-    record.verified = verification.outputs_match;
-    if (verification.outputs_match) {
+    record.verified = verification.verified();
+    if (verification.verified()) {
       record.diagnosis = "candidate output is byte-identical to the reference execution";
       report.iterations.push_back(record);
       write_iteration_report(report.report_path, record);

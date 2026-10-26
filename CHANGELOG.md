@@ -7,6 +7,8 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Added
 
+- Short `JB` branch decoding, x64 REX.W stack-adjustment analysis, and
+  hexadecimal opcode diagnostics.
 - Original Recomp Studio logo asset and README header branding.
 - Reframed the project documentation around its automated, end-to-end
   recompilation workflow and verified MVP scope.

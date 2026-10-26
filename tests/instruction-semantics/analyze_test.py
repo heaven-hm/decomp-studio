@@ -21,5 +21,5 @@ with tempfile.TemporaryDirectory() as temp:
         assert report["status"] == "ok"
         assert report["architecture"] == architecture
         assert report["function_count"] == 1
-        assert report["instruction_count"] == 2
-        assert report["instructions"] == ["mov", "ret"]
+        assert report["instruction_count"] == 3
+        assert report["instructions"] == ["mov", "add", "ret"]

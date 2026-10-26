@@ -39,5 +39,6 @@ def make_pe(path: Path, machine: int, magic: int, code: bytes) -> None:
 if __name__ == "__main__":
     destination = Path(sys.argv[1])
     destination.mkdir(parents=True, exist_ok=True)
-    make_pe(destination / "x86-fixture.exe", 0x014C, 0x10B, bytes((0xB8, 0x2A, 0, 0, 0, 0xC3)))
-    make_pe(destination / "x64-fixture.exe", 0x8664, 0x20B, bytes((0xB8, 0x2A, 0, 0, 0, 0xC3)))
+    code = bytes((0xB8, 0x28, 0, 0, 0, 0x05, 0x02, 0, 0, 0, 0xC3))
+    make_pe(destination / "x86-fixture.exe", 0x014C, 0x10B, code)
+    make_pe(destination / "x64-fixture.exe", 0x8664, 0x20B, code)

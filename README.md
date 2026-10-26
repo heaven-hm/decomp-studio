@@ -1,9 +1,15 @@
 # Recomp Studio
 
-Recomp Studio is an experimental, Apache-2.0-licensed static recompilation CLI for
-legally obtained Windows executables. Its verified MVP accepts genuine PE32
-(x86) and PE32+ (x64) machine code and produces a native macOS ARM64 host
-program for a deliberately small, tested instruction subset.
+Recomp Studio is an automated static-recompilation studio for legally obtained
+applications. It analyzes a source executable, reconstructs supported program
+semantics, generates a native host project, builds it, runs it, and verifies
+the result—enabling an application to move from one supported platform and
+architecture to another without manual source-code porting.
+
+The verified MVP currently accepts genuine PE32 (x86) and PE32+ (x64) machine
+code and produces a native macOS ARM64 host program for a deliberately small,
+tested instruction subset. The architecture is designed to expand from this
+foundation to additional application classes, operating systems, and targets.
 
 The project is intentionally fail-closed: unsupported formats, instructions,
 imports, and runtime behavior report errors rather than fabricated success.

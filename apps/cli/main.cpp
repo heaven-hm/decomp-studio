@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -250,6 +251,15 @@ int run(const std::filesystem::path& project, bool json) {
   return 0;
 }
 
+int report(const std::filesystem::path& project, bool json) {
+  std::ifstream input(project / "recomp-manifest.json");
+  if (!input) return unsupported("generated project manifest is missing", json);
+  std::string manifest((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (json) { std::cout << manifest; return 0; }
+  std::cout << "[complete] generated project report\n" << manifest;
+  return 0;
+}
+
 std::uint64_t immediate_value(const recomp::binary::PeImage& image, std::uint32_t rva) {
   const auto offset = recomp::binary::file_offset_for_rva(image, rva);
   const auto& bytes = image.file_bytes;
@@ -365,6 +375,10 @@ int main(int argc, char** argv) {
   if (first == "run") {
     if (argc < 3) return unsupported("run requires a generated project", json);
     return run(argv[2], json);
+  }
+  if (first == "report") {
+    if (argc < 3) return unsupported("report requires a generated project", json);
+    return report(argv[2], json);
   }
   if (first == "examples" && argc >= 3 && std::string{argv[2]} == "list") return examples_list(json);
   return unsupported(first, json);

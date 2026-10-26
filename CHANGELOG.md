@@ -7,6 +7,7 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Added
 
+- Original Recomp Studio logo asset and README header branding.
 - Reframed the project documentation around its automated, end-to-end
   recompilation workflow and verified MVP scope.
 - Relicensed the project under the Apache License 2.0, including its express

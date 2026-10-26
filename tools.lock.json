@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "name": "cmake",
+      "purpose": "configure generated and host projects",
+      "license": "BSD-3-Clause",
+      "required": true
+    },
+    {
+      "name": "ninja",
+      "purpose": "incremental project builds",
+      "license": "Apache-2.0",
+      "required": true
+    }
+  ],
+  "research_only": [
+    {
+      "name": "igi-recomp",
+      "url": "https://github.com/HenryKun55/igi-recomp",
+      "license": "MIT",
+      "use": "architecture research only; no source copied"
+    },
+    {
+      "name": "N64Recomp",
+      "url": "https://github.com/N64Recomp/N64Recomp",
+      "license": "MIT",
+      "use": "architecture research only; no source copied"
+    }
+  ]
+}

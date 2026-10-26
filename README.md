@@ -1,6 +1,6 @@
 # Recomp Studio
 
-Recomp Studio is an experimental, source-available static recompilation CLI for
+Recomp Studio is an experimental, Apache-2.0-licensed static recompilation CLI for
 legally obtained Windows executables. Its verified MVP accepts genuine PE32
 (x86) and PE32+ (x64) machine code and produces a native macOS ARM64 host
 program for a deliberately small, tested instruction subset.
@@ -130,11 +130,11 @@ logs (`loading`, `working`, `idle`, and `complete`).
 
 ## Legal and security
 
-Recomp Studio is distributed under the **Heaven-HM Community Modding License
-— Version 1.0**, a custom source-available, noncommercial license. It permits
-lawful study, modification, and free sharing with attribution and the same
-terms. It prohibits unlawful activity, unauthorized access, malware, and
-distribution of unlawfully obtained material.
+Recomp Studio is distributed under the **Apache License 2.0**. It permits
+commercial and noncommercial use, modification, and redistribution, includes
+an express contributor patent grant, and does not require downstream projects
+to publish their source code. The Apache License does not grant trademark
+rights or permission to use third-party game code or assets.
 
 Use only executables and assets you are authorized to analyze. Recomp Studio
 does not include commercial game files and makes no claim of compatibility with

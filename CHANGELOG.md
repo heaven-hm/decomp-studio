@@ -7,7 +7,8 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Added
 
-- Adoption of the Heaven-HM Community Modding License — Version 1.0.
+- Relicensed the project under the Apache License 2.0, including its express
+  contributor patent grant.
 - C++20 command-line interface with structured JSON diagnostics.
 - PE32/x86 and PE32+/x64 validation, section/import reporting, and SHA-256
   executable identity.

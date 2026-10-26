@@ -10,3 +10,4 @@ APPS.MD
 *.log
 .cache/
 .tools/
+tests/fixtures/apps/bin/

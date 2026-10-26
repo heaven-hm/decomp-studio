@@ -19,9 +19,16 @@ void print_help() {
             << "Usage: recomp-studio <command> [options]\n\n"
             << "Commands:\n"
             << "  doctor          Report host and target capability\n"
-            << "  tools list      List configured tool capabilities\n"
             << "  examples list   List bundled example profiles\n"
-            << "  inspect         Inspect a PE executable (coming next)\n";
+            << "  inspect         Inspect a PE executable\n"
+            << "  analyze         Decode entry-reachable instructions\n"
+            << "  functions       List confirmed entry function candidates\n"
+            << "  cfg             Export entry-rooted CFG as Graphviz DOT\n"
+            << "  lift            Emit canonical semantic IR\n"
+            << "  translate       Generate a macOS ARM64 host project\n"
+            << "  build           Build a generated host project\n"
+            << "  run             Run a generated host project\n"
+            << "  verify          Differentially verify supported execution\n";
 }
 
 int examples_list(bool json) {

@@ -188,6 +188,20 @@ int build(const std::filesystem::path& project, bool json) {
   return 1;
 }
 
+int run(const std::filesystem::path& project, bool json) {
+  const auto executable = project / "build/recomp-guest";
+  if (!std::filesystem::exists(executable)) return unsupported("generated executable is missing; run build first", json);
+  const auto command = "'" + executable.string() + "'";
+  FILE* stream = popen(command.c_str(), "r");
+  if (stream == nullptr) return unsupported("cannot launch generated executable", json);
+  char buffer[256];
+  std::string output;
+  while (fgets(buffer, sizeof(buffer), stream) != nullptr) output += buffer;
+  if (pclose(stream) != 0) return unsupported("generated executable failed", json);
+  std::cout << output;
+  return 0;
+}
+
 std::uint64_t immediate_value(const recomp::binary::PeImage& image, std::uint32_t rva) {
   const auto offset = recomp::binary::file_offset_for_rva(image, rva);
   const auto& bytes = image.file_bytes;
@@ -291,6 +305,10 @@ int main(int argc, char** argv) {
   if (first == "verify") {
     if (argc < 3) return unsupported("verify requires a generated project", json);
     return verify(argv[2], json);
+  }
+  if (first == "run") {
+    if (argc < 3) return unsupported("run requires a generated project", json);
+    return run(argv[2], json);
   }
   if (first == "examples" && argc >= 3 && std::string{argv[2]} == "list") return examples_list(json);
   return unsupported(first, json);

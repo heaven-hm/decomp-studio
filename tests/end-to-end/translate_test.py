@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory() as temp:
     built = subprocess.run([cli, "build", str(project), "--json"], text=True, capture_output=True)
     assert built.returncode == 0, built.stderr
     guest = project / "build" / "recomp-guest"
-    output = subprocess.run([str(guest)], text=True, capture_output=True)
+    output = subprocess.run([cli, "run", str(project)], text=True, capture_output=True)
     assert output.returncode == 0, output.stderr
     assert json.loads(output.stdout) == {"status": "ok", "return_value": 42}
     inspected = subprocess.run(["file", str(guest)], text=True, capture_output=True, check=True)

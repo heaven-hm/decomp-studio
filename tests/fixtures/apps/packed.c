@@ -162,6 +162,16 @@ int app_main(void) {
                    : "xmm0");
   out("pshufhw="); outi((i64)fold(result)); crlf();
 
+  /* A memory-source PSHUFD selects dwords, including nontrivial reordering. */
+  __asm__ volatile("pshufd $0x1b, %1, %%xmm0\n\t"
+                   "movdqu %%xmm0, %0"
+                   : "=m"(*(char(*)[LANES])result)
+                   : "m"(*(char(*)[LANES])left) : "xmm0");
+  int shuffle_ok = 1;
+  for (int index = 0; index < LANES; ++index)
+    if (result[index] != left[(3 - index / 4) * 4 + index % 4]) shuffle_ok = 0;
+  out("pshufd_mem_ok="); outi(shuffle_ok); crlf();
+
   /* PMOVMSKB moves the sign bit of each byte into a general-purpose register. */
   u32 mask = 0;
   __asm__ volatile("movdqu %1, %%xmm0\n\t"

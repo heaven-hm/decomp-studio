@@ -1104,6 +1104,15 @@ inline void vector_shuffle_dwords(GuestContext* context, int destination, int so
   std::memcpy(context->vector_registers[destination], lanes, 16);
 }
 
+inline void vector_shuffle_dwords_memory(GuestContext* context, int destination, std::uint64_t address, int control) {
+  std::uint32_t lanes[4];
+  for (int index = 0; index < 4; ++index)
+    lanes[index] = static_cast<std::uint32_t>(load_guest_memory(context, address + index * 4, 4));
+  std::uint32_t shuffled[4];
+  for (int index = 0; index < 4; ++index) shuffled[index] = lanes[(control >> (index * 2)) & 3];
+  std::memcpy(context->vector_registers[destination], shuffled, 16);
+}
+
 inline void vector_unpack_dwords(GuestContext* context, int destination, int source, int high) {
   std::uint32_t lanes[4];
   const auto* left = reinterpret_cast<const std::uint32_t*>(context->vector_registers[destination]);

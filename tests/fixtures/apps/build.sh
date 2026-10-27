@@ -18,14 +18,14 @@ CC32="${CC32:-i686-w64-mingw32-gcc}"
 mkdir -p "$out"
 
 # Fixtures that must build and pass for the 64-bit target.
-FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert vecmove heap packed unpack"
+FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert vecmove heap packed backward_entry unpack remill_movhalf"
 
 # VEX/AVX fixture: needs -mavx so the compiler emits genuine VEX encodings.
 FIXTURES_AVX="vex"
 
 # Fixtures that must build and pass for the 32-bit target, as source:output pairs
 # so they never collide with the 64-bit fixture built from the same source.
-FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert teb32:teb32"
+FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert teb32:teb32 remill_movhalf:pe32_remill_movhalf remill_aas:pe32_remill_aas"
 
 # Negative fixtures: these must fail explicitly, so they are not in FIXTURES_X64.
 FIXTURES_NEGATIVE="unsupported_instruction unsupported_import"
@@ -45,6 +45,9 @@ for name in $FIXTURES_X64; do
   fi
   build_one "$CC" "$name" "$name"
 done
+
+"$CC" $COMMON_FLAGS -Wl,-e,recomp_entry -Wl,--subsystem,console \
+    -o "$out/tail_import.exe" "$here/tail_import.c" -lkernel32 -lmsvcrt -lgcc
 
 for name in $FIXTURES_AVX; do
   if ! command -v "$CC" >/dev/null 2>&1; then

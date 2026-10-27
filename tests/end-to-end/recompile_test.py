@@ -37,6 +37,9 @@ FIXTURES = [
     ("vecmove", "SSE register-move merge semantics"),
     ("packed", "SSE2 packed integer, register and immediate forms"),
     ("simd_convert", "packed integer-to-float conversion and MXCSR rounding modes"),
+    ("tail_import", "x64 import tail-call stack restoration"),
+    ("backward_entry", "function entry with a lower-address block"),
+    ("remill_movhalf", "Remill half-register move semantics"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -46,10 +49,17 @@ FIXTURES_PE32 = [
     ("pe32_abi", "32-bit calling conventions, indirect dispatch and address wrapping"),
     ("pe32_simd_convert", "32-bit packed integer-to-float conversion and MXCSR"),
     ("teb32", "32-bit TEB access through fs:"),
+    ("pe32_remill_movhalf", "32-bit Remill half-register move semantics"),
+    ("pe32_remill_aas", "32-bit Remill ASCII adjust after subtraction"),
 ]
 
 EXPECTED_OUTPUT = {
     "arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
+    "tail_import": ["tail_stack_ok=1", "tail_rand_in_range=1"],
+    "backward_entry": ["entry_zero=42", "entry_nonzero=7"],
+    "remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
+    "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
+    "pe32_remill_aas": ["remill_aas=1"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
     "snake": ["snake:start", "snake:done"],
     "aliasing": ["aliasing:start", "zero_extend=1", "aliasing:done"],
@@ -79,11 +89,15 @@ EXPECTED_OUTPUT = {
                "psraw3=", "psrad5=", "psrldq4=", "pslldq4=",
                "punpcklbw=", "punpckhbw=", "punpcklwd=", "punpckhwd=",
                "packsswb=", "packuswb=", "packssdw=",
-               "pshufb=", "pshuflw=", "pshufhw=", "pmovmskb=",
+               "pshufb=", "pshuflw=", "pshufhw=", "pshufd_mem_ok=1", "shufps_reg_ok=1",
+               "shufps_mem_ok=1", "pmovmskb=",
                # Memory-source forms for the five helpers that once had no
                # _memory twin and so produced code that would not compile.
                "mem_paddd=", "mem_psubd=", "mem_pcmpeqd=", "mem_pmaddwd=", "mem_psadbw=",
-               "mem_paddw=", "packed:done"],
+               "mem_paddw=", "mem_unpack_lb=1", "mem_unpack_hb=1", "mem_unpack_lw=1", "mem_unpack_hw=1",
+               "mem_unpack_ld=1", "mem_unpack_hd=1", "mem_unpack_lq=1", "mem_unpack_hq=1",
+               "reg_unpack_lps=1", "reg_unpack_hps=1", "reg_unpack_lpd=1", "reg_unpack_hpd=1",
+               "mem_unpack_lps=1", "mem_unpack_hps=1", "mem_unpack_lpd=1", "mem_unpack_hpd=1", "packed:done"],
     "vecmove": ["vecmove:start", "movsd_lo=7", "movsd_hi=11", "movss_lo=5",
                 "movss_lane3=33", "load_lo=42", "load_hi=0", "vecmove:done"],
     "x87": ["x87:start", "add ", "fistp ", "sqrt ", "cmp_eq ", "sin ", "cw_trunc ",

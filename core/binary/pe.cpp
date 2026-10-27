@@ -48,8 +48,16 @@ std::string section_name(const std::vector<std::uint8_t>& bytes, std::size_t off
 
 constexpr std::uint16_t kDirectoryImport = 1;
 constexpr std::uint16_t kDirectoryExport = 0;
+constexpr std::uint16_t kDirectoryResource = 2;
 constexpr std::uint16_t kDirectoryBaseRelocation = 5;
 constexpr std::uint16_t kDirectoryTls = 9;
+constexpr std::uint16_t kDirectoryLoadConfig = 10;
+constexpr std::uint16_t kDirectoryDelayImport = 13;
+
+// Resource type numbers, from winnt.h. Named here because a manifest is found by
+// type, and a magic number in the middle of a walk is not self-explanatory.
+constexpr std::uint32_t kResourceTypeManifest = 24;
+constexpr std::uint32_t kManifestIdCreateProcess = 1;
 
 }  // namespace
 
@@ -131,6 +139,20 @@ std::vector<const Section*> PortableExecutable::executable_sections() const {
   for (const auto& section : sections)
     if (section.is_executable()) output.push_back(&section);
   return output;
+}
+
+std::vector<const Section*> PortableExecutable::writable_executable_sections() const {
+  std::vector<const Section*> output;
+  for (const auto& section : sections)
+    if (section.is_executable() && section.is_writable()) output.push_back(&section);
+  return output;
+}
+
+const PortableExecutable::Resource* PortableExecutable::find_resource(std::uint32_t type,
+                                                                     std::uint32_t id) const {
+  for (const auto& resource : resources)
+    if (resource.type == type && resource.id == id) return &resource;
+  return nullptr;
 }
 
 // Names the format of an input that is not a Windows PE image. "not a DOS MZ
@@ -300,7 +322,13 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
         imported.import_address_table_rva = slot_rva;
         imported.library_name = library_name;
         if ((thunk_value & ordinal_flag) != 0) {
-          imported.symbol_name = "#" + std::to_string(thunk_value & 0xffffu);
+          imported.by_ordinal = true;
+          imported.ordinal = static_cast<std::uint32_t>(thunk_value & 0xffffu);
+          // The name is synthesised from the ordinal, so the report and the shim
+          // table are looking at the same string. Ordinal 140 of ws2_32.dll is a
+          // different question from a named import: the number is only meaningful
+          // for that DLL, so a resolver cannot guess a name from it.
+          imported.symbol_name = "#" + std::to_string(imported.ordinal);
         } else {
           imported.symbol_name = executable.read_c_string(static_cast<std::uint32_t>(thunk_value) + 2);
         }
@@ -311,8 +339,73 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
     }
   }
 
+  // Delay-loaded imports (directory 13). A program that delay-loads a DLL does not
+  // touch it until the first call, so the import directory -- which is what a
+  // static census reads -- does not mention it at all. d3d9, xinput and the
+  // speech APIs are routinely delay-loaded, and an import report built from the
+  // ordinary table alone tells you a game needs nothing it in fact calls.
+  const auto delay_directory_rva = directory_rva(kDirectoryDelayImport);
+  const auto delay_directory_size = directories.size() > kDirectoryDelayImport
+                                        ? directories[kDirectoryDelayImport].second
+                                        : 0u;
+  if (delay_directory_rva != 0 && delay_directory_size >= 32) {
+    const auto pointer_size = executable.is_64_bit ? 8u : 4u;
+    const auto ordinal_flag = executable.is_64_bit ? 0x8000000000000000ull : 0x80000000ull;
+    // Bounded by the directory's recorded size: a malformed table with no
+    // all-zero descriptor has to stop somewhere, and the size is what the image
+    // itself claims.
+    const auto descriptor_end = delay_directory_rva + delay_directory_size;
+    for (std::uint32_t descriptor_rva = delay_directory_rva; descriptor_rva + 32 <= descriptor_end;
+         descriptor_rva += 32) {
+      const auto name_rva = executable.read_u32(descriptor_rva + 4).value_or(0);
+      const auto import_name_table = executable.read_u32(descriptor_rva + 16).value_or(0);
+      const auto import_address_table = executable.read_u32(descriptor_rva + 12).value_or(0);
+      // The table is terminated by an all-zero descriptor.
+      if (name_rva == 0 && import_name_table == 0 && import_address_table == 0) break;
+      auto library_name = executable.read_c_string(name_rva);
+      for (auto& character : library_name)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+      for (std::uint32_t index = 0; import_name_table != 0 && index < 65536; ++index) {
+        const auto thunk_rva = import_name_table + index * pointer_size;
+        const auto thunk_value = executable.is_64_bit ? executable.read_u64(thunk_rva).value_or(0)
+                                                     : executable.read_u32(thunk_rva).value_or(0);
+        if (thunk_value == 0) break;
+        ImportedSymbol imported;
+        // The delay IAT is a separate table from the ordinary one; recording its
+        // slot is what lets a project bind the thunk where the loader would.
+        imported.import_address_table_rva = import_address_table + index * pointer_size;
+        imported.library_name = library_name;
+        imported.from_delay_table = true;
+        if ((thunk_value & ordinal_flag) != 0) {
+          imported.by_ordinal = true;
+          imported.ordinal = static_cast<std::uint32_t>(thunk_value & 0xffffu);
+          imported.symbol_name = "#" + std::to_string(imported.ordinal);
+        } else {
+          imported.symbol_name = executable.read_c_string(static_cast<std::uint32_t>(thunk_value) + 2);
+        }
+        executable.imports.push_back(imported);
+      }
+      descriptor_rva += 32;
+    }
+  }
+
+  // Every DLL the image names, static or delay, in the order first seen. This is
+  // the dependency set a capability resolver has to satisfy, and it is also the
+  // honest answer to "what will this program try to load".
+  {
+    std::vector<std::string> seen;
+    for (const auto& imported : executable.imports) {
+      if (std::find(seen.begin(), seen.end(), imported.library_name) == seen.end())
+        seen.push_back(imported.library_name);
+    }
+    executable.dependent_dlls = std::move(seen);
+  }
+
   // exports
   const auto export_directory_rva = directory_rva(kDirectoryExport);
+  const auto export_directory_size = directories.size() > kDirectoryExport
+                                         ? directories[kDirectoryExport].second
+                                         : 0u;
   if (export_directory_rva != 0) {
     const auto name_count = executable.read_u32(export_directory_rva + 24).value_or(0);
     const auto address_table_rva = executable.read_u32(export_directory_rva + 28).value_or(0);
@@ -322,7 +415,20 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
       const auto name_pointer = executable.read_u32(name_table_rva + index * 4).value_or(0);
       const auto ordinal = executable.read_u16(ordinal_table_rva + index * 2).value_or(0);
       const auto function_rva = executable.read_u32(address_table_rva + ordinal * 4).value_or(0);
-      if (function_rva != 0) executable.exports.push_back({function_rva, executable.read_c_string(name_pointer)});
+      if (function_rva == 0) continue;
+      ExportedSymbol exported;
+      exported.rva = function_rva;
+      exported.name = executable.read_c_string(name_pointer);
+      // An export whose target lands inside the export directory is not an
+      // address: it is a pointer to the name of somebody else's export. API sets
+      // are entirely made of these, so an import of api-ms-win-core-synch must be
+      // followed through the forwarder to kernel32 to find the implementation.
+      // Reading it as code would name a function that does not exist.
+      if (function_rva >= export_directory_rva && function_rva < export_directory_rva + export_directory_size) {
+        exported.is_forwarder = true;
+        exported.forward_name = executable.read_c_string(function_rva);
+      }
+      executable.exports.push_back(exported);
     }
   }
 
@@ -364,6 +470,135 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
         executable.tls_callback_rvas.push_back(static_cast<std::uint32_t>(callback - executable.image_base));
       }
     }
+  }
+
+  // The resource tree (directory 2), walked to its data entries.
+  //
+  // Three levels -- type, name-or-id, language -- each a directory of eight-byte
+  // entries where the high bit of the offset says "another directory" and says
+  // "the data" when it does not. Icons, cursors, menus, dialog templates and
+  // accelerators are all reached through here, so a shim that has to hand the
+  // guest an icon has to start from this tree; guessing from the filename finds
+  // nothing, because the icon was compiled into the image.
+  const auto resource_directory_rva = directory_rva(kDirectoryResource);
+  const auto resource_directory_size = directories.size() > kDirectoryResource
+                                           ? directories[kDirectoryResource].second
+                                           : 0u;
+  if (resource_directory_rva != 0 && resource_directory_size >= 16) {
+    const auto resource_end = resource_directory_rva + resource_directory_size;
+    // Walks one level of the tree. Offsets inside a resource directory are
+    // relative to the start of the whole tree, which is why every one of them is
+    // added to `root` here rather than treated as an address.
+    struct Walk {
+      std::uint32_t root{};
+      std::uint32_t limit{};
+      const PortableExecutable* image{};
+      PortableExecutable::Resource leaf{};
+      std::vector<PortableExecutable::Resource> found;
+      // Offsets already being descended through: a table that points back at
+      // itself is refused rather than walked forever.
+      std::vector<std::uint32_t> visiting;
+
+      // A named entry points at a UTF-16 length-prefixed string. The standard
+      // resource types are always numbered, so a name here is a string the
+      // program gave its own resource; it is recorded because a resource the
+      // guest asks for by name cannot be found without it.
+      std::string name_at(std::uint32_t offset) const {
+        const auto at = root + (offset & 0x7fffffffu);
+        if (at + 2 > limit) return {};
+        const auto characters = image->read_u16(at).value_or(0);
+        if (characters == 0 || characters > 512) return {};
+        const auto bytes = image->read_rva(at + 2, characters * 2);
+        std::string text;
+        for (std::size_t index = 0; index + 1 < bytes.size(); index += 2)
+          text.push_back(bytes[index] == 0 ? '?' : static_cast<char>(bytes[index]));
+        return text;
+      }
+
+      void directory(std::uint32_t offset, int level) {
+        const auto at = root + offset;
+        if (at + 16 > limit) return;
+        const auto entry_count = static_cast<std::uint32_t>(image->read_u16(at + 12).value_or(0)) +
+                                 static_cast<std::uint32_t>(image->read_u16(at + 14).value_or(0));
+        // No separate cap on the entry count: `entry + 8 > limit` below stops the
+        // walk at the end of the declared resource directory, which is the bound
+        // that actually means something. A count cap would just decide, in advance,
+        // that a large but honest resource tree is not worth reading.
+        for (std::uint32_t index = 0; index < entry_count; ++index) {
+          const auto entry = at + 16 + index * 8;
+          if (entry + 8 > limit) return;
+          const auto name_or_id = image->read_u32(entry).value_or(0);
+          const auto data_or_subdir = image->read_u32(entry + 4).value_or(0);
+          const bool is_named = (name_or_id & 0x80000000u) != 0;
+          const auto outer_type = leaf.type;
+          const auto outer_id = leaf.id;
+          if (level == 0) {
+            leaf.type = is_named ? 0 : name_or_id;
+            leaf.type_name = is_named ? name_at(name_or_id) : std::string();
+          } else if (level == 1) {
+            leaf.id = is_named ? 0 : name_or_id;
+          } else {
+            leaf.language = is_named ? 0 : name_or_id;
+          }
+          if ((data_or_subdir & 0x80000000u) != 0) {
+            const auto child = data_or_subdir & 0x7fffffffu;
+            if (level < 2 && std::find(visiting.begin(), visiting.end(), child) == visiting.end()) {
+              visiting.push_back(child);
+              directory(child, level + 1);
+              visiting.pop_back();
+            }
+          } else if (level == 2) {
+            const auto data_at = root + data_or_subdir;
+            if (data_at + 12 > limit) continue;
+            leaf.rva = image->read_u32(data_at).value_or(0);
+            leaf.size = image->read_u32(data_at + 4).value_or(0);
+            leaf.code_page = image->read_u32(data_at + 8).value_or(0);
+            if (leaf.rva != 0 && leaf.rva < limit) found.push_back(leaf);
+          }
+          leaf.type = outer_type;
+          leaf.id = outer_id;
+        }
+      }
+    } walk{resource_directory_rva, resource_end, &executable, {}, {}, {}};
+    walk.directory(0, 0);
+    executable.resources = std::move(walk.found);
+  }
+
+  // The embedded application manifest. A program asks for the version-6 common
+  // controls by naming them here -- not by calling anything -- so a recompiled
+  // app that gets version-5 behaviour is not a shim bug, it is a manifest nobody
+  // read. Extracting it turns "InitCommonControlsEx does nothing" into a question
+  // with an answerable form: which version did this image ask for.
+  for (const auto& resource : executable.resources) {
+    if (resource.type != kResourceTypeManifest || resource.id != kManifestIdCreateProcess) continue;
+    const auto bytes = executable.read_rva(resource.rva, resource.size);
+    executable.manifest.assign(bytes.begin(), bytes.end());
+    break;
+  }
+  if (!executable.manifest.empty()) {
+    const auto controls = executable.manifest.find("Microsoft.Windows.Common-Controls");
+    if (controls != std::string::npos) {
+      const auto version_at = executable.manifest.find("version", controls);
+      if (version_at != std::string::npos) {
+        const auto six = executable.manifest.find('6', version_at);
+        const auto closing = executable.manifest.find('"', version_at);
+        executable.requests_common_controls_v6 = six != std::string::npos && (closing == std::string::npos || six < closing);
+      }
+    }
+  }
+
+  // Control Flow Guard, from the load configuration directory (10). A CFG image
+  // routes indirect calls through guard thunks and validates the target against a
+  // table the compiler emitted, so its indirect-call sites are not recoverable
+  // from the code alone. Saying so is the difference between an unexplained
+  // missing target and a known requirement on the dispatch path.
+  const auto load_config_rva = directory_rva(kDirectoryLoadConfig);
+  if (load_config_rva != 0) {
+    const auto guard_flags_offset = executable.is_64_bit ? 0x70u : 0x6cu;
+    const auto guard_flags = executable.read_u32(load_config_rva + guard_flags_offset).value_or(0);
+    executable.guard_flags = guard_flags;
+    // IMAGE_GUARD_CF_INSTRUMENTED (0x100) means the compiler emitted the checks.
+    executable.has_control_flow_guard = (guard_flags & 0x100u) != 0;
   }
 
   // Packed-image detection. The general rule is that a section which claims a

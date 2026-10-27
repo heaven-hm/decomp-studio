@@ -142,27 +142,89 @@ int command_inspect(const std::filesystem::path& input, bool json) {
   }
   const auto executable = recomp::binary::PortableExecutable::parse(input);
   const auto digest = recomp::common::sha256(executable.file_bytes);
+  // Counts that describe what the image actually asks for, shared by both output
+  // forms so the text and the JSON cannot tell different stories about the same
+  // file.
+  std::size_t ordinal_imports = 0;
+  std::size_t delay_imports = 0;
+  for (const auto& imported : executable.imports) {
+    if (imported.by_ordinal) ++ordinal_imports;
+    if (imported.from_delay_table) ++delay_imports;
+  }
+  const auto mutable_code = executable.writable_executable_sections();
   if (json) {
     std::cout << "{\"status\":\"ok\",\"format\":\"" << executable.format_name()
               << "\",\"architecture\":\"" << executable.architecture_name()
               << "\",\"entry_point\":" << recomp::common::quote_json(format_hex(executable.entry_point_rva))
               << ",\"image_base\":" << recomp::common::quote_json(format_hex(executable.image_base, 9))
+              << ",\"subsystem\":" << executable.subsystem
               << ",\"sha256\":\"" << digest << "\",\"section_count\":" << executable.sections.size()
               << ",\"import_count\":" << executable.imports.size()
-              << ",\"imports\":[";
+              << ",\"ordinal_imports\":" << ordinal_imports
+              << ",\"delay_imports\":" << delay_imports
+              << ",\"dependent_dll_count\":" << executable.dependent_dlls.size()
+              << ",\"resource_count\":" << executable.resources.size()
+              << ",\"has_manifest\":" << (executable.manifest.empty() ? "false" : "true")
+              << ",\"requests_common_controls_v6\":"
+              << (executable.requests_common_controls_v6 ? "true" : "false")
+              << ",\"control_flow_guard\":" << (executable.has_control_flow_guard ? "true" : "false")
+              << ",\"tls_callback_count\":" << executable.tls_callback_rvas.size()
+              << ",\"writable_executable_sections\":[";
+    for (std::size_t index = 0; index < mutable_code.size(); ++index) {
+      if (index != 0) std::cout << ",";
+      std::cout << recomp::common::quote_json(mutable_code[index]->name);
+    }
+    std::cout << "],\"imports\":[";
     for (std::size_t index = 0; index < executable.imports.size(); ++index) {
       if (index != 0) std::cout << ",";
-      std::cout << recomp::common::quote_json(executable.imports[index].library_name + "!" +
-                                              executable.imports[index].symbol_name);
+      std::cout << "{\"name\":"
+                << recomp::common::quote_json(executable.imports[index].library_name + "!" +
+                                              executable.imports[index].display_name())
+                << ",\"ordinal\":" << (executable.imports[index].by_ordinal ? "true" : "false")
+                << ",\"delay\":" << (executable.imports[index].from_delay_table ? "true" : "false") << "}";
     }
     std::cout << "]}\n";
   } else {
     std::cout << "format:      " << executable.format_name() << " (" << executable.architecture_name() << ")\n"
               << "entry point: " << format_hex(executable.entry_point_rva) << "\n"
               << "image base:  " << format_hex(executable.image_base, 9) << "\n"
+              << "subsystem:   " << executable.subsystem
+              << (executable.subsystem == 2 ? " (Windows GUI)" : executable.subsystem == 3 ? " (console)" : "")
+              << "\n"
               << "sha256:      " << digest << "\n"
               << "sections:    " << executable.sections.size() << "\n"
               << "imports:     " << executable.imports.size() << "\n";
+    // An ordinal import is a different kind of unknown from an unimplemented
+    // name: the number only means something for the DLL it came from, so an
+    // import census that lists it beside named ones implies a name nobody has.
+    if (ordinal_imports != 0) std::cout << "             " << ordinal_imports << " by ordinal\n";
+    // Delay-loaded imports are invisible to the import directory. Saying the
+    // count here is what stops a report claiming a program needs nothing when it
+    // reaches for a DLL the first time it calls it.
+    if (delay_imports != 0) std::cout << "             " << delay_imports << " delay-loaded\n";
+    std::cout << "dlls:        " << executable.dependent_dlls.size() << " named\n";
+    for (const auto& dll : executable.dependent_dlls) std::cout << "  " << dll << "\n";
+    if (!executable.resources.empty()) {
+      std::cout << "resources:   " << executable.resources.size() << "\n";
+      if (!executable.manifest.empty()) {
+        std::cout << "manifest:    yes (" << executable.manifest.size() << " bytes)"
+                  << (executable.requests_common_controls_v6
+                          ? "; requests comctl32 v6 common controls"
+                          : "; no common-controls dependency declared")
+                  << "\n";
+      }
+    }
+    if (!mutable_code.empty()) {
+      std::cout << "writable+executable sections:";
+      for (const auto* section : mutable_code) std::cout << " " << section->name;
+      std::cout << "\n             (code can change at run time; translated code must not be placed there)\n";
+    }
+    if (executable.has_control_flow_guard)
+      std::cout << "control flow guard: enabled (guard flags " << format_hex(executable.guard_flags)
+                << "); indirect calls are checked against a table, so their targets are not all"
+                   " recoverable from the code alone\n";
+    if (!executable.tls_callback_rvas.empty())
+      std::cout << "tls callbacks: " << executable.tls_callback_rvas.size() << "\n";
     // A managed image looks like an ordinary PE until the CLR directory is read,
     // and saying so here is what stops a reader concluding it is recompilable.
     if (executable.is_managed())
@@ -171,7 +233,8 @@ int command_inspect(const std::filesystem::path& input, bool json) {
     if (executable.is_packed())
       std::cout << "packed:      yes — " << executable.packing_reason << "\n";
     for (const auto& imported : executable.imports)
-      std::cout << "  " << imported.library_name << "!" << imported.symbol_name << "\n";
+      std::cout << "  " << imported.library_name << "!" << imported.display_name()
+                << (imported.from_delay_table ? " (delay)" : "") << "\n";
   }
   return 0;
 }
@@ -1273,7 +1336,7 @@ int main(int argc, char** argv) {
       for (int index = 2; index < argc; ++index) {
         const std::string option{argv[index]};
         if (option == "--json") continue;
-        if (option == "--repair") { repair = true; continue; }
+        if (option == "--repair" || option == "--autorepair") { repair = true; continue; }
         if (option == "--buildrun") { build_and_run = true; continue; }
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }

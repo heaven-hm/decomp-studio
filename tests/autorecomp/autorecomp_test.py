@@ -162,6 +162,14 @@ def check_argument_handling() -> None:
                   f"unexpected payload {payload}")
         except json.JSONDecodeError:
             check("args/missing-file-json", False, "a failed run must still emit JSON with --json")
+        alias = run_cli(["autorecomp", str(absent), "--output", str(Path(temporary) / "alias"),
+                         "--autorepair", "--buildrun", "--json"])
+        try:
+            payload = json.loads(alias.stdout)
+            check("args/autorepair-alias", payload.get("repair") is True and payload.get("build_and_run") is True,
+                  f"requested flags were not enabled: {payload}")
+        except json.JSONDecodeError:
+            check("args/autorepair-alias", False, f"alias was rejected: {alias.stderr.strip()}")
 
 
 def main() -> int:

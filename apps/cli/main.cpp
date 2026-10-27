@@ -1266,7 +1266,7 @@ int main(int argc, char** argv) {
       for (int index = 2; index < argc; ++index) {
         const std::string option{argv[index]};
         if (option == "--json") continue;
-        if (option == "--repair") { repair = true; continue; }
+        if (option == "--repair" || option == "--autorepair") { repair = true; continue; }
         if (option == "--buildrun") { build_and_run = true; continue; }
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }

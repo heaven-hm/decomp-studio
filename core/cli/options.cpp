@@ -59,6 +59,7 @@ const std::vector<OptionSpec>& specs() {
       // --- Execution Options ----------------------------------------------
       {"--buildrun", "", "Build and execute the generated project", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--repair", "", "Enable automated repair", ValueKind::Flag, {}, "", "Execution Options", false},
+      {"--autorepair", "", "Alias for --repair", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--dry-run", "", "Validate and preview without execution", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--explain", "", "Explain the selected pipeline and capabilities", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--report-format", "<format>", "Report format", ValueKind::Enum,

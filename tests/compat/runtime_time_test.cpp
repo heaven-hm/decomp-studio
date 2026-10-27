@@ -10,7 +10,7 @@ int main() {
   if (!map_guest_memory(kGuestAddressSpaceBytes)) return 1;
   for (const int width : {4, 8}) {
     guest_pointer_width = width;
-    initialize_guest_state(0x100000, 0x70000000);
+    initialize_guest_state(0x100000, 0x70000000, 0x7fff0000);
     for (const std::uint64_t pointer : {0ull, 0x200000ull}) {
       GuestContext context{};
       context.registers[1] = pointer;

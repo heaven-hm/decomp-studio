@@ -217,6 +217,19 @@ All notable changes to Recomp Studio are documented here. This project follows
   recompilable, and four applications translate (snake, Tetris, and both IGI
   executables) against three before.
 
+- The kernel32 console and directory surface: `Beep`,
+  `SetConsoleCursorPosition`, `SetConsoleTextAttribute`, `SetConsoleCursorInfo`,
+  and `FindFirstFileA`/`FindNextFileA`/`FindClose` with a real directory
+  enumeration against the host filesystem and a `WIN32_FIND_DATAA` fill. The
+  console calls succeed without drawing, because a recompiled port has no Windows
+  console and the program's output still reaches the host's stdout.
+
+  Effect on `Tetris.exe`: 48 of 99 imports implemented becomes 55, every kernel32
+  import it needs is now present, and the remaining 44 are all C++ runtime
+  (32 libstdc++, 9 msvcrt, 3 libgcc).
+
+### Fixed
+
 ### Fixed
 
 ### Fixed

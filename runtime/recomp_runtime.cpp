@@ -7,6 +7,10 @@
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
+#include <system_error>
+#include <map>
+#include <filesystem>
+#include <algorithm>
 
 // The host environment, used to build the guest's environment blocks.
 extern char** environ;
@@ -971,6 +975,122 @@ void msvcrt_setlocale(GuestContext* context) {
   set_import_result(context, 0);  // the "C" locale has no name to return
 }
 
+// ---- kernel32: console and directory enumeration --------------------------
+// A recompiled port has no Windows console, so the console calls succeed without
+// drawing anything: a program that sets a cursor position or a text attribute is
+// describing output, and the output itself still goes to the host's stdout. Beep
+// is silent for the same reason.
+void win32_console_success(GuestContext* context) {
+  for (int index = 0; index < 4; ++index) (void)import_argument(context, index);
+  set_import_result(context, 1);
+}
+
+// Directory enumeration. The guest sees a Win32 find handle and a
+// WIN32_FIND_DATAA; the matches are held host-side against that handle.
+struct GuestFindState {
+  std::vector<std::string> names;
+  std::size_t index{};
+  std::string directory;
+};
+std::map<std::uint64_t, GuestFindState> guest_finds;
+
+bool guest_glob_matches(const std::string& pattern, const std::string& name) {
+  std::size_t p = 0;
+  std::size_t n = 0;
+  std::size_t star = std::string::npos;
+  std::size_t resume = 0;
+  while (n < name.size()) {
+    if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == name[n])) {
+      ++p;
+      ++n;
+    } else if (p < pattern.size() && pattern[p] == '*') {
+      star = p++;
+      resume = n;
+    } else if (star != std::string::npos) {
+      p = star + 1;
+      n = ++resume;
+    } else {
+      return false;
+    }
+  }
+  while (p < pattern.size() && pattern[p] == '*') ++p;
+  return p == pattern.size();
+}
+
+std::string guest_path_to_host(std::string path) {
+  for (auto& character : path)
+    if (character == '\\') character = '/';
+  // A drive-qualified path has no meaning on the host; the rest of it is still
+  // the best interpretation available, and a relative path is used as given.
+  if (path.size() >= 2 && path[1] == ':') path.erase(0, 2);
+  return path.empty() ? std::string(".") : path;
+}
+
+void guest_fill_find_data(GuestContext* context, std::uint64_t address, const std::string& name,
+                          const std::string& directory, bool is_directory) {
+  for (std::uint64_t offset = 0; offset < 320; ++offset) store_guest_memory(context, address + offset, 0, 1);
+  store_guest_memory(context, address, is_directory ? 0x10 : 0x80, 4);  // FILE_ATTRIBUTE_*
+  std::uint64_t size = 0;
+  if (!is_directory) {
+    std::error_code error;
+    const auto measured = std::filesystem::file_size(std::filesystem::path(directory) / name, error);
+    if (!error) size = measured;
+  }
+  store_guest_memory(context, address + 28, size >> 32, 4);
+  store_guest_memory(context, address + 32, size & 0xffffffffu, 4);
+  const auto limit = name.size() < 259 ? name.size() : 259;
+  for (std::size_t index = 0; index < limit; ++index)
+    store_guest_memory(context, address + 44 + index, static_cast<std::uint8_t>(name[index]), 1);
+}
+
+void win32_find_first_file_a(GuestContext* context) {
+  const auto pattern = read_guest_string(import_argument(context, 0));
+  const auto output = import_argument(context, 1);
+  const auto host = guest_path_to_host(pattern);
+  const auto separator = host.find_last_of('/');
+  const auto directory = separator == std::string::npos ? std::string(".") : host.substr(0, separator);
+  const auto leaf = separator == std::string::npos ? host : host.substr(separator + 1);
+
+  GuestFindState state;
+  state.directory = directory;
+  std::error_code error;
+  for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+    const auto name = entry.path().filename().string();
+    if (guest_glob_matches(leaf.empty() ? "*" : leaf, name)) state.names.push_back(name);
+  }
+  if (error || state.names.empty()) {
+    set_import_result(context, 0xffffffffull);  // INVALID_HANDLE_VALUE
+    return;
+  }
+  std::sort(state.names.begin(), state.names.end());
+  guest_fill_find_data(context, output, state.names.front(), directory,
+                       std::filesystem::is_directory(std::filesystem::path(directory) / state.names.front()));
+  state.index = 1;
+  const auto handle = guest_handle_new(kGuestHandleFind);
+  guest_finds[handle] = std::move(state);
+  set_import_result(context, handle);
+}
+
+void win32_find_next_file_a(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  const auto output = import_argument(context, 1);
+  const auto found = guest_finds.find(handle);
+  if (found == guest_finds.end() || found->second.index >= found->second.names.size()) {
+    set_import_result(context, 0);
+    return;
+  }
+  auto& state = found->second;
+  const auto& name = state.names[state.index++];
+  guest_fill_find_data(context, output, name, state.directory,
+                       std::filesystem::is_directory(std::filesystem::path(state.directory) / name));
+  set_import_result(context, 1);
+}
+
+void win32_find_close(GuestContext* context) {
+  guest_finds.erase(import_argument(context, 0));
+  set_import_result(context, 1);
+}
+
 // ---- ole32 ----------------------------------------------------------------
 // Ported from HenryKun55/igi-recomp (MIT) shim/src/ole32.c. COM apartment
 // initialisation is a no-op in a single-process port: S_OK, and nothing to
@@ -1091,6 +1211,13 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "VirtualFree", win32_virtual_free},
     {"kernel32.dll", "VirtualQuery", win32_virtual_query},
     {"kernel32.dll", "VirtualProtect", win32_virtual_protect},
+    {"kernel32.dll", "Beep", win32_console_success},
+    {"kernel32.dll", "SetConsoleCursorPosition", win32_console_success},
+    {"kernel32.dll", "SetConsoleTextAttribute", win32_console_success},
+    {"kernel32.dll", "SetConsoleCursorInfo", win32_console_success},
+    {"kernel32.dll", "FindFirstFileA", win32_find_first_file_a},
+    {"kernel32.dll", "FindNextFileA", win32_find_next_file_a},
+    {"kernel32.dll", "FindClose", win32_find_close},
     {"kernel32.dll", "GetProcessHeap", win32_get_process_heap},
     {"kernel32.dll", "GetVersionExA", win32_get_version_ex_a},
     {"kernel32.dll", "GetFileType", win32_get_file_type},

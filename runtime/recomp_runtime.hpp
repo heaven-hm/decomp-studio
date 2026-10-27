@@ -192,11 +192,13 @@ void open_guest_mxcsr_log(const char* path);
 // instruction by instruction is what localises a control-register divergence to the
 // instruction that caused it, rather than to the checkpoint after it.
 extern bool guest_mxcsr_logging;
+extern std::uint64_t guest_mxcsr_previous_address;
 void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr);
 
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
   context->instruction_pointer = address;
   if (guest_mxcsr_logging) record_mxcsr_change(address, context->mxcsr);
+  guest_mxcsr_previous_address = address;
   if (guest_checkpoint_interval != 0) capture_guest_checkpoint(context, address);
   if (guest_tracing_enabled) guest_trace_address(address);
 }
@@ -1663,7 +1665,13 @@ inline void x87_store_status_word_ax(GuestContext* context) {
 // FP environment, so a guest rounding-mode change cannot leak into the
 // recompiled program's own arithmetic.
 inline constexpr std::uint32_t kMxcsrDefaultValue = 0x1f80u;
-inline constexpr std::uint32_t kMxcsrPrecisionFlag = 1u << 5;
+// MXCSR's exception flags are bits 7..12: IE, DE, ZE, OE, UE, PE. Bit 5 is FTZ,
+// which is not an exception flag at all. This constant held 1u << 5, so every
+// operation that recorded an inexact result -- cvtdq2ps among them -- set the
+// FLUSH-TO-ZERO bit instead of the precision flag. A guest that read MXCSR with
+// stmxcsr saw a control bit set that it had never asked for, and two fixtures
+// diverged on it.
+inline constexpr std::uint32_t kMxcsrPrecisionFlag = 1u << 12;
 inline constexpr std::uint32_t kMxcsrRoundingControlShift = 13;
 inline constexpr std::uint32_t kMxcsrRoundingControlMask = 3u << kMxcsrRoundingControlShift;
 

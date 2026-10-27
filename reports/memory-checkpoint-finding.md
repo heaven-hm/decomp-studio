@@ -573,9 +573,65 @@ writes a wrong value there, or reads a right value and sets the bit afterwards, 
 not yet established, and the next step is to log the value at the `LDMXCSR` on both
 sides rather than the resulting MXCSR.
 
-## Not established
+## Resolved: MXCSR's precision flag was defined as the FTZ bit
 
-Whether the candidate sets FTZ that the guest did not ask for, or the reference drops
+Logging at the two MXCSR writers named the operation, and attributing a change to the
+instruction that *caused* it rather than the one after named the instruction:
+
+```
+0 1f80
+140001164 1fa0     <- cvtdq2ps
+14000148c 3f80     <- ldmxcsr
+140001164 3fa0     <- cvtdq2ps
+...
+```
+
+`0x140001164` is `cvtdq2ps xmm0, xmm0`, a packed integer-to-float conversion, and it
+was **writing MXCSR**. The reason was one line in the runtime:
+
+```cpp
+inline constexpr std::uint32_t kMxcsrPrecisionFlag = 1u << 5;
+...
+if (inexact) context->mxcsr |= kMxcsrPrecisionFlag;
+```
+
+MXCSR's exception flags are bits 7..12 — IE, DE, ZE, OE, UE, **PE**. Bit 5 is **FTZ**,
+which is not an exception flag at all. So every operation that recorded an inexact
+result set the **flush-to-zero** bit instead of the precision flag, and a guest that
+read MXCSR with `stmxcsr` saw a control bit set that it had never asked for.
+
+The constant is now `1u << 12`.
+
+With that fixed, **every fixture but one agrees on registers, flags, memory and the
+control registers**:
+
+```
+memory and control registers both agree: 21   differ: 1
+  vex.exe: checkpoint 2, window offset 0x4c
+```
+
+The one that differs is `vex`, whose divergence is the **known defect in the emulator
+used as the reference** for AVX, not in the translation.
+
+## Consequence: memory and the control registers now gate the verdict
+
+`verified()` requires `state_match && memory_match && control_registers_match`, and
+`--checkpoints memory` and `--checkpoints full` are declared **Implemented**.
+
+They were not gated while a divergence was undiagnosed, and that was the right call:
+a gate that fails for a reason nobody has explained teaches people to ignore it. Now
+that the only failure is a documented defect in the reference, the gate is worth
+having, and the `cli_options` contract moved both values from the list that must be
+refused to the list that must be accepted.
+
+## What this took
+
+Five rounds: a store-log comparison, a per-instruction comparison, shim-write marking,
+a byte-level memory comparison with an x87 classification, control registers as
+checkpoint fields, and MXCSR change logging. Each round narrowed the question without
+answering it, and the answer, when it came, was **one wrong shift constant** — found
+only because the instrumentation had been narrowed to the point where an instruction
+that should not touch a control register was visibly touching it., or the reference drops
 FTZ that it did. The two sides agree on every other MXCSR bit, so the question is one
 bit wide. The
 window is now 1000 instructions and the instruction that reads MXCSR is known, so the

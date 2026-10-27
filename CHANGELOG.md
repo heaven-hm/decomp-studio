@@ -401,6 +401,22 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **MXCSR's precision flag was defined as the FTZ bit.** `kMxcsrPrecisionFlag` held
+  `1u << 5`; MXCSR's exception flags are bits 7..12 (IE, DE, ZE, OE, UE, **PE**) and
+  bit 5 is **FTZ**, which is not an exception flag at all. So every operation that
+  recorded an inexact result — `cvtdq2ps` among them — set the **flush-to-zero** bit
+  instead of the precision flag, and a guest that read MXCSR with `stmxcsr` saw a
+  control bit set that it had never asked for. It is now `1u << 12`. Found by logging
+  every MXCSR change and attributing it to the instruction that caused it: `0x140001164`,
+  a `cvtdq2ps`, was writing a control register it has no business touching.
+- **Memory and the control registers now gate the verification verdict.**
+  `verified()` requires `state_match && memory_match && control_registers_match`, and
+  `--checkpoints memory` and `--checkpoints full` are declared **Implemented**. Every
+  fixture but one agrees on registers, flags, memory and the control registers; the
+  exception is `vex`, whose divergence is the known defect in the emulator used as the
+  reference for AVX. The `cli_options` contract moved both values from the list that
+  must be refused to the list that must be accepted, which is the test doing its job.
+
 - **Every change to MXCSR is logged on both sides** (`RECOMP_MXCSR_LOG`,
   `RECOMP_REF_MXCSR_LOG`), so the two runs can be compared by change rather than at
   checkpoints 1000 instructions apart. The reference makes 7 changes and the candidate

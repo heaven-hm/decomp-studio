@@ -96,13 +96,14 @@ const std::vector<Capability>& capabilities() {
       {"checkpoints:auto", "--checkpoints", "auto", "registers and flags, with memory reported", Support::Implemented, ""},
       {"checkpoints:output", "--checkpoints", "output", "compare program output only", Support::Planned, "not wired"},
       {"checkpoints:registers", "--checkpoints", "registers", "compare registers and flags", Support::Implemented, ""},
-      {"checkpoints:memory", "--checkpoints", "memory", "compare memory, classifying the x87 class", Support::Planned,
-       "memory is compared byte by byte and a difference within one unit in the last place of a double "
-       "is named as the documented x87 precision limit. It does not gate the verdict yet: 18 of 22 "
-       "fixtures agree, two simd_convert fixtures differ by more than one ULP, and vex differs for the "
-       "known Unicorn AVX defect"},
-      {"checkpoints:full", "--checkpoints", "full", "compare registers, flags and memory", Support::Planned,
-       "memory does not yet gate the verdict; see --checkpoints memory"},
+      {"checkpoints:memory", "--checkpoints", "memory", "compare memory, classifying the x87 class", Support::Implemented,
+       "memory is compared byte by byte at every checkpoint and gates the verdict. A difference within "
+       "one unit in the last place of a double is classified as the documented x87 precision limit "
+       "rather than failed; every other difference fails. 21 of 22 fixtures agree; the exception is "
+       "vex, whose divergence is a known defect in the emulator used as the reference"},
+      {"checkpoints:full", "--checkpoints", "full", "compare registers, flags, memory and control registers", Support::Implemented,
+       "registers, flags, memory and the control registers (MXCSR and the x87 control and status words) "
+       "are all compared at every checkpoint and all gate the verdict"},
       {"trace:", "--trace", "", "save execution traces", Support::Implemented, ""},
       {"seed:", "--seed", "", "deterministic verification seed", Support::Planned,
        "the reference is deterministic but there is no seed control"},

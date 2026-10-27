@@ -101,7 +101,7 @@ def main():
     for option, value in (("--target-os", "linux"), ("--target-os", "windows"),
                           ("--source-lang", "csharp"), ("--source-os", "macos"),
                           ("--output-lang", "llvm-ir"), ("--reference", "qemu"),
-                          ("--mode", "compat"), ("--checkpoints", "memory"),
+                          ("--mode", "compat"),
                           ("--recover-types", None)):
         arguments = ["capabilities", option] + ([value] if value else [])
         result = run(arguments)
@@ -113,7 +113,8 @@ def main():
     for option, value in (("--target-os", "macos"), ("--target-arch", "arm64"),
                           ("--source-arch", "x64"), ("--output-lang", "cpp"),
                           ("--reference", "unicorn"), ("--mode", "recompile"),
-                          ("--checkpoints", "registers"), ("--optimize", "0")):
+                          ("--checkpoints", "registers"), ("--checkpoints", "memory"),
+                          ("--checkpoints", "full"), ("--optimize", "0")):
         result = run(["capabilities", option, value])
         check(f"supported/{option}-{value}", result.returncode == 0,
               (result.stdout + result.stderr)[:160])

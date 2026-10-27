@@ -83,7 +83,13 @@ struct DifferentialResult {
   bool verified() const {
     if (!reference_completed || !candidate_completed || !outputs_match) return false;
     if (checkpoints_compared == 0) return false;
-    return state_match;
+    // Memory and the control registers gate the verdict as well as the registers and
+    // flags. They did not until every fixture but one agreed, and the one that does
+    // not is `vex`, whose divergence is a known defect in the emulator used as the
+    // reference rather than in the translation. Gating on a comparison that fails for
+    // a reason nobody has diagnosed teaches people to ignore it; gating on one that
+    // fails only for a documented defect is worth having.
+    return state_match && memory_match && control_registers_match;
   }
 };
 

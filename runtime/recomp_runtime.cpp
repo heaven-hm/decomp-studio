@@ -2353,10 +2353,18 @@ bool guest_mxcsr_logging = false;
 static std::FILE* guest_mxcsr_log = nullptr;
 static std::uint32_t guest_mxcsr_last = 0;
 
+// The address of the instruction that last began, so a change observed at the start
+// of instruction N can be attributed to N-1, which is the one that made it.
+std::uint64_t guest_mxcsr_previous_address = 0;
+
 void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr) {
+  (void)address;
   if (guest_mxcsr_log == nullptr || mxcsr == guest_mxcsr_last) return;
   guest_mxcsr_last = mxcsr;
-  std::fprintf(guest_mxcsr_log, "%llx %x\n", static_cast<unsigned long long>(address), mxcsr);
+  // The instruction that caused the change is the one before this call, not this
+  // one: the value is read before the current instruction has run.
+  std::fprintf(guest_mxcsr_log, "%llx %x\n",
+               static_cast<unsigned long long>(guest_mxcsr_previous_address), mxcsr);
 }
 
 void open_guest_mxcsr_log(const char* path) {

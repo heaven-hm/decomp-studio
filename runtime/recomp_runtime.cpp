@@ -1092,6 +1092,26 @@ void msvcrt_fwrite(GuestContext* context) {
   set_import_result(context, count);
 }
 
+void msvcrt_puts(GuestContext* context) {
+  auto address = import_argument(context, 0);
+  std::string text;
+  for (;;) {
+    const auto byte = static_cast<char>(load_guest_memory(context, address++, 1));
+    if (byte == '\0') break;
+    text.push_back(byte);
+  }
+  text.push_back('\n');
+  write_guest_output(1, text.data(), text.size());
+  set_import_result(context, text.size());
+}
+
+void msvcrt_putchar(GuestContext* context) {
+  const auto character = static_cast<unsigned char>(import_argument(context, 0));
+  const char byte = static_cast<char>(character);
+  write_guest_output(1, &byte, 1);
+  set_import_result(context, character);
+}
+
 // CRT globals. Each accessor returns the address of a variable in the reserved
 // CRT block, which is what the real functions do.
 void msvcrt_errno(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x000); }
@@ -1837,6 +1857,8 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "system", msvcrt_system},
     {"msvcrt.dll", "time", msvcrt_time},
     {"msvcrt.dll", "_time64", msvcrt_time64},
+    {"msvcrt.dll", "puts", msvcrt_puts},
+    {"msvcrt.dll", "putchar", msvcrt_putchar},
     {"msvcrt.dll", "signal", msvcrt_signal},
     {"msvcrt.dll", "strcoll", msvcrt_strcoll},
     {"msvcrt.dll", "_stricoll", msvcrt_strcoll},

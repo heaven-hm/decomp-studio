@@ -36,6 +36,20 @@ int main() {
     push_guest_stack(&tail, 0x12345678);
     jump_guest_indirect(&tail, thunk);
     if (tail.registers[4] != 0x700000) return 8;
+    std::string captured;
+    guest_output_capture = &captured;
+    std::memcpy(guest_memory + 0x210000, "hello", 6);
+    GuestContext output{};
+    output.registers[4] = 0x700000;
+    output.registers[1] = 0x210000;
+    store_guest_memory(&output, output.registers[4] + 4, 0x210000, 4);
+    if (!invoke_shared_shim(&output, "api-ms-win-crt-stdio-l1-1-0.dll", "puts")) return 9;
+    if (static_cast<std::int32_t>(output.registers[0]) < 0 || captured != "hello\n") return 10;
+    output.registers[1] = '!';
+    store_guest_memory(&output, output.registers[4] + 4, '!', 4);
+    if (!invoke_shared_shim(&output, "api-ms-win-crt-stdio-l1-1-0.dll", "putchar")) return 11;
+    if (output.registers[0] != '!' || captured != "hello\n!") return 12;
+    guest_output_capture = nullptr;
   }
   return 0;
 }

@@ -11,7 +11,7 @@ not a claim about every copy of a binary in the corpus.
 | blackbox | `win32/blackbox.exe` | Passed | Exit 3 | Failed | Baseline `c14ef07`; at `4e9d7dc` it reaches missing `InitCommonControls` |
 | fifteensolver | `win32/fifteensolver.exe` | Passed | Exit 1, no stdout | Failed; reference completed, candidate did not | `autorecomp` with `--autorepair --buildrun`, baseline at `c14ef07` |
 | plink | `win64/plink.exe` | Not reached | Not reached | Not reached | Before `374664f`, translation stopped on memory-source `pshufd`; after `3c90f4d`, it stops on `aeskeygenassist` |
-| game2048 | `windows/x64/games/game2048.exe` | Passed | Exit 3 after 25 bytes | Failed | After `0a82d05`, reaches missing `puts`; previously stopped at `unpcklpd`, `_time64`, then a stack-induced divide error |
+| game2048 | `windows/x64/games/game2048.exe` | Passed | Exit 3 after 347 bytes | Failed | After `e4a533f`, displays a board and reaches missing `__stdio_common_vfscanf`; previously stopped at `unpcklpd`, `_time64`, a divide error, then `puts` |
 | arith-calc | `windows/x64/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `bb67ed0c581a1a00cfce9fd324c4003a970d4869829bb472e5f91b4ee476be3c` |
 | arith-calc | `windows/x86/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6` |
 
@@ -47,6 +47,7 @@ and must not be counted as running on the basis of their presence.
 | Lift packed floating-point unpack forms | A PE fixture failed before the fix; afterward register and memory low/high single/double checks equal 1 on both guest widths, and 1,862 bytes matched the reference. `game2048` progressed to `_time64`. | `ad0a845` |
 | Implement CRT `_time64` | `runtime_time` checks null and non-null pointers, 64-bit stores and guest returns on both widths. `game2048` progressed to a divide error. | `bc6e538` |
 | Restore the x64 stack after import tail calls | The `tail_import` PE fixture reports `tail_stack_ok=1` and matches 39 reference bytes; `game2048` no longer hits the divide error and reaches missing `puts`. | `0a82d05` |
+| Implement CRT `puts` and `putchar` | `runtime_time` checks output and returns on both guest widths. `game2048` now displays a 347-byte initial board and reaches the unimplemented `__stdio_common_vfscanf`; it is not yet verified. | `e4a533f` |
 
 The observed input SHA-256 values are `7773fa08db2ab5a620a4ef4391a5f0fbd1af73474589128c6d0ef46f1c0b2d6e`
 for `win32/blackbox.exe` and `47b443772e36be8a8cf8c45fe80951a466264f370fa28a4851ea57b5c1f17d95`

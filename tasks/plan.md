@@ -15,10 +15,10 @@ remain outside the general runtime.
 
 ## Feature-branch audit
 
-`origin/feature/x86-x64-arm64-mvp` currently contributes commit `26ab924`, a
-documentation-only import-report measurement. It does not contain the runtime
-services below. The current audit branch already includes the feature branch's
-architecture and verification merges through `76a39ec`.
+The audit branch includes feature-branch commit `26ab924`, a documentation-only
+import-report measurement, merged at `59a2564`. The feature branch does not yet
+provide the complete runtime services below. Fetch and inspect it again before
+each implementation slice, since another contributor is changing it.
 
 Existing useful planning evidence:
 
@@ -47,6 +47,65 @@ Existing useful planning evidence:
    backend without changing lifted guest code.
 6. Treat an app as verified only when it builds, runs, completes, and matches
    the reference or has an explicitly documented reference limitation.
+
+## Automatic pipeline and contracts
+
+The first implementation target is Windows PE32/x86 and PE32+/x64 on macOS
+ARM64. Automatic detection must recognize other formats and architectures, then
+report an unsupported target accurately; detection does not imply a working
+backend. Existing `core/detection/`, `core/binary/pe.hpp` and
+`core/pipeline.cpp` supply parts of this input analysis.
+
+1. **Inspect:** produce a versioned input description containing SHA-256,
+   container, machine, pointer width, PE subsystem, image base, imports by
+   DLL/name/ordinal, and known managed/packed indicators. Retain evidence and
+   uncertainty for dynamic imports and runtime-loaded libraries.
+2. **Resolve capabilities:** normalize DLL names and API-set aliases; map each
+   import to an ABI and a capability provider. A provider declares supported
+   guest widths, host platform, dependencies, implementation source/license,
+   and status (`implemented`, `partial`, `unsupported`). Resolve dependencies
+   deterministically and emit unresolved imports, including ordinals. Do not
+   mark a partial or unconditional placeholder as a full implementation.
+3. **Generate:** `core/codegen/project_generator.cpp` writes a versioned
+   manifest with the detected input, selected providers, unresolved requirements,
+   paths, and provenance. Copy/link only required runtime modules and their
+   transitive dependencies; keep the existing standalone output usable.
+4. **Build:** `core/pipeline.cpp` and `apps/cli/main.cpp` invoke the selected
+   host compiler/linker with reproducible inputs. Reuse the host/runtime ABI
+   and differential harness instead of creating a second execution path.
+5. **Package:** add explicit bundle output, with `Contents/Info.plist`,
+   `Contents/MacOS/<name>`, and `Contents/Resources/` as needed. Define a
+   separate generated-project/build directory so a `.app` path is never
+   mistaken for the existing project directory. Asset inclusion is explicit:
+   do not assume adjacent files are safe or sufficient to copy.
+6. **Run and verify:** run the generated executable with the selected working
+   directory and capture stdout, stderr, exit status, and first unresolved
+   capability. Reference execution shares shims, so matching output alone cannot
+   independently prove Windows API correctness; use independent Windows/Wine
+   oracle checks or explicit expectations for API semantics and UI behavior.
+
+The command shape proposed for implementation is
+`recomp-studio autorecomp input.exe --output <project-dir> --app <output.app> --buildrun`.
+This is a proposed interface, not an existing option. GUI verification must
+handle long-running event loops with a controlled exit; nonzero and incomplete
+results remain failures. Runtime-selected `GetProcAddress`/`LoadLibrary`, COM,
+plugins, and data files can reveal requirements that static imports do not.
+
+## First reviewable implementation slices
+
+| Slice | Existing integration points | Completion evidence |
+| --- | --- | --- |
+| Detection inventory | `core/binary/pe.hpp`, `core/detection/`, CLI | PE32/PE32+ console and GUI fixtures; malformed inputs fail explicitly. |
+| Capability registry | `runtime/win32_abi.hpp`, `runtime/recomp_runtime.cpp`, project generator | Resolver unit tests for aliases, ordinals, dependencies, width and missing providers; no unsupported API counted as implemented. |
+| File-backed app | Runtime file/handle services, generated runtime copy, verification | Guest-width fixtures exercise actual open/read/close, errors and guest memory bounds; real input advances with retained trace. |
+| Native window | Host platform backend, user32 shims, guest callback dispatch | Fixture creates a window, receives an event and exits through its own window procedure. |
+| Bundle | CLI, project build, macOS packaging | `open`/direct launch of generated `.app` on macOS, validated plist and resource paths; standalone mode still works. |
+
+The earlier `RegisterClassA`, `LoadIconA`, `LoadCursorA` and
+`InitCommonControls` diagnostic adapters were reverted in `7618a7f`: they did
+not implement the class/resource behavior needed for a working GUI. Historical
+`cube-run-6` logs show a diagnostic path only; the publishable branch fails
+explicitly at `InitCommonControls` until a real provider is implemented.
 
 ## Ordered task list
 

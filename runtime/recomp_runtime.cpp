@@ -123,6 +123,15 @@ void invoke_import_thunk(GuestContext* context, long index, std::uint64_t return
         context->registers[4] +
         win32_import_stack_cleanup(import_thunk_libraries[static_cast<std::size_t>(index)].c_str(),
                                    import_thunk_symbols[static_cast<std::size_t>(index)].c_str()));
+  } else if (push_return) {
+    // On x86-64 the arguments are in registers, so the return address is the only
+    // thing a `call` moves and the only thing the shim's `ret` removes. Popping it
+    // leaves the stack pointer exactly where it was, but the push above has now
+    // written the return address to memory the way hardware does -- which is what
+    // the differential reference sees, and what a program that reads its own
+    // stack expects. Skipping the write made the two sides disagree about a slot
+    // that later falls above the stack pointer and becomes live.
+    (void)pop_guest_stack(context);
   }
 }
 
@@ -2171,10 +2180,10 @@ void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uin
   }
   const auto thunk = lookup_import_thunk(target);
   if (thunk >= 0) {
-    // Only 32-bit x86 needs the return address pushed: its cleanup pass then
-    // removes the return address and the stdcall arguments. On x86-64 the shim
-    // returns directly and the guest stack must be left untouched.
-    invoke_import_thunk(context, thunk, return_address, guest_pointer_width < 8);
+    // A `call` pushes a return address on both widths. On 32-bit the cleanup pass
+    // then removes it along with the stdcall arguments; on 64-bit the return
+    // address alone is popped. Either way the push is what hardware does.
+    invoke_import_thunk(context, thunk, return_address, true);
     return;
   }
   // A bare target address is not actionable: the caller computed it, so the
@@ -2295,6 +2304,21 @@ std::uint64_t digest_bytes(std::uint64_t seed, std::uint64_t address, std::uint6
     hash *= 1099511628211ull;
   }
   return hash;
+}
+
+bool guest_store_logging = false;
+static std::FILE* guest_store_log = nullptr;
+
+void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width) {
+  if (guest_store_log == nullptr) return;
+  std::fprintf(guest_store_log, "%llx %llx %llx %d\n", static_cast<unsigned long long>(instruction_address),
+               static_cast<unsigned long long>(address), static_cast<unsigned long long>(value), width);
+}
+
+void open_guest_store_log(const char* path) {
+  if (path == nullptr) return;
+  guest_store_log = std::fopen(path, "w");
+  guest_store_logging = guest_store_log != nullptr;
 }
 
 std::uint64_t guest_memory_digest(const GuestContext* context) {
@@ -2463,6 +2487,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   initialize_guest_state(image->image_base, image->heap_base, image->stack_top);
   // The differential comparison asks for guest-state checkpoints at a fixed
   // interval; the reference uses the same one, so the two streams line up.
+  open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))
     guest_checkpoint_interval = std::strtoull(interval, nullptr, 0);
   if (const char* watch = std::getenv("RECOMP_WATCH"))

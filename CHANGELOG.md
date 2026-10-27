@@ -383,6 +383,22 @@ All notable changes to Recomp Studio are documented here. This project follows
   streams are **byte-for-byte identical** over 177,195 instructions — so the
   remaining difference is a store, not control flow.
 
+- **A store the candidate never made, on x86-64 indirect calls through a
+  register.** A store log on both sides (`RECOMP_STORE_LOG`,
+  `RECOMP_REF_STORE_LOG`, writing `instruction address value width` per line)
+  attributed the guest-memory divergence to one store rather than to one byte:
+  for `call rdi` the reference logged the return address the emulated `call`
+  pushed, and the candidate logged nothing. On x86-64 the thunk path passed
+  `push_return = false` — deliberately, so the stack would be untouched — which
+  left the candidate self-consistent but not faithful: a real `call` writes the
+  return address, and skipping the write made the two sides disagree about a slot
+  that later falls above the stack pointer and becomes live. The path now pushes
+  and pops it, leaving the stack pointer exactly where it was while writing the
+  memory hardware writes.
+
+  Effect: `arith.exe` reports `memory: True`, and **19 of 22 fixtures now agree on
+  guest memory**, up from none.
+
 ### Fixed
 
 - The guest-memory digest compared **dead stack**. It covered

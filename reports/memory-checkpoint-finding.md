@@ -80,9 +80,90 @@ in **what one side stored to one stack slot**, under identical control flow.
 That is a much smaller question than the one this investigation started with, and
 it is where the next attempt should begin.
 
+## Established since: the store logs name the store
+
+Every guest store is now logged on both sides — `RECOMP_STORE_LOG` on the
+candidate, `RECOMP_REF_STORE_LOG` on the reference, both writing
+`instruction address value width` per line — so a divergence is attributed to the
+store that caused it rather than to the byte that ended up wrong.
+
+On `arith.exe`: 24,851 stores from the reference, 24,780 from the candidate. The
+first real difference is a store the reference makes and the candidate does not:
+
+```
+reference: 140001758 167ffff08 14000175a 8
+candidate: (no store at instruction 140001758)
+```
+
+`0x140001758` disassembles to `call rdi` — an **indirect call through a
+register** — and `0x14000175a` is the address of the next instruction, so the
+reference is logging the return address the emulated `call` pushed.
+
+The candidate does not write it, and the reason is in the runtime:
+
+```cpp
+const auto thunk = lookup_import_thunk(target);
+if (thunk >= 0) {
+  // Only 32-bit x86 needs the return address pushed: its cleanup pass then
+  // removes the return address and the stdcall arguments. On x86-64 the shim
+  // returns directly and the guest stack must be left untouched.
+  invoke_import_thunk(context, thunk, return_address, guest_pointer_width < 8);
+```
+
+On x86-64 `push_return` is false, so no push happens. The reference's emulated
+`call` pushes and `emulate_shim` pops, leaving the bytes behind; the candidate
+neither pushes nor pops. **Both end at the same stack pointer**, which is why the
+registers agree at every checkpoint and why this shows up only as one written slot.
+
+The first entry in the candidate's log has no counterpart in the reference —
+`0 167fffff8 0 8`, the entry sentinel — because the reference writes that one with
+`uc_mem_write` rather than by executing an instruction. That is a harness artefact
+and is not the divergence.
+
+## Reading of this finding
+
+The candidate is self-consistent: same stack pointer, same registers, same flags,
+same writable data, same instruction stream, same output. What differs is a byte
+the **reference** wrote while emulating a `call` and then popped. On that reading
+this is a harness asymmetry rather than a translation bug — the two sides disagree
+about a slot neither can observe after the pop.
+
+It cannot be called resolved on that reasoning alone, because the slot later falls
+*above* the stack pointer at checkpoint 175 and is therefore live by then. The way
+to settle it is to make the candidate faithful to hardware rather than merely
+self-consistent: a real `call` writes the return address to memory, and having the
+x86-64 thunk path do the same — pushing and popping it — would make the two sides
+agree by construction instead of by argument.
+
+## Resolved for 19 of 22 fixtures
+
+The x86-64 thunk path now writes the return address, and the divergence on
+`arith.exe` is gone: `memory: True`, `status: pass`.
+
+Measured across every fixture with checkpoints:
+
+```
+memory agrees: 19   disagrees: 3
+  pe32_simd_convert.exe: checkpoint 12 at 0x401048
+  simd_convert.exe:      checkpoint 7  at 0x140001039
+  x87.exe:               checkpoint 3  at 0x1400010a8
+```
+
+The three that still disagree are all **floating-point** fixtures. That is a
+separate divergence from the one this report was opened for, and it is consistent
+with the documented x87 limit — the guest's x87 registers are held as doubles, so a
+value that needs more than 53 mantissa bits does not survive the round trip through
+80-bit extended, and `fstp tbyte ptr` would therefore store a different value on
+each side. **That is a hypothesis, not a finding**: the disassembly at those
+addresses did not decode cleanly enough to confirm an x87 store, and it is recorded
+here as the next thing to check rather than as a conclusion.
+
+`--checkpoints memory` therefore stays declared **planned**, but the reason is now
+specific and small: three floating-point fixtures, not the whole corpus.
+
 ## Not established
 
-Which side is wrong, and the trace does not settle it. Either
+Whether the x87 precision limit explains the three remaining fixtures. Either
 
 - the candidate writes `1` into a slot where the reference's frame still holds the
   return address of the `call rbx` at `0x140001076`, which would mean the

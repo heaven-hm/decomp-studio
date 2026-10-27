@@ -54,6 +54,8 @@ struct ReferenceState {
   std::string failure_reason;
   // Guest state at recorded checkpoints, for comparison against the candidate's.
   std::uint64_t guest_instruction_count{};
+  std::uint64_t current_instruction{};
+  std::FILE* store_log{};
   std::vector<GuestCheckpoint> checkpoints;
 };
 
@@ -204,9 +206,26 @@ void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
   write_register(engine, is_64_bit ? UC_X86_REG_RIP : UC_X86_REG_EIP, return_address);
 }
 
+// Every store the emulator performs, logged in the same format the candidate
+// writes, so the two logs can be diffed directly. Comparing the logs attributes a
+// memory divergence to the store that caused it rather than to the byte that
+// ended up wrong.
+void memory_write_hook(uc_engine* engine, uc_mem_type type, std::uint64_t address, int size, std::int64_t value,
+                       void* user_data) {
+  (void)engine;
+  (void)type;
+  auto& state = *static_cast<ReferenceState*>(user_data);
+  if (state.store_log == nullptr) return;
+  std::fprintf(state.store_log, "%llx %llx %llx %d\n",
+               static_cast<unsigned long long>(state.current_instruction),
+               static_cast<unsigned long long>(address),
+               static_cast<unsigned long long>(static_cast<std::uint64_t>(value)), size);
+}
+
 void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, void* user_data) {
   (void)size;
   auto& state = *static_cast<ReferenceState*>(user_data);
+  state.current_instruction = address;
   // An import thunk is a host bridge, not a guest instruction, and the candidate
   // never executes one. Counting it here made the reported instruction count
   // describe a stream the candidate does not have -- it was inflated by exactly
@@ -385,6 +404,11 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   }
 
   write_register(engine, UC_X86_REG_MXCSR, default_mxcsr);
+  if (const char* store_log_path = std::getenv("RECOMP_REF_STORE_LOG"))
+    state.store_log = std::fopen(store_log_path, "w");
+  uc_hook write_hook = 0;
+  if (state.store_log != nullptr)
+    uc_hook_add(engine, &write_hook, UC_HOOK_MEM_WRITE, reinterpret_cast<void*>(memory_write_hook), &state, 1, 0);
   uc_hook hook = 0;
   uc_hook_add(engine, &hook, UC_HOOK_CODE, reinterpret_cast<void*>(code_hook), &state, 1, 0);
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);
@@ -393,6 +417,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.note = state.note;
   run.checkpoints = std::move(state.checkpoints);
   run.trace = std::move(trace);
+  if (state.store_log != nullptr) std::fclose(state.store_log);
   uc_close(engine);
   guest_output_capture = nullptr;
   guest_exit_handler = nullptr;

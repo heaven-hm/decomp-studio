@@ -168,6 +168,8 @@ extern std::vector<GuestCheckpoint> guest_checkpoints;
 void capture_guest_checkpoint(GuestContext* context, std::uint64_t address);
 // Writes the captured checkpoints when RECOMP_CHECKPOINT names a file.
 void write_guest_checkpoints_if_requested();
+// Opens the store log named by the environment, when one is asked for.
+void open_guest_store_log(const char* path);
 
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
   context->instruction_pointer = address;
@@ -197,8 +199,17 @@ inline std::uint64_t load_guest_memory(GuestContext* context, std::uint64_t addr
   return value;
 }
 
+// Every store the guest performs, in order, when a log is installed. Comparing
+// the two logs is how a memory divergence is attributed: identical instruction
+// streams and identical checkpoints leave only "what was stored" as the
+// difference, and a log says which store it was rather than which byte ended up
+// wrong.
+extern bool guest_store_logging;
+void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width);
+
 inline void store_guest_memory(GuestContext* context, std::uint64_t address, std::uint64_t value, int width) {
   note_watched_write(context, address, width);
+  if (guest_store_logging) record_guest_store(context != nullptr ? context->instruction_pointer : 0, address, value, width);
   if (address + static_cast<std::uint64_t>(width) > guest_memory_size) {
     report_guest_memory_fault(context, address, width, 1);
     return;

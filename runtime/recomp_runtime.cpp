@@ -2315,6 +2315,20 @@ void record_guest_store(std::uint64_t instruction_address, std::uint64_t address
                static_cast<unsigned long long>(address), static_cast<unsigned long long>(value), width);
 }
 
+void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t address, int width) {
+  if (guest_store_log == nullptr) return;
+  // The value is a whole register, so the bytes are summarised rather than
+  // printed; what the comparison needs is that a store of this width happened at
+  // this address from this instruction.
+  std::uint64_t digest = 14695981039346656037ull;
+  for (int offset = 0; offset < width && address + offset < guest_memory_size; ++offset) {
+    digest ^= guest_memory[address + offset];
+    digest *= 1099511628211ull;
+  }
+  std::fprintf(guest_store_log, "%llx %llx v%llx %d\n", static_cast<unsigned long long>(instruction_address),
+               static_cast<unsigned long long>(address), static_cast<unsigned long long>(digest), width);
+}
+
 void open_guest_store_log(const char* path) {
   if (path == nullptr) return;
   guest_store_log = std::fopen(path, "w");

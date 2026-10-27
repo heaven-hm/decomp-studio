@@ -206,6 +206,10 @@ inline std::uint64_t load_guest_memory(GuestContext* context, std::uint64_t addr
 // wrong.
 extern bool guest_store_logging;
 void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width);
+// A vector store writes a whole register; the log records it as one entry per
+// register rather than as the bytes it happens to be made of, so that a 16-byte
+// `movaps` is one line on both sides instead of two on one and one on the other.
+void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t address, int width);
 
 inline void store_guest_memory(GuestContext* context, std::uint64_t address, std::uint64_t value, int width) {
   note_watched_write(context, address, width);
@@ -522,6 +526,7 @@ inline void load_guest_vector_256(GuestContext* context, std::uint64_t address, 
 
 inline void store_guest_vector_256(GuestContext* context, std::uint64_t address, int vector_index) {
   note_watched_write(context, address, 32);
+  if (guest_store_logging) record_guest_vector_store(context != nullptr ? context->instruction_pointer : 0, address, 32);
   if (address + 32 > guest_memory_size) {
     report_guest_memory_fault(context, address, 32, 1);
     return;
@@ -669,6 +674,12 @@ inline std::uint64_t bit_scan_forward(GuestContext* context, std::uint64_t value
 }
 inline void store_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {
   note_watched_write(context, address, byte_count);
+  // A vector store writes memory directly rather than through
+  // store_guest_memory, so without this the store log was missing every SSE
+  // store -- which made the log comparison attribute a divergence to the wrong
+  // place, and made a 16-byte `movaps` look like a store the candidate never
+  // performed.
+  if (guest_store_logging) record_guest_vector_store(context != nullptr ? context->instruction_pointer : 0, address, byte_count);
   if (address + static_cast<std::uint64_t>(byte_count) > guest_memory_size) {
     report_guest_memory_fault(context, address, byte_count, 1);
     return;

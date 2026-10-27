@@ -211,6 +211,14 @@ void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
 // writes, so the two logs can be diffed directly. Comparing the logs attributes a
 // memory divergence to the store that caused it rather than to the byte that
 // ended up wrong.
+// The emulator reports a 16-byte store as two 8-byte writes, so the reference's
+// log has finer granularity than the candidate's for vector stores. Merging
+// adjacent writes from the same instruction was tried and withdrawn: it produced
+// widths of 3, 5, 6, 7 and 19, which no x86 instruction can store, because a
+// single instruction that makes two genuinely separate stores is indistinguishable
+// from one store the emulator split. Comparing the logs per *instruction* -- the
+// ranges each instruction wrote -- is the normalisation that avoids the question,
+// and is not yet implemented.
 void memory_write_hook(uc_engine* engine, uc_mem_type type, std::uint64_t address, int size, std::int64_t value,
                        void* user_data) {
   (void)engine;

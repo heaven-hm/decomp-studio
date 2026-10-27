@@ -187,6 +187,48 @@ unaffected.
 
 With that fixed, the streams for `x87.exe` are identical: 9948 addresses each.
 
+## Established since: the x87 hypothesis is refuted
+
+The store log records the width of every store, so the x87 precision hypothesis
+could be tested directly rather than argued about. On `x87.exe`, over 2,204
+reference stores, the widths are:
+
+```
+reference widths: {1: 544, 2: 13, 4: 337, 8: 1310}
+```
+
+**There are no 10-byte stores at all.** The hypothesis was that a `tbyte` store
+would round-trip a double through 80-bit extended and differ on the two sides; the
+program never stores a `tbyte`, so that cannot be the cause. The hypothesis is
+refuted, not confirmed.
+
+## Established since: the logs disagree about granularity, not about stores
+
+The first difference is a store the candidate logs and the reference splits:
+
+```
+6: ref  instr=14000141f addr=167ffff80 w=8
+   cand instr=14000141f addr=167ffff80 w=16
+7: ref  instr=14000141f addr=167ffff88 w=8
+   cand instr=140001427 addr=167ffff90 w=16
+```
+
+`0x14000141f` is `movaps xmmword ptr [rsp+0xb0], xmm6`. The candidate records one
+16-byte store; Unicorn reports it as two 8-byte writes. So the two logs describe the
+same writes at different granularity, and the count difference (2,204 against 2,531)
+is that, not a behavioural difference.
+
+The candidate's vector stores were not logged at all before this round — they write
+memory directly rather than through `store_guest_memory` — so the log was missing
+every SSE store. That is fixed.
+
+Merging adjacent same-instruction writes in the reference was tried and **withdrawn**:
+it produced widths of 3, 5, 6, 7 and 19, which no x86 instruction can store, because
+a single instruction making two genuinely separate stores is indistinguishable from
+one store the emulator split. The normalisation that avoids the question is to
+compare the logs **per instruction** — the set of ranges each instruction wrote —
+and that is not yet implemented.
+
 ## Not established
 
 The three floating-point fixtures still disagree on memory at the same checkpoints

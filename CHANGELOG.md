@@ -401,6 +401,22 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The store log was missing every SSE store. Vector stores write memory directly
+  rather than through `store_guest_memory`, so they never reached the log, and a
+  16-byte `movaps` looked like a store the candidate never performed. They are
+  recorded now, as one entry per register store.
+- The x87 precision hypothesis for the remaining three floating-point fixtures is
+  **refuted**, not confirmed. The store log records every store's width, and across
+  2,204 stores on `x87.exe` the widths are `{1, 2, 4, 8}` — **there are no 10-byte
+  stores at all**, so a `tbyte` round-trip through 80-bit extended cannot be the
+  cause. What the logs actually disagree about is **granularity**: the candidate
+  records a 16-byte vector store as one entry and Unicorn reports it as two 8-byte
+  writes. Merging adjacent same-instruction writes was tried and withdrawn — it
+  produced widths of 3, 5, 6, 7 and 19, which no x86 instruction can store, because
+  a single instruction making two separate stores is indistinguishable from one
+  store the emulator split. Comparing the logs per instruction is the normalisation
+  that avoids the question, and is the next step.
+
 - **The reference counted a `rep` instruction once per iteration.** A `rep`-prefixed
   instruction is one guest instruction that the emulator runs once per iteration,
   and Unicorn fires the code hook for each; the candidate lifts it as a single

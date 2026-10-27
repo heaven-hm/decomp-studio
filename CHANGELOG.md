@@ -93,6 +93,38 @@ All notable changes to Recomp Studio are documented here. This project follows
   Unicorn reference, including both shift forms, all three saturation widths and
   the pack/unpack lane layout.
 
+- Packed-image detection. A UPX-packed executable keeps its real code in a
+  section that has no bytes in the file, so recovering functions decodes
+  whatever the packer left behind: `imgview64.exe` was reported at 100%
+  instruction coverage and 30,299 "lifted" instructions, 19,836 of which were
+  the two-byte sequence `00 00` decoded as `add [eax], al` from zero padding.
+  `translate` and `coverage` now refuse a packed image and name the reason
+  instead of producing a confident, wrong answer.
+- `tests/apps/real_apps_test.py`: runs every genuine Windows application in the
+  corpus through the whole pipeline and prints PASS/FAIL per application, so the
+  real corpus is visible in the suite. It fails on a regression against
+  `tests/apps/baseline.json` — a rising unsupported-instruction count, a stage
+  that used to succeed failing, or a verification that used to pass no longer
+  passing — and reports improvements rather than failing them. It skips with a
+  clear message when `RECOMP_APPS_DIR` is unset, because the corpus is not
+  redistributable. Current state: 17 applications, 3 translate, 0 verify.
+- `cwd`, `tzcnt`, `fcomi`/`fcompi`/`fucomi`/`fucompi`, `fcmovcc` and `fxam`.
+  Together these took `igi1ed.exe` from 1374 unsupported instructions in 11
+  classes to 0, so both Project I.G.I. executables now lift completely.
+
+### Fixed
+
+- Five helpers the lifter emits for a memory operand did not exist:
+  `vector_add_dwords_memory`, `vector_subtract_dwords_memory`,
+  `vector_compare_equal_dwords_memory`, `vector_multiply_add_words_memory` and
+  `vector_sum_absolute_differences_memory`. `paddd xmm1, [mem]` and four others
+  produced generated C++ that would not compile, while `coverage` reported them
+  as lifted — 43 instances in otherwise-clean functions across two corpus
+  binaries. Found by an independent audit that compiled a probe referencing
+  exactly the emitted symbols; the same probe now passes. The three dword
+  helpers became macro-generated pairs and the two special forms gained explicit
+  memory twins, so the register and memory forms cannot drift again.
+
 ### Fixed
 
 - Variable-count shifts used the wrong count. The SDM takes ONE count — the low

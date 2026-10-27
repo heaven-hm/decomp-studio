@@ -134,6 +134,12 @@ int command_analyze(const std::filesystem::path& input, bool json) {
 
 int command_coverage(const std::filesystem::path& input, bool json) {
   const auto executable = recomp::binary::PortableExecutable::parse(input);
+  // A coverage figure for a packed image is worse than no figure: the "code" is
+  // whatever the packer left behind, so a high percentage is meaningless.
+  if (executable.is_packed())
+    throw std::runtime_error("input appears to be packed (" + executable.packing_reason +
+                             "); instruction coverage would describe padding, not the program. "
+                             "Unpack it first.");
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   recomp::semantics::X86_64Lifter lifter(discovery);

@@ -40,6 +40,16 @@ static u64 fold(const u8* bytes) {
                      : "xmm0");                                                          \
   } while (0)
 
+/* result = result OP [memory] */
+#define MEMOP(op)                                                                        \
+  do {                                                                                   \
+    __asm__ volatile("movdqu %1, %%xmm0\n\t" op " %2, %%xmm0\n\t"                    \
+                     "movdqu %%xmm0, %0"                                                 \
+                     : "=m"(*(char(*)[LANES])result)                                     \
+                     : "m"(*(char(*)[LANES])left), "m"(*(char(*)[LANES])right)           \
+                     : "xmm0");                                                          \
+  } while (0)
+
 int app_main(void) {
   u8 left[LANES];
   u8 right[LANES];
@@ -160,6 +170,22 @@ int app_main(void) {
                    : "m"(*(char(*)[LANES])right)
                    : "xmm0");
   out("pmovmskb="); outi((i64)mask); crlf();
+
+  /* Memory-source forms. Five helpers here (paddd, psubd, pcmpeqd, pmaddwd,
+     psadbw) once had no _memory twin, so a memory operand produced generated
+     code that did not compile while `coverage` still reported it as lifted.
+     These cases exercise exactly those five through a memory operand. */
+  for (int index = 0; index < LANES; index++) {
+    left[index] = (u8)(index * 11 + 5);
+    right[index] = (u8)(240 - index * 3);
+    result[index] = 0;
+  }
+  MEMOP("paddd"); out("mem_paddd="); outi((i64)fold(result)); crlf();
+  MEMOP("psubd"); out("mem_psubd="); outi((i64)fold(result)); crlf();
+  MEMOP("pcmpeqd"); out("mem_pcmpeqd="); outi((i64)fold(result)); crlf();
+  MEMOP("pmaddwd"); out("mem_pmaddwd="); outi((i64)fold(result)); crlf();
+  MEMOP("psadbw"); out("mem_psadbw="); outi((i64)fold(result)); crlf();
+  MEMOP("paddw"); out("mem_paddw="); outi((i64)fold(result)); crlf();
 
   out("packed:done"); crlf();
   return 0;

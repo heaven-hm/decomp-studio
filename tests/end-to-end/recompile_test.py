@@ -78,7 +78,11 @@ EXPECTED_OUTPUT = {
                "psraw3=", "psrad5=", "psrldq4=", "pslldq4=",
                "punpcklbw=", "punpckhbw=", "punpcklwd=", "punpckhwd=",
                "packsswb=", "packuswb=", "packssdw=",
-               "pshufb=", "pshuflw=", "pshufhw=", "pmovmskb=", "packed:done"],
+               "pshufb=", "pshuflw=", "pshufhw=", "pmovmskb=",
+               # Memory-source forms for the five helpers that once had no
+               # _memory twin and so produced code that would not compile.
+               "mem_paddd=", "mem_psubd=", "mem_pcmpeqd=", "mem_pmaddwd=", "mem_psadbw=",
+               "mem_paddw=", "packed:done"],
     "vecmove": ["vecmove:start", "movsd_lo=7", "movsd_hi=11", "movss_lo=5",
                 "movss_lane3=33", "load_lo=42", "load_hi=0", "vecmove:done"],
     "x87": ["x87:start", "add ", "fistp ", "sqrt ", "cmp_eq ", "sin ", "cw_trunc ",

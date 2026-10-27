@@ -1,0 +1,124 @@
+{
+  "note": "Recorded state of the real-application corpus. The test fails when an application gets worse: a higher unsupported-instruction count, a stage that used to succeed failing, or a verification that used to pass no longer passing. Improvements are reported, not failed. Regenerate with RECOMP_WRITE_BASELINE=1.",
+  "applications": {
+    "bat.exe": {
+      "unsupported_instructions": 262,
+      "missing_imports": 251,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "clipjar.exe": {
+      "unsupported_instructions": 449,
+      "missing_imports": 344,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "fd.exe": {
+      "unsupported_instructions": 310,
+      "missing_imports": 100,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "imgview64.exe": {
+      "unsupported_instructions": null,
+      "missing_imports": null,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "legacy-notepad-x64.exe": {
+      "unsupported_instructions": 26,
+      "missing_imports": 173,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "luhn.exe": {
+      "unsupported_instructions": 30,
+      "missing_imports": 1,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "openlierox.exe": {
+      "unsupported_instructions": 2572,
+      "missing_imports": 618,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "Pixeltetris.exe": {
+      "unsupported_instructions": 125,
+      "missing_imports": 84,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "plink.exe": {
+      "unsupported_instructions": 278,
+      "missing_imports": 109,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "powder-v100.1.400-x86_64-windows-mingw.exe": {
+      "unsupported_instructions": 1829,
+      "missing_imports": 544,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "rg.exe": {
+      "unsupported_instructions": 460,
+      "missing_imports": 84,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "snake-windows-x86_64.exe": {
+      "unsupported_instructions": 4,
+      "missing_imports": 140,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "supertux2.exe": {
+      "unsupported_instructions": 571,
+      "missing_imports": 710,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "Tetris.exe": {
+      "unsupported_instructions": 5,
+      "missing_imports": 83,
+      "translated": false,
+      "built": false,
+      "verify": null
+    },
+    "TicTacToe.exe": {
+      "unsupported_instructions": 0,
+      "missing_imports": 1,
+      "translated": true,
+      "built": false,
+      "verify": null
+    },
+    "igi.exe": {
+      "unsupported_instructions": 0,
+      "missing_imports": 97,
+      "translated": true,
+      "built": false,
+      "verify": null
+    },
+    "igi1ed.exe": {
+      "unsupported_instructions": 0,
+      "missing_imports": 581,
+      "translated": true,
+      "built": false,
+      "verify": null
+    }
+  }
+}

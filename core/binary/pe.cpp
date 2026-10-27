@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "core/binary/pe.hpp"
 
 #include <cctype>
@@ -289,6 +290,38 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
             : executable.read_u32(callbacks_rva + index * 4).value_or(0);
         if (callback == 0) break;
         executable.tls_callback_rvas.push_back(static_cast<std::uint32_t>(callback - executable.image_base));
+      }
+    }
+  }
+
+  // Packed-image detection. The general rule is that a section which claims a
+  // large virtual size but has no bytes in the file cannot contain the code the
+  // loader would map there; known packer section names and the UPX signature are
+  // reported by name because that is more useful than a heuristic.
+  for (const auto& section : executable.sections) {
+    const auto name = section.name;
+    if (name.rfind("UPX", 0) == 0 || name == ".UPX0" || name == ".UPX1") {
+      executable.packing_reason = "UPX section '" + name + "'";
+      break;
+    }
+  }
+  if (executable.packing_reason.empty()) {
+    const std::string marker = "UPX!";
+    if (executable.file_bytes.size() > marker.size()) {
+      const auto begin = executable.file_bytes.end() - static_cast<std::ptrdiff_t>(marker.size() * 4);
+      if (std::search(begin, executable.file_bytes.end(), marker.begin(), marker.end()) !=
+          executable.file_bytes.end()) {
+        executable.packing_reason = "UPX signature in the image";
+      }
+    }
+  }
+  if (executable.packing_reason.empty()) {
+    for (const auto& section : executable.sections) {
+      if (section.is_executable() && section.raw_size == 0 && section.virtual_size >= 0x1000) {
+        executable.packing_reason = "executable section '" + section.name +
+                                    "' has no bytes in the file (virtual size 0x" +
+                                    std::to_string(section.virtual_size) + ")";
+        break;
       }
     }
   }

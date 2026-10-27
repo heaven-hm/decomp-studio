@@ -97,6 +97,13 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
 TranslateReport translate(const std::filesystem::path& input, const std::filesystem::path& output_directory,
                           const common::Configuration& configuration) {
   auto executable = binary::PortableExecutable::parse(input);
+  // Fail closed rather than recover functions from bytes that are not the
+  // program. UPX leaves whole sections as zero padding, which decodes happily
+  // as `add [eax], al` and yields a confident, wrong translation.
+  if (executable.is_packed())
+    throw std::runtime_error("input appears to be packed (" + executable.packing_reason +
+                             "); its machine code is not present in the file, so functions cannot be "
+                             "recovered. Unpack it first.");
   if (configuration.input_format != "auto" && configuration.input_format != "pe")
     throw std::runtime_error("unsupported input format: " + configuration.input_format);
   if (configuration.architecture != "auto" && configuration.architecture != executable.architecture_name())

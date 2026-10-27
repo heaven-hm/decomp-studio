@@ -104,6 +104,13 @@ add_test(NAME vex_encoding_values
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 
+# The corpus lives outside the repository and is not redistributable, so the
+# directory comes from RECOMP_APPS_DIR; the test prints SKIP when it is unset.
+add_test(NAME real_application_corpus
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/apps/real_apps_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/apps/baseline.json)
+
 set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)
 set_tests_properties(coverage_census PROPERTIES TIMEOUT 900)
@@ -111,3 +118,4 @@ set_tests_properties(import_compatibility PROPERTIES TIMEOUT 900)
 set_tests_properties(autorecomp_pipeline PROPERTIES TIMEOUT 1800)
 set_tests_properties(vex_encoding_values PROPERTIES TIMEOUT 900)
 set_tests_properties(guest_heap PROPERTIES TIMEOUT 900)
+set_tests_properties(real_application_corpus PROPERTIES TIMEOUT 5400)

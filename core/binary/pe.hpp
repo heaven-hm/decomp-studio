@@ -66,6 +66,13 @@ class PortableExecutable {
   std::vector<BaseRelocation> base_relocations;
   std::vector<std::uint32_t> tls_callback_rvas;
 
+  // Set when the image is packed, so the machine code is not the machine code in
+  // the file. Recovering functions from a packed image decodes whatever happens
+  // to be there — UPX leaves whole sections as zero padding, which decodes
+  // happily as `add [eax], al` — and produces a confident, wrong answer.
+  std::string packing_reason;
+  bool is_packed() const { return !packing_reason.empty(); }
+
   std::string format_name() const { return is_64_bit ? "PE32+" : "PE32"; }
   std::string architecture_name() const { return is_64_bit ? "x86_64" : "x86"; }
 

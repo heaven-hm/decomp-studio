@@ -850,6 +850,20 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          operand_read_expression(instruction, operands[0], width) + ", " + std::to_string(width) + ");");
     return;
   }
+  // CWD sign-extends AX into DX:AX, the 16-bit sibling of CDQ/CQO.
+  if (mnemonic == "cwd") {
+    emit("context->registers[2] = (context->registers[2] & ~0xffffull) | "
+         "((context->registers[0] & 0x8000ull) != 0 ? 0xffffull : 0ull);");
+    return;
+  }
+  // TZCNT: trailing zero count, defined for zero input.
+  if (mnemonic == "tzcnt" && operands.size() == 2) {
+    const auto width = operand_width(operands[0], 8);
+    emit(operand_write_statement(instruction, operands[0],
+         "count_trailing_zeros(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
+             std::to_string(width) + ")", width));
+    return;
+  }
   if (mnemonic == "cdq") {
     emit("context->registers[" + std::to_string(kRegisterRdx) + "] = static_cast<std::uint64_t>(static_cast<std::uint32_t>(static_cast<std::int32_t>(context->registers[" + std::to_string(kRegisterRax) + "]) >> 31));");
     return;
@@ -1277,6 +1291,40 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       emit("(void)x87_pop(context);");
     }
     return;
+  }
+  {
+    // FCOMI/FUCOMI write the EFLAGS rather than the x87 status word; the "p"
+    // suffix also pops.
+    // Capstone spells the popping form "fcompi"/"fucompi"; the Intel manuals
+    // write it "fcomip". Accept both.
+    static const std::map<std::string, int> flag_compares = {
+        {"fcomi", 0}, {"fcomip", 1}, {"fcompi", 1},
+        {"fucomi", 0}, {"fucomip", 1}, {"fucompi", 1}};
+    const auto flag_compare = flag_compares.find(mnemonic);
+    if (flag_compare != flag_compares.end()) {
+      const auto pop = std::to_string(flag_compare->second);
+      if (operands.size() == 1 && is_x87_register(operands[0])) {
+        emit("x87_compare_flags(context, x87_read(context, " +
+             std::to_string(x87_operand_index(operands[0].register_name)) + "), " + pop + ");");
+      } else {
+        emit("x87_compare_flags(context, x87_read(context, 1), " + pop + ");");
+      }
+      return;
+    }
+    // FCMOVcc: condition numbers match x87_conditional_move's switch.
+    static const std::map<std::string, int> conditional_moves = {
+        {"fcmovb", 0}, {"fcmove", 1}, {"fcmovbe", 2}, {"fcmovu", 3},
+        {"fcmovnb", 4}, {"fcmovne", 5}, {"fcmovnbe", 6}, {"fcmovnu", 7}};
+    const auto conditional_move = conditional_moves.find(mnemonic);
+    if (conditional_move != conditional_moves.end()) {
+      const auto source = operands.empty()
+                              ? 1
+                              : x87_operand_index(operands[0].register_name);
+      emit("x87_conditional_move(context, " + std::to_string(source) + ", " +
+           std::to_string(conditional_move->second) + ");");
+      return;
+    }
+    if (mnemonic == "fxam") { emit("x87_examine(context);"); return; }
   }
   {
     static const std::map<std::string, std::pair<int, int>> compare_ops = {

@@ -1044,3 +1044,35 @@ address. It is one thunk called five times, not one site walking a table.
 
 The five addresses are still odd — one is in `.rdata` and one is null — but the reading
 of why is now correct, and the earlier claim is retracted rather than left standing.
+
+
+## What the import-report fix changed on the real corpus
+
+The report is the tool's own account of whether a program can run, so the fix is worth
+measuring against the corpus rather than against one fixture:
+
+| application | missing imports before | after | change |
+|---|---:|---:|---:|
+| `Tetris.exe` | 51 | **0** | −51 |
+| `powder-v100.1.400` | 536 | 479 | −57 |
+| `bat.exe` | 243 | 205 | −38 |
+| `supertux2.exe` | 709 | 675 | −34 |
+| `openlierox.exe` | 577 | 551 | −26 |
+| `snake-windows-x86_64.exe` | 140 | 115 | −25 |
+| `clipjar.exe` | 335 | 313 | −22 |
+| `plink.exe` | 96 | 93 | −3 |
+| `fd.exe` | 87 | 85 | −2 |
+| `rg.exe` | 71 | 69 | −2 |
+| `Pixeltetris.exe` | 74 | 73 | −1 |
+| `legacy-notepad-x64.exe` | 162 | 161 | −1 |
+
+**`Tetris.exe` is the one to look at.** It was reported as having **51 unimplemented
+imports**, and it is the application this project has repeatedly observed running to
+completion — banner, player-name prompt, board, rule book, score line. A diagnostic that
+says a working program is missing 51 functions is not merely pessimistic; it is
+**contradicted by the project's own evidence**, and it was sitting in the baseline the
+whole time.
+
+That is the strongest argument for the fix, and it is also the argument for the general
+rule: when two parts of a system compute the same thing, the one that is wrong is
+usually the one nobody runs.

@@ -211,10 +211,7 @@ int command_coverage(const std::filesystem::path& input, bool json) {
 }
 
 bool is_shimmed_import(const std::string& library, const std::string& symbol) {
-  for (const auto& shim : recomp::kWin32ImportAbiTable) {
-    if (library == shim.library_name && symbol == shim.symbol_name) return true;
-  }
-  return false;
+  return recomp::win32_import_abi(library.c_str(), symbol.c_str()) != nullptr;
 }
 
 // Dependency and compatibility report. Instruction coverage says whether the

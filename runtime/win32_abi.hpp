@@ -15,7 +15,27 @@ struct Win32ImportAbi {
   const char* symbol_name;
   int argument_count;
   bool callee_cleans_stack;
+  // A C++ member function passes `this` in ECX and its arguments on the stack
+  // from [esp+4], so the first *stack* argument is argument 1. GCC emits this
+  // convention for every member function it calls through an import, which is
+  // what `mov ecx, eax` before the call means at the call site.
+  bool this_call = false;
 };
+
+// The convention of the import currently being dispatched. A shim asks for its
+// arguments by index and does not need to know which convention brought it here.
+inline bool& win32_import_this_call() {
+  static bool value = false;
+  return value;
+}
+
+// Where an argument sits relative to the stack pointer, counting the return
+// address at [esp]. In thiscall the argument index is offset by one because
+// `this` is in ECX rather than on the stack.
+inline std::uint64_t win32_import_argument_offset(int index, bool this_call) {
+  const auto slot = this_call ? index - 1 : index;
+  return 4 + static_cast<std::uint64_t>(slot < 0 ? 0 : slot) * 4;
+}
 
 inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "GetStdHandle", 1, true},
@@ -40,6 +60,46 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "VirtualFree", 3, true},
     {"kernel32.dll", "VirtualQuery", 3, true},
     {"kernel32.dll", "VirtualProtect", 4, true},
+    // libstdc++ is cdecl: the caller pops. The mangled names are the ABI, so
+    // they are reproduced exactly as the linker records them.
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", 3, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE5closeEv", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE7is_openEv", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEED1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", 3, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE5closeEv", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE7is_openEv", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEED1Ev", 1, false, true},
+    {"libstdc++-6.dll", "__gxx_personality_v0", 5, false},
+    {"libstdc++-6.dll", "__gxx_personality_sj0", 5, false},
+    {"libstdc++-6.dll", "__cxa_begin_catch", 1, false},
+    {"libstdc++-6.dll", "__cxa_end_catch", 0, false},
+    {"libstdc++-6.dll", "__cxa_rethrow", 0, false},
+    {"libgcc_s_dw2-1.dll", "_Unwind_Resume", 1, false},
+    {"libgcc_s_dw2-1.dll", "__register_frame_info", 2, false},
+    {"libgcc_s_dw2-1.dll", "__deregister_frame_info", 1, false},
+    {"libstdc++-6.dll", "_ZSt4cout", 0, false},
+    {"libstdc++-6.dll", "_ZSt3cin", 0, false},
+    {"libstdc++-6.dll", "_ZNSaIcEC1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSaIcED1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt8ios_base4InitC1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt8ios_base4InitD1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1EPKcRKS3_", 3, false, true},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1ERKS4_", 2, false, true},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEED1Ev", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEaSERKS4_", 2, false, true},
+    {"libstdc++-6.dll", "_Znwj", 1, false},
+    {"libstdc++-6.dll", "_Znaj", 1, false},
+    {"libstdc++-6.dll", "_ZdlPv", 1, false},
+    {"libstdc++-6.dll", "_ZdaPv", 1, false},
+    {"libstdc++-6.dll", "_ZSt17__throw_bad_allocv", 0, false},
+    {"libstdc++-6.dll", "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc", 2, false},
+    {"libstdc++-6.dll", "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE", 2, false},
+    {"libstdc++-6.dll", "_ZNSolsEi", 2, false, true},
+    {"libstdc++-6.dll", "_ZNSirsERi", 2, false, true},
+    {"libstdc++-6.dll", "_ZStrsIcSt11char_traitsIcESaIcEERSt13basic_istreamIT_T0_ES7_RNSt7__cxx1112basic_stringIS4_S5_T1_EE", 2, false},
+    {"libstdc++-6.dll", "_ZStrsIcSt11char_traitsIcEERSt13basic_istreamIT_T0_ES6_RS3_", 2, false},
     {"kernel32.dll", "Beep", 2, true},
     {"kernel32.dll", "SetConsoleCursorPosition", 2, true},
     {"kernel32.dll", "SetConsoleTextAttribute", 2, true},
@@ -60,6 +120,42 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "GetLocaleInfoA", 4, true},
     // msvcrt is cdecl: the caller pops, so callee_cleans_stack is false and the
     // emulated call removes only the return address.
+    {"msvcrt.dll", "_initterm", 2, false},
+    {"msvcrt.dll", "_initterm_e", 2, false},
+    {"msvcrt.dll", "__acrt_iob_func", 1, false},
+    {"msvcrt.dll", "__stdio_common_vfprintf", 5, false},
+    {"msvcrt.dll", "memcmp", 3, false},
+    {"msvcrt.dll", "fflush", 1, false},
+    {"msvcrt.dll", "setvbuf", 4, false},
+    {"msvcrt.dll", "_set_new_mode", 1, false},
+    {"msvcrt.dll", "_configthreadlocale", 1, false},
+    {"msvcrt.dll", "__setusermatherr", 1, false},
+    {"msvcrt.dll", "_set_invalid_parameter_handler", 1, false},
+    {"msvcrt.dll", "_configure_narrow_argv", 1, false},
+    {"msvcrt.dll", "_initialize_narrow_environment", 0, false},
+    {"msvcrt.dll", "_crt_atexit", 1, false},
+    {"msvcrt.dll", "_exit", 1, false},
+    {"msvcrt.dll", "__p___argc", 0, false},
+    {"msvcrt.dll", "__p___argv", 0, false},
+    {"msvcrt.dll", "__p__commode", 0, false},
+    {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Register", 1, false},
+    {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Unregister", 1, false},
+    {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Resume", 1, false},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE10_M_disposeEv", 1, false, true},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE15_M_replace_coldEPcjPKcjj", 6, false, true},
+    {"libstdc++-6.dll", "_ZSt16__ostream_insertIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_PKS3_i", 3, false},
+    {"libstdc++-6.dll", "_ZSt19__throw_logic_errorPKc", 1, false},
+    {"libstdc++-6.dll", "_ZSt20__throw_length_errorPKc", 1, false},
+    {"libstdc++-6.dll", "_ZdlPvj", 2, false},
+    {"msvcrt.dll", "system", 1, false},
+    {"msvcrt.dll", "time", 1, false},
+    {"msvcrt.dll", "signal", 2, false},
+    {"msvcrt.dll", "strcoll", 2, false},
+    {"msvcrt.dll", "_stricoll", 2, false},
+    {"msvcrt.dll", "_fullpath", 3, false},
+    {"msvcrt.dll", "wcstombs", 3, false},
+    {"msvcrt.dll", "vfprintf", 3, false},
+    {"msvcrt.dll", "__getmainargs", 5, false},
     {"msvcrt.dll", "strlen", 1, false},
     {"msvcrt.dll", "strcmp", 2, false},
     {"msvcrt.dll", "strncmp", 3, false},
@@ -164,6 +260,14 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "FreeLibrary", 1, true},
 };
 
+// The Universal CRT is shipped as API sets, one per area, but the symbols are the
+// standard C library functions under their usual names. A program built against
+// it therefore resolves to the same implementations as one built against msvcrt,
+// so an API-set name that is not in the table is retried as msvcrt.
+inline bool win32_is_universal_crt_library(const char* library_name) {
+  return library_name != nullptr && std::strncmp(library_name, "api-ms-win-crt", 14) == 0;
+}
+
 inline const Win32ImportAbi* win32_import_abi(const char* library_name, const char* symbol_name) {
   if (symbol_name == nullptr) return nullptr;
   for (const auto& entry : kWin32ImportAbiTable) {
@@ -171,6 +275,7 @@ inline const Win32ImportAbi* win32_import_abi(const char* library_name, const ch
     if (library_name != nullptr && std::strcmp(entry.library_name, library_name) != 0) continue;
     return &entry;
   }
+  if (win32_is_universal_crt_library(library_name)) return win32_import_abi("msvcrt.dll", symbol_name);
   return nullptr;
 }
 

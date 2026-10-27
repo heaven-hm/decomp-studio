@@ -6,6 +6,11 @@
 #include <cstring>
 #include <limits>
 
+// The import calling-convention table. import_argument consults it, so a shim
+// reads its arguments correctly whether it was reached as cdecl, stdcall or a
+// C++ member function.
+#include "win32_abi.hpp"
+
 namespace recomp {
 
 enum ConditionCode {
@@ -1617,7 +1622,11 @@ inline std::uint64_t import_argument(GuestContext* context, int index) {
     }
     return load_guest_memory(context, context->registers[4] + 0x28 + static_cast<std::uint64_t>(index - 4) * 8, 8);
   }
-  return load_guest_memory(context, context->registers[4] + 4 + static_cast<std::uint64_t>(index) * 4, 4);
+  // 32-bit x86: a C++ member function passes `this` in ECX, so argument 0 is
+  // ECX and the stack arguments begin at argument 1.
+  if (win32_import_this_call() && index == 0) return context->registers[1];
+  return load_guest_memory(
+      context, context->registers[4] + win32_import_argument_offset(index, win32_import_this_call()), 4);
 }
 
 inline void set_import_result(GuestContext* context, std::uint64_t value) {

@@ -156,7 +156,9 @@ def check_shim_tables_agree() -> None:
         check("shim-tables/present", False, f"cannot find {header} or {runtime}")
         return
 
-    declared = set(re.findall(r'\{"([^"]+)",\s*"([^"]+)",\s*\d+,\s*(?:true|false)\}',
+    # The ABI entry's last field is optional: a C++ member function adds the
+    # thiscall marker, so the pattern must accept either four or five fields.
+    declared = set(re.findall(r'\{"([^"]+)",\s*"([^"]+)",\s*\d+,\s*(?:true|false)(?:,\s*(?:true|false))?\}',
                               header.read_text()))
     # The implementation table's third field is a function name; the ABI table's
     # is a digit, which is what distinguishes the two shapes. Matching only

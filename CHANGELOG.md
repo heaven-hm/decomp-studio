@@ -228,6 +228,40 @@ All notable changes to Recomp Studio are documented here. This project follows
   import it needs is now present, and the remaining 44 are all C++ runtime
   (32 libstdc++, 9 msvcrt, 3 libgcc).
 
+- The C++ runtime, and with it the first real application that runs. A GCC-built
+  Windows program reaches libstdc++ through C++ member functions, so this covers
+  `std::string` in both its small-buffer and heap forms, `std::ifstream` and
+  `std::ofstream`, `operator<<`/`operator>>`, `operator new`/`delete`, the
+  allocator and `std::ios_base::Init`, and the Universal CRT's API-set names
+  (`api-ms-win-crt-*`), which carry the standard C library symbols and now
+  resolve to the same implementations as `msvcrt`.
+- `_initterm`, which runs the table of static initialisers the CRT is handed, so
+  a C++ program's static constructors actually run. Each entry is a guest
+  function and is called through the same dispatch table the guest uses.
+- The last msvcrt entry points: `system`, `time`, `signal`, `strcoll`,
+  `_stricoll`, `_fullpath`, `wcstombs`, `vfprintf` (including the UCRT's
+  `__stdio_common_vfprintf`), `__getmainargs` and `memcmp`.
+
+  Effect: `Tetris.exe` runs. It prints its banner, prompts for a player name,
+  renders the board and the rule book, and reports `'s Score: 0   Level: 1
+  High Score: 0` -- correct values rather than the addresses of its own string
+  literals.
+
+### Fixed
+
+- **C++ member functions were called with the wrong arguments.** A member
+  function passes `this` in ECX and its arguments on the stack from `[esp+4]`,
+  but every import was modelled as cdecl or stdcall with the first argument at
+  `[esp+4]`. So a member function read `this` where its first argument should
+  have been and the first argument where the second should have been:
+  `operator<<(int)` printed the address of the string literal written immediately
+  before it. Every C++ member function import was affected. The ABI table now
+  records the convention and `import_argument` reads `this` from ECX when it
+  applies.
+- The Universal CRT ships as API sets, one per area, so a program built against
+  it did not resolve to the C library implementations that already existed under
+  `msvcrt`.
+
 ### Fixed
 
 ### Fixed

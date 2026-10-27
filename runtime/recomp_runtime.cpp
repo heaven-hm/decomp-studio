@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
+#include <sstream>
+#include <fcntl.h>
 #include <system_error>
 #include <map>
 #include <filesystem>
@@ -690,6 +692,268 @@ void win32_lc_map_string_w(GuestContext* context) {
   set_import_result(context, static_cast<std::uint64_t>(count));
 }
 
+// ---- libstdc++: the C++ standard library ----------------------------------
+// A GCC-built Windows program links libstdc++, and its objects are manipulated
+// by the program's own inlined code as well as by these entry points, so their
+// layouts are part of the ABI and cannot be chosen freely. The sizes below were
+// read from the i686-w64-mingw32 headers and confirmed by compiling a probe with
+// that toolchain:
+//
+//   std::string    24 bytes: char* _M_dataplus (0), size_t length (4),
+//                            union { char local[16]; size_t capacity } (8)
+//   std::ifstream 260, std::ofstream 256, std::istream 144, std::ostream 140
+//
+// Only std::string needs its layout modelled, because the program reads and
+// writes its fields directly. The stream objects are opaque here: their state is
+// held host-side and keyed by the object's guest address, so the internal layout
+// of a stream never has to be reproduced.
+// Defined with the kernel32 directory shims; a Windows path has no meaning on the
+// host, so it is translated in one place and used by every file-facing shim.
+std::string guest_path_to_host(std::string path);
+
+constexpr std::uint64_t kCxxStringBytes = 24;
+constexpr std::uint64_t kCxxStringLocalCapacity = 15;
+constexpr std::uint64_t kCxxOstreamBytes = 140;
+constexpr std::uint64_t kCxxIstreamBytes = 144;
+
+std::uint64_t cxx_cout = 0;
+std::uint64_t cxx_cin = 0;
+
+// The stream state this runtime keeps for an object it was handed.
+struct GuestStreamState {
+  int descriptor{-1};
+  bool is_output{};
+};
+std::map<std::uint64_t, GuestStreamState> guest_streams;
+
+std::string cxx_string_value(GuestContext* context, std::uint64_t object) {
+  const auto length = load_guest_memory(context, object + 4, 4);
+  const auto data = load_guest_memory(context, object, 4);
+  std::string text;
+  text.reserve(static_cast<std::size_t>(length));
+  for (std::uint64_t index = 0; index < length; ++index)
+    text.push_back(static_cast<char>(load_guest_memory(context, data + index, 1)));
+  return text;
+}
+
+void cxx_string_assign(GuestContext* context, std::uint64_t object, const std::string& text) {
+  // A string at or below the local capacity lives inside the object; above it,
+  // the object owns a heap block whose capacity is stored over the local buffer.
+  if (text.size() <= kCxxStringLocalCapacity) {
+    store_guest_memory(context, object, object + 8, 4);  // _M_dataplus -> local buffer
+    for (std::size_t index = 0; index < text.size(); ++index)
+      store_guest_memory(context, object + 8 + index, static_cast<std::uint8_t>(text[index]), 1);
+    store_guest_memory(context, object + 8 + text.size(), 0, 1);
+    store_guest_memory(context, object + 4, text.size(), 4);
+    return;
+  }
+  const auto block = heap_allocate(text.size() + 1);
+  if (block == 0) { set_import_result(context, 0); return; }
+  for (std::size_t index = 0; index < text.size(); ++index)
+    store_guest_memory(context, block + index, static_cast<std::uint8_t>(text[index]), 1);
+  store_guest_memory(context, block + text.size(), 0, 1);
+  store_guest_memory(context, object, block, 4);
+  store_guest_memory(context, object + 4, text.size(), 4);
+  store_guest_memory(context, object + 8, text.size(), 4);  // _M_allocated_capacity
+}
+
+void cxx_string_release(GuestContext* context, std::uint64_t object) {
+  const auto data = load_guest_memory(context, object, 4);
+  if (data != 0 && data != object + 8) heap_release(context, data);
+  store_guest_memory(context, object, object + 8, 4);
+  store_guest_memory(context, object + 4, 0, 4);
+  store_guest_memory(context, object + 8, 0, 1);
+}
+
+void cxx_string_default_construct(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  store_guest_memory(context, object, object + 8, 4);
+  store_guest_memory(context, object + 4, 0, 4);
+  store_guest_memory(context, object + 8, 0, 1);
+  set_import_result(context, object);
+}
+void cxx_string_construct_from_c(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  cxx_string_assign(context, object, read_guest_string(import_argument(context, 1)));
+  set_import_result(context, object);
+}
+void cxx_string_copy_construct(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  cxx_string_assign(context, object, cxx_string_value(context, import_argument(context, 1)));
+  set_import_result(context, object);
+}
+void cxx_string_destruct(GuestContext* context) {
+  cxx_string_release(context, import_argument(context, 0));
+  set_import_result(context, 0);
+}
+void cxx_string_assign_from(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  if (object != source) {
+    const auto text = cxx_string_value(context, source);
+    cxx_string_release(context, object);
+    cxx_string_assign(context, object, text);
+  }
+  set_import_result(context, object);
+}
+
+// operator new / delete are the guest heap, so a pointer from one is usable by
+// the other and by malloc/free.
+void cxx_operator_new(GuestContext* context) {
+  set_import_result(context, heap_allocate(import_argument(context, 0)));
+}
+void cxx_operator_new_array(GuestContext* context) {
+  set_import_result(context, heap_allocate(import_argument(context, 0)));
+}
+void cxx_operator_delete(GuestContext* context) {
+  const auto pointer = import_argument(context, 0);
+  if (pointer != 0) heap_release(context, pointer);
+  set_import_result(context, 0);
+}
+void cxx_throw_bad_alloc(GuestContext* context) {
+  terminate_with_message("std::bad_alloc thrown by the guest (ip=0x%" PRIx64 ")", context->instruction_pointer);
+}
+
+void cxx_noop(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  set_import_result(context, object);
+}
+
+// Streams. `std::cout` and `std::cin` are real objects in guest memory; a file
+// stream is created by its constructor, which records the descriptor host-side
+// against the object address.
+std::uint64_t cxx_stream_descriptor(GuestContext* context, std::uint64_t object, bool for_output) {
+  const auto found = guest_streams.find(object);
+  if (found != guest_streams.end()) return static_cast<std::uint64_t>(found->second.descriptor);
+  return for_output ? STDOUT_FILENO : STDIN_FILENO;
+}
+
+void cxx_ostream_write(GuestContext* context, std::uint64_t object, const std::string& text, bool flush) {
+  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, object, true));
+  if (!text.empty()) (void)::write(descriptor, text.data(), text.size());
+  (void)flush;
+}
+
+void cxx_ostream_put_c_string(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto text = read_guest_string(import_argument(context, 1));
+  cxx_ostream_write(context, object, text, false);
+  set_import_result(context, object);
+}
+void cxx_ostream_put_string(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  cxx_ostream_write(context, object, cxx_string_value(context, import_argument(context, 1)), false);
+  set_import_result(context, object);
+}
+void cxx_ostream_put_int(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto value = static_cast<std::int32_t>(import_argument(context, 1) & 0xffffffffu);
+  cxx_ostream_write(context, object, std::to_string(value), false);
+  set_import_result(context, object);
+}
+
+// Extraction reads a whole line from the stream and parses it, which is what a
+// console program's `cin >> x` expects from a terminal.
+std::string cxx_read_token(GuestContext* context, std::uint64_t object) {
+  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, object, false));
+  std::string text;
+  char character = 0;
+  while (::read(descriptor, &character, 1) == 1) {
+    if (character == '\n') break;
+    text.push_back(character);
+  }
+  const auto first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const auto last = text.find_last_not_of(" \t\r\n");
+  return text.substr(first, last - first + 1);
+}
+void cxx_istream_get_int(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto target = import_argument(context, 1);
+  const auto token = cxx_read_token(context, object);
+  try {
+    store_guest_memory(context, target, static_cast<std::uint64_t>(std::stol(token)), 4);
+  } catch (...) {
+    store_guest_memory(context, target, 0, 4);
+  }
+  set_import_result(context, object);
+}
+void cxx_istream_get_string(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto target = import_argument(context, 1);
+  cxx_string_assign(context, target, cxx_read_token(context, object));
+  set_import_result(context, object);
+}
+void cxx_istream_get_char(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto target = import_argument(context, 1);
+  const auto token = cxx_read_token(context, object);
+  store_guest_memory(context, target, token.empty() ? 0 : static_cast<std::uint8_t>(token[0]), 1);
+  set_import_result(context, object);
+}
+
+// File streams. The object is opaque; the descriptor is held host-side against
+// the object's guest address, and because basic_istream is the first base of
+// basic_ifstream the address an operator>> sees is the same one the constructor
+// recorded.
+constexpr std::uint64_t kCxxIfstreamBytes = 260;
+constexpr std::uint64_t kCxxOfstreamBytes = 256;
+
+// libstdc++ openmode bits: app 1, ate 2, binary 4, in 8, out 16, trunc 32.
+void cxx_file_stream_construct(GuestContext* context, bool for_output) {
+  const auto object = import_argument(context, 0);
+  const auto path = guest_path_to_host(read_guest_string(import_argument(context, 1)));
+  const auto mode = import_argument(context, 2);
+  const auto bytes = for_output ? kCxxOfstreamBytes : kCxxIfstreamBytes;
+  if (object + bytes <= guest_memory_size) std::memset(guest_memory + object, 0, bytes);
+  auto flags = for_output ? (O_WRONLY | O_CREAT) : O_RDONLY;
+  if ((mode & 1u) != 0 || (mode & 2u) != 0) flags |= O_APPEND; else if (for_output) flags |= O_TRUNC;
+  const auto descriptor = ::open(path.c_str(), flags, 0644);
+  if (descriptor < 0) {
+    guest_streams.erase(object);  // is_open() reports false, as it should
+  } else {
+    guest_streams[object] = GuestStreamState{descriptor, for_output};
+  }
+  set_import_result(context, object);
+}
+void cxx_ifstream_construct(GuestContext* context) { cxx_file_stream_construct(context, false); }
+void cxx_ofstream_construct(GuestContext* context) { cxx_file_stream_construct(context, true); }
+
+void cxx_file_stream_close(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto found = guest_streams.find(object);
+  if (found != guest_streams.end()) {
+    if (found->second.descriptor >= 0) ::close(found->second.descriptor);
+    guest_streams.erase(found);
+  }
+  set_import_result(context, 0);
+}
+void cxx_file_stream_is_open(GuestContext* context) {
+  set_import_result(context, guest_streams.count(import_argument(context, 0)) != 0 ? 1 : 0);
+}
+
+// C++ exceptions. Unwinding through recompiled frames needs a personality routine
+// that understands this runtime's stack discipline, which does not exist yet, so
+// a propagating exception fails loudly rather than being silently swallowed.
+void cxx_exception_trap(GuestContext* context) {
+  terminate_with_message("a C++ exception propagated (ip=0x%" PRIx64
+                         "); exception unwinding is not implemented",
+                         context->instruction_pointer);
+}
+
+void cxx_initialize() {
+  cxx_cout = 0;
+  cxx_cin = 0;
+  if (guest_memory == nullptr || guest_memory_size < 0x500000) return;
+  cxx_cout = guest_memory_size - 0x400000;
+  cxx_cin = guest_memory_size - 0x400000 + 0x100;
+  std::memset(guest_memory + cxx_cout, 0, 0x200);
+  guest_streams[cxx_cout] = GuestStreamState{STDOUT_FILENO, true};
+  guest_streams[cxx_cin] = GuestStreamState{STDIN_FILENO, false};
+}
+void cxx_cout_address(GuestContext* context) { set_import_result(context, cxx_cout); }
+void cxx_cin_address(GuestContext* context) { set_import_result(context, cxx_cin); }
+
 // ---- msvcrt: the C runtime ------------------------------------------------
 // Every MSVC- or mingw-built Windows binary imports its C runtime, so this is not
 // application-specific: these are the standard C library functions implemented
@@ -1091,6 +1355,264 @@ void win32_find_close(GuestContext* context) {
   set_import_result(context, 1);
 }
 
+// ---- msvcrt: the remaining CRT entry points -------------------------------
+void msvcrt_system(GuestContext* context) {
+  const auto command = read_guest_string(import_argument(context, 0));
+  if (command.empty()) { set_import_result(context, 1); return; }
+  set_import_result(context, static_cast<std::uint64_t>(std::system(command.c_str())));
+}
+void msvcrt_time(GuestContext* context) {
+  const auto target = import_argument(context, 0);
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  if (target != 0) store_guest_memory(context, target, static_cast<std::uint64_t>(now), 4);
+  set_import_result(context, static_cast<std::uint64_t>(now));
+}
+void msvcrt_signal(GuestContext* context) {
+  // No signal handlers are installed: the guest gets SIG_ERR (the all-ones
+  // handle) rather than a success that would imply one was registered.
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, static_cast<std::uint64_t>(-1));
+}
+void msvcrt_strcoll(GuestContext* context) {
+  const auto left = read_guest_string(import_argument(context, 0));
+  const auto right = read_guest_string(import_argument(context, 1));
+  const auto order = left.compare(right);
+  set_import_result(context, order < 0 ? static_cast<std::uint64_t>(-1)
+                                       : order > 0 ? std::uint64_t{1} : std::uint64_t{0});
+}
+void msvcrt_fullpath(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = guest_path_to_host(read_guest_string(import_argument(context, 1)));
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(source, error);
+  const auto text = error ? source : absolute.lexically_normal().string();
+  if (destination != 0) {
+    for (std::size_t index = 0; index <= text.size(); ++index)
+      store_guest_memory(context, destination + index,
+                         index < text.size() ? static_cast<std::uint8_t>(text[index]) : 0, 1);
+    set_import_result(context, destination);
+  } else {
+    set_import_result(context, 0);  // a null destination asks for the buffer size
+  }
+}
+void msvcrt_wcstombs(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto maximum = import_argument(context, 2);
+  std::string text;
+  for (std::uint64_t index = 0;; ++index) {
+    const auto character = load_guest_memory(context, source + index * 2, 2);
+    if (character == 0) break;
+    text.push_back(character < 0x80 ? static_cast<char>(character) : '?');
+  }
+  if (destination == 0) { set_import_result(context, text.size()); return; }
+  const auto limit = maximum == 0 || maximum > text.size() ? text.size() : maximum;
+  for (std::size_t index = 0; index < limit; ++index)
+    store_guest_memory(context, destination + index, static_cast<std::uint8_t>(text[index]), 1);
+  set_import_result(context, limit);
+}
+
+// vfprintf. The guest's va_list is a pointer into its own stack, so the
+// arguments are read from guest memory. Only the conversions a console program
+// uses are implemented; anything else fails loudly rather than printing
+// something wrong.
+// The formatting itself, shared by msvcrt's vfprintf and the UCRT's
+// __stdio_common_vfprintf, which differ only in where their arguments sit.
+std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
+                                        const std::string& format, std::uint64_t arguments);
+
+void msvcrt_vfprintf(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
+}
+std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
+                                        const std::string& format, std::uint64_t arguments) {
+  std::string output;
+  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  for (std::size_t index = 0; index < format.size(); ++index) {
+    if (format[index] != '%') { output.push_back(format[index]); continue; }
+    if (index + 1 >= format.size()) break;
+    auto specifier = format[++index];
+    while (specifier == '-' || specifier == '+' || specifier == ' ' || specifier == '#' || specifier == '0')
+      specifier = format[++index];
+    while (specifier >= '0' && specifier <= '9') specifier = format[++index];
+    if (specifier == 'l' || specifier == 'h') specifier = format[++index];
+    const auto next = [&arguments, context] {
+      const auto value = load_guest_memory(context, arguments, 4);
+      arguments += 4;
+      return value;
+    };
+    switch (specifier) {
+      case '%': output.push_back('%'); break;
+      case 'c': output.push_back(static_cast<char>(next() & 0xffu)); break;
+      case 'd':
+      case 'i': output += std::to_string(static_cast<std::int32_t>(next() & 0xffffffffu)); break;
+      case 'u': output += std::to_string(static_cast<std::uint32_t>(next() & 0xffffffffu)); break;
+      case 'x': {
+        std::ostringstream text;
+        text << std::hex << static_cast<std::uint32_t>(next() & 0xffffffffu);
+        output += text.str();
+        break;
+      }
+      case 's': {
+        const auto address = next();
+        output += address == 0 ? std::string("(null)") : read_guest_string(address);
+        break;
+      }
+      case 'p': {
+        std::ostringstream text;
+        text << "0x" << std::hex << next();
+        output += text.str();
+        break;
+      }
+      default:
+        terminate_with_message("vfprintf: unsupported conversion '%%%c' (ip=0x%" PRIx64 ")", specifier,
+                               context->instruction_pointer);
+    }
+  }
+  if (!output.empty()) (void)::write(descriptor, output.data(), output.size());
+  return output.size();
+}
+
+// _initterm runs the table of static initialisers the CRT is given: the C++
+// static constructors and anything else placed in .CRT$XCU. Without it a C++
+// program's globals are never constructed. Each entry is a guest function, so it
+// is called through the same dispatch table the guest itself uses.
+void msvcrt_initterm(GuestContext* context) {
+  const auto begin = import_argument(context, 0);
+  const auto end = import_argument(context, 1);
+  for (std::uint64_t slot = begin; slot + 4 <= end; slot += 4) {
+    const auto entry = load_guest_memory(context, slot, 4);
+    if (entry == 0) continue;
+    if (auto function = lookup_guest_function(entry)) {
+      function(context);
+    } else {
+      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
+    }
+  }
+  set_import_result(context, 0);
+}
+void msvcrt_initterm_e(GuestContext* context) {
+  msvcrt_initterm(context);
+  set_import_result(context, 0);
+}
+
+// __acrt_iob_func returns &_iob[index]; the three standard streams are the ones
+// the CRT itself asks for.
+void msvcrt_acrt_iob_func(GuestContext* context) {
+  set_import_result(context, msvcrt_iob + (import_argument(context, 0) & 0xffu) * kMsvcrtFileObjectBytes);
+}
+
+// __stdio_common_vfprintf is the UCRT's formatting entry point; the stream is the
+// second argument and the format the third, with the argument list last.
+void msvcrt_stdio_common_vfprintf(GuestContext* context) {
+  (void)import_argument(context, 0);  // options
+  const auto stream = import_argument(context, 1);
+  const auto format = read_guest_string(import_argument(context, 2));
+  const auto arguments = import_argument(context, 4);
+  set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
+}
+
+void msvcrt_memcmp(GuestContext* context) {
+  const auto left = import_argument(context, 0);
+  const auto right = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  for (std::uint64_t index = 0; index < count; ++index) {
+    const auto a = load_guest_memory(context, left + index, 1);
+    const auto b = load_guest_memory(context, right + index, 1);
+    if (a != b) { set_import_result(context, a < b ? static_cast<std::uint64_t>(-1) : std::uint64_t{1}); return; }
+  }
+  set_import_result(context, 0);
+}
+void msvcrt_exit_process(GuestContext* context) {
+  std::exit(static_cast<int>(import_argument(context, 0)));
+}
+void msvcrt_return_zero(GuestContext* context) {
+  for (int index = 0; index < 4; ++index) (void)import_argument(context, index);
+  set_import_result(context, 0);
+}
+void msvcrt_crt_global(GuestContext* context, std::uint64_t offset) {
+  set_import_result(context, msvcrt_data_block + offset);
+}
+void msvcrt_p_argc(GuestContext* context) { msvcrt_crt_global(context, 0x400); }
+void msvcrt_p_argv(GuestContext* context) { msvcrt_crt_global(context, 0x410); }
+void msvcrt_p_commode(GuestContext* context) { msvcrt_crt_global(context, 0x420); }
+
+// C++ static-destruction and exception bookkeeping for the SJLJ unwinder. The
+// registration calls are pure bookkeeping and have no observable effect here;
+// actually resuming an unwind is not implemented and fails loudly.
+void msvcrt_unwind_register(GuestContext* context) {
+  for (int index = 0; index < 4; ++index) (void)import_argument(context, index);
+  set_import_result(context, 0);
+}
+
+// libstdc++ internals the compiler calls directly for string growth and for
+// inserting a run of characters into a stream.
+void cxx_string_dispose(GuestContext* context) {
+  cxx_string_release(context, import_argument(context, 0));
+  set_import_result(context, 0);
+}
+void cxx_string_replace_cold(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto position = import_argument(context, 2);
+  const auto source = import_argument(context, 3);
+  const auto removed = import_argument(context, 4);
+  const auto added = import_argument(context, 5);
+  auto text = cxx_string_value(context, object);
+  if (position > text.size()) position < 0 ? 0 : text.size();
+  std::string replacement;
+  for (std::uint64_t index = 0; index < added; ++index)
+    replacement.push_back(static_cast<char>(load_guest_memory(context, source + index, 1)));
+  const auto begin = static_cast<std::size_t>(position);
+  const auto count = static_cast<std::size_t>(removed);
+  text = text.substr(0, begin) + replacement + (begin + count <= text.size() ? text.substr(begin + count) : std::string());
+  cxx_string_release(context, object);
+  cxx_string_assign(context, object, text);
+  set_import_result(context, object);
+}
+void cxx_ostream_insert(GuestContext* context) {
+  const auto object = import_argument(context, 0);
+  const auto text = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  std::string value;
+  for (std::uint64_t index = 0; index < count; ++index)
+    value.push_back(static_cast<char>(load_guest_memory(context, text + index, 1)));
+  cxx_ostream_write(context, object, value, false);
+  set_import_result(context, object);
+}
+void cxx_throw_logic_error(GuestContext* context) {
+  terminate_with_message("std::logic_error thrown by the guest: %s (ip=0x%" PRIx64 ")",
+                         read_guest_string(import_argument(context, 0)).c_str(), context->instruction_pointer);
+}
+void cxx_throw_length_error(GuestContext* context) {
+  terminate_with_message("std::length_error thrown by the guest: %s (ip=0x%" PRIx64 ")",
+                         read_guest_string(import_argument(context, 0)).c_str(), context->instruction_pointer);
+}
+
+// __getmainargs hands the CRT its argc/argv. A recompiled image has one
+// argument: its own name, which is what the guest's own argv[0] would hold.
+void msvcrt_getmainargs(GuestContext* context) {
+  const auto argc = import_argument(context, 0);
+  const auto argv = import_argument(context, 1);
+  const auto envp = import_argument(context, 2);
+  const auto block = msvcrt_data_block + 0x800;
+  const auto name = block + 0x100;
+  const std::string program = "recomp-guest";
+  for (std::size_t index = 0; index <= program.size(); ++index)
+    store_guest_memory(context, name + index,
+                       index < program.size() ? static_cast<std::uint8_t>(program[index]) : 0, 1);
+  store_guest_memory(context, block, name, 4);
+  store_guest_memory(context, block + 4, 0, 4);
+  if (argc != 0) store_guest_memory(context, argc, 1, 4);
+  if (argv != 0) store_guest_memory(context, argv, block, 4);
+  if (envp != 0) store_guest_memory(context, envp, msvcrt_environment_pointer, 4);
+  set_import_result(context, 0);
+}
+
+
 // ---- ole32 ----------------------------------------------------------------
 // Ported from HenryKun55/igi-recomp (MIT) shim/src/ole32.c. COM apartment
 // initialisation is a no-op in a single-process port: S_OK, and nothing to
@@ -1211,6 +1733,45 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "VirtualFree", win32_virtual_free},
     {"kernel32.dll", "VirtualQuery", win32_virtual_query},
     {"kernel32.dll", "VirtualProtect", win32_virtual_protect},
+    // libstdc++, cdecl: the caller pops.
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", cxx_ifstream_construct},
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE5closeEv", cxx_file_stream_close},
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE7is_openEv", cxx_file_stream_is_open},
+    {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEED1Ev", cxx_file_stream_close},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", cxx_ofstream_construct},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE5closeEv", cxx_file_stream_close},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE7is_openEv", cxx_file_stream_is_open},
+    {"libstdc++-6.dll", "_ZNSt14basic_ofstreamIcSt11char_traitsIcEED1Ev", cxx_file_stream_close},
+    {"libstdc++-6.dll", "__gxx_personality_v0", cxx_exception_trap},
+    {"libstdc++-6.dll", "__gxx_personality_sj0", cxx_exception_trap},
+    {"libstdc++-6.dll", "__cxa_begin_catch", cxx_exception_trap},
+    {"libstdc++-6.dll", "__cxa_end_catch", cxx_exception_trap},
+    {"libstdc++-6.dll", "__cxa_rethrow", cxx_exception_trap},
+    {"libgcc_s_dw2-1.dll", "_Unwind_Resume", cxx_exception_trap},
+    {"libgcc_s_dw2-1.dll", "__register_frame_info", cxx_noop},
+    {"libgcc_s_dw2-1.dll", "__deregister_frame_info", cxx_noop},
+    {"libstdc++-6.dll", "_ZSt4cout", cxx_cout_address},
+    {"libstdc++-6.dll", "_ZSt3cin", cxx_cin_address},
+    {"libstdc++-6.dll", "_ZNSaIcEC1Ev", cxx_noop},
+    {"libstdc++-6.dll", "_ZNSaIcED1Ev", cxx_noop},
+    {"libstdc++-6.dll", "_ZNSt8ios_base4InitC1Ev", cxx_noop},
+    {"libstdc++-6.dll", "_ZNSt8ios_base4InitD1Ev", cxx_noop},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1Ev", cxx_string_default_construct},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1EPKcRKS3_", cxx_string_construct_from_c},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1ERKS4_", cxx_string_copy_construct},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEED1Ev", cxx_string_destruct},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEaSERKS4_", cxx_string_assign_from},
+    {"libstdc++-6.dll", "_Znwj", cxx_operator_new},
+    {"libstdc++-6.dll", "_Znaj", cxx_operator_new_array},
+    {"libstdc++-6.dll", "_ZdlPv", cxx_operator_delete},
+    {"libstdc++-6.dll", "_ZdaPv", cxx_operator_delete},
+    {"libstdc++-6.dll", "_ZSt17__throw_bad_allocv", cxx_throw_bad_alloc},
+    {"libstdc++-6.dll", "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc", cxx_ostream_put_c_string},
+    {"libstdc++-6.dll", "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE", cxx_ostream_put_string},
+    {"libstdc++-6.dll", "_ZNSolsEi", cxx_ostream_put_int},
+    {"libstdc++-6.dll", "_ZNSirsERi", cxx_istream_get_int},
+    {"libstdc++-6.dll", "_ZStrsIcSt11char_traitsIcESaIcEERSt13basic_istreamIT_T0_ES7_RNSt7__cxx1112basic_stringIS4_S5_T1_EE", cxx_istream_get_string},
+    {"libstdc++-6.dll", "_ZStrsIcSt11char_traitsIcEERSt13basic_istreamIT_T0_ES6_RS3_", cxx_istream_get_char},
     {"kernel32.dll", "Beep", win32_console_success},
     {"kernel32.dll", "SetConsoleCursorPosition", win32_console_success},
     {"kernel32.dll", "SetConsoleTextAttribute", win32_console_success},
@@ -1230,6 +1791,42 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
     {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
     // msvcrt: cdecl, so the caller pops and callee_cleans_stack is false below.
+    {"msvcrt.dll", "_initterm", msvcrt_initterm},
+    {"msvcrt.dll", "_initterm_e", msvcrt_initterm_e},
+    {"msvcrt.dll", "__acrt_iob_func", msvcrt_acrt_iob_func},
+    {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
+    {"msvcrt.dll", "memcmp", msvcrt_memcmp},
+    {"msvcrt.dll", "fflush", msvcrt_return_zero},
+    {"msvcrt.dll", "setvbuf", msvcrt_return_zero},
+    {"msvcrt.dll", "_set_new_mode", msvcrt_return_zero},
+    {"msvcrt.dll", "_configthreadlocale", msvcrt_return_zero},
+    {"msvcrt.dll", "__setusermatherr", msvcrt_return_zero},
+    {"msvcrt.dll", "_set_invalid_parameter_handler", msvcrt_return_zero},
+    {"msvcrt.dll", "_configure_narrow_argv", msvcrt_return_zero},
+    {"msvcrt.dll", "_initialize_narrow_environment", msvcrt_return_zero},
+    {"msvcrt.dll", "_crt_atexit", msvcrt_return_zero},
+    {"msvcrt.dll", "_exit", msvcrt_exit_process},
+    {"msvcrt.dll", "__p___argc", msvcrt_p_argc},
+    {"msvcrt.dll", "__p___argv", msvcrt_p_argv},
+    {"msvcrt.dll", "__p__commode", msvcrt_p_commode},
+    {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Register", msvcrt_unwind_register},
+    {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Unregister", msvcrt_unwind_register},
+    {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Resume", cxx_exception_trap},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE10_M_disposeEv", cxx_string_dispose},
+    {"libstdc++-6.dll", "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE15_M_replace_coldEPcjPKcjj", cxx_string_replace_cold},
+    {"libstdc++-6.dll", "_ZSt16__ostream_insertIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_PKS3_i", cxx_ostream_insert},
+    {"libstdc++-6.dll", "_ZSt19__throw_logic_errorPKc", cxx_throw_logic_error},
+    {"libstdc++-6.dll", "_ZSt20__throw_length_errorPKc", cxx_throw_length_error},
+    {"libstdc++-6.dll", "_ZdlPvj", cxx_operator_delete},
+    {"msvcrt.dll", "system", msvcrt_system},
+    {"msvcrt.dll", "time", msvcrt_time},
+    {"msvcrt.dll", "signal", msvcrt_signal},
+    {"msvcrt.dll", "strcoll", msvcrt_strcoll},
+    {"msvcrt.dll", "_stricoll", msvcrt_strcoll},
+    {"msvcrt.dll", "_fullpath", msvcrt_fullpath},
+    {"msvcrt.dll", "wcstombs", msvcrt_wcstombs},
+    {"msvcrt.dll", "vfprintf", msvcrt_vfprintf},
+    {"msvcrt.dll", "__getmainargs", msvcrt_getmainargs},
     {"msvcrt.dll", "strlen", msvcrt_strlen},
     {"msvcrt.dll", "strcmp", msvcrt_strcmp},
     {"msvcrt.dll", "strncmp", msvcrt_strncmp},
@@ -1368,6 +1965,11 @@ void report_divide_error(GuestContext* context) {
 }
 
 const ShimDescriptor* find_win32_shim(const char* library_name, const char* symbol_name) {
+  // The Universal CRT's API sets carry the standard C library symbols, so a name
+  // that is not found under an api-ms-win-crt-* library is retried as msvcrt.
+  if (win32_is_universal_crt_library(library_name)) {
+    if (const auto* found = find_win32_shim("msvcrt.dll", symbol_name)) return found;
+  }
   for (const auto& shim : kShims) {
     if (std::strcmp(shim.library_name, library_name) == 0 && std::strcmp(shim.symbol_name, symbol_name) == 0)
       return &shim;
@@ -1588,12 +2190,20 @@ void jump_guest_indirect(GuestContext* context, std::uint64_t target) {
 // every argument by one slot -- the shim reads the return address as its first
 // argument and the first argument as its second, which for something like memcpy
 // means a wild destination and a pointer-sized count.
+// Sets the calling convention of the import about to run, so that a shim can ask
+// for its arguments by index without knowing how it was reached.
+void select_import_convention(const char* library_name, const char* symbol_name) {
+  const auto* abi = win32_import_abi(library_name, symbol_name);
+  win32_import_this_call() = abi != nullptr && abi->this_call;
+}
+
 void invoke_win32_import_tail(GuestContext* context, const char* library_name, const char* symbol_name) {
   const auto* shim = find_win32_shim(library_name, symbol_name);
   if (shim == nullptr) {
     terminate_with_message("unimplemented Win32 import %s!%s (ip=0x%" PRIx64 ")", library_name, symbol_name,
                            context->instruction_pointer);
   }
+  select_import_convention(library_name, symbol_name);
   shim->function(context);
   if (guest_pointer_width >= 8) return;
   // The return address is already at [esp], so the shim's `ret`/`ret n` is the
@@ -1609,6 +2219,7 @@ void invoke_win32_import(GuestContext* context, const char* library_name, const 
     terminate_with_message("unimplemented Win32 import %s!%s (ip=0x%" PRIx64 ")", library_name, symbol_name,
                            context->instruction_pointer);
   }
+  select_import_convention(library_name, symbol_name);
   if (guest_pointer_width >= 8) {
     shim->function(context);
     return;
@@ -1703,6 +2314,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   heap_initialize(image->heap_base, image->stack_top);
   build_environment_blocks();
   msvcrt_initialize();
+  cxx_initialize();
   if (const char* watch = std::getenv("RECOMP_WATCH"))
     watched_guest_address = std::strtoull(watch, nullptr, 0);
 

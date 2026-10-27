@@ -401,6 +401,20 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **Removed a discovery seed that was a regression.** A `lea reg, [rip + disp]` whose
+  target lands on code was taken as a function entry, gated only by "eight instructions
+  decode here". Measured on one real application by disabling just that seed: 9,061
+  functions / 1,081,565 instructions / **1,697 unsupported** without it against 10,912 /
+  1,505,016 / **42,248** with it — the seed invented **1,851 non-functions** and
+  multiplied the unsupported count by twenty-five. The stricter variant (also requiring
+  a routine boundary) gave 39,036, so the gate was not the problem: a `lea` pointing
+  into `.text` is ordinary code loading the address of a table or a string, and eight
+  decodable instructions is not evidence. **It was never needed either** — the case it
+  was written for carried a DIR64 base relocation and had been recovered by the
+  relocation seed all along; that application's real bug was the `_initterm` pointer
+  width, fixed separately. The suite passed with the seed present and did not notice,
+  because no fixture is large or varied enough.
+
 - Measured the import-report fix against the real corpus, where it matters most:
   `Tetris.exe` goes from **51 missing imports to 0**, `powder` 536→479, `bat.exe`
   243→205, `supertux2` 709→675, `openlierox` 577→551, `snake` 140→115, `clipjar`

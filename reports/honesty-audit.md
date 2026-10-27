@@ -1076,3 +1076,46 @@ whole time.
 That is the strongest argument for the fix, and it is also the argument for the general
 rule: when two parts of a system compute the same thing, the one that is wrong is
 usually the one nobody runs.
+
+
+## A regression I introduced, found by an independent audit
+
+Round 32 added a discovery seed: a `lea reg, [rip + disp]` whose target lands on code
+was taken as a function entry, gated only by "eight instructions decode here". It was
+added to recover the C runtime's atexit thunks, and it worked for that.
+
+An independent catalogue of the corpus then reported that `powder` had regressed between
+two revisions of the same input file: **1,081,565 instructions / 1,841 unsupported**
+before, **1,505,016 / 42,248** after. Measured directly, by disabling only that seed:
+
+| | functions | instructions | unsupported | coverage |
+|---|---:|---:|---:|---:|
+| without the seed | 9,061 | 1,081,565 | **1,697** | 99.84% |
+| with the seed, weak gate | 10,912 | 1,505,016 | **42,248** | 97.19% |
+| with the seed, strict gate | 10,683 | 1,465,420 | **39,036** | — |
+
+The seed invented **1,851 non-functions** in one application and multiplied its
+unsupported-instruction count by **twenty-five**. The stricter gate — requiring a
+routine boundary as well — barely helped, because the problem is not the gate: a
+`lea reg, [rip+disp]` pointing into `.text` is ordinary code loading the address of a
+table, a string, or data that happens to live in the code section. Eight decodable
+instructions in a row is not evidence, and neither is a routine boundary in front of
+data.
+
+**The seed has been removed.** Powder is back to 9,061 functions / 1,697 unsupported /
+99.84%, and the full suite is green.
+
+**And it was never needed.** The case it was written for — the application that died on
+`_initterm` — was already covered: the initialiser table entry carries a **DIR64 base
+relocation**, and the relocation seed had recovered that function all along. The
+`_initterm` failure was a **pointer-width bug in the shim**, not a discovery gap. I
+fixed the wrong layer first, and the only reason it was caught is that someone else
+measured the corpus.
+
+Two things are worth keeping from this:
+
+- **A discovery heuristic that cannot be wrong on one binary has not been tested.**
+  The seed passed every fixture in the suite and broke a real application by 25×. The
+  suite has no fixture large or varied enough to notice.
+- **"It fixed the symptom I was looking at" is not evidence that a heuristic is sound.**
+  The seed did fix the atexit fixture. It was still wrong.

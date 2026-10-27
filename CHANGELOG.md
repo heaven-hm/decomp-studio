@@ -112,6 +112,34 @@ All notable changes to Recomp Studio are documented here. This project follows
   Together these took `igi1ed.exe` from 1374 unsupported instructions in 11
   classes to 0, so both Project I.G.I. executables now lift completely.
 
+- `teb32` fixture: a 32-bit guest reading its thread environment block through
+  `fs:`, which is the first memory access most 32-bit Windows programs make.
+
+### Fixed
+
+- **Segment bases were dropped from absolute addresses.** `mov eax, fs:[4]` was
+  emitted as a read of address 4 instead of `fs_base + 4`, because the
+  absolute-address fast path returned before the segment prefix was considered.
+  Every 32-bit TEB read a Windows program makes went to the low page and came
+  back zero — silently, since the reads were in mapped memory. Found while
+  building the 32-bit TEB fixture; the same reads now resolve correctly and
+  verify against the reference.
+- The differential reference could not run **any** 32-bit guest. Unicorn 2.1.4
+  returns `UC_ERR_OK` for `UC_X86_REG_FS_BASE` in 32-bit mode while silently
+  ignoring the write (readback 0), and the harness discarded the return value,
+  so `mov eax, fs:[0]` faulted on an unmapped read six instructions into a real
+  2001 game executable. The write is now checked by readback, and when it cannot
+  be applied the reference relocates the TEB to address 0, where `fs:[offset]`
+  resolves without a base. The self-pointer still reports the canonical address
+  so both sides agree. The relocation is reported in the run diagnosis rather
+  than being left implicit, and the trade-off (a genuine null-page access no
+  longer faults in the reference) is stated there.
+- Recorded that no listed upstream project implements the SSE2 packed-integer
+  family, so it could not be copied: igi-recomp's `gen.py` dispatches through
+  `emit_insn`/`emit_x87` and has no occurrence of pmaddwd, psrldq, punpcklbw,
+  pcmpeqb, pmuludq, pshuflw, packsswb or cvtdq2pd, and SR's
+  `SRW/SR_full_llasm_instr.c` has none either.
+
 ### Fixed
 
 - Five helpers the lifter emits for a memory operand did not exist:

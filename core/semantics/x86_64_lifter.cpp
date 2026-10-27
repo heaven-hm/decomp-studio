@@ -338,14 +338,18 @@ std::string effective_address_expression(const DecodedInstruction& instruction, 
     const auto address = instruction.address + instruction.size + operand.displacement;
     return format_hex(static_cast<std::uint64_t>(address));
   }
-  if (operand.base_register_name.empty() && operand.index_register_name.empty())
-    return "mask_guest_address(" + format_hex(static_cast<std::uint64_t>(operand.displacement)) + ")";
   std::string expression;
   if (has_segment_prefix(instruction, 0x64)) {
     expression = "context->fs_base";
   } else if (has_segment_prefix(instruction, 0x65)) {
     expression = "context->gs_base";
   }
+  // An absolute address still carries its segment base: `mov eax, fs:[4]` reads
+  // fs_base + 4, not address 4. Taking this early return unconditionally dropped
+  // the base, which turned every 32-bit TEB read into a read of the low page --
+  // the single most common memory access a 32-bit Windows program makes.
+  if (operand.base_register_name.empty() && operand.index_register_name.empty() && expression.empty())
+    return "mask_guest_address(" + format_hex(static_cast<std::uint64_t>(operand.displacement)) + ")";
   const auto append = [&expression](const std::string& term) {
     expression += expression.empty() ? term : " + " + term;
   };

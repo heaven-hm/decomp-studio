@@ -45,6 +45,7 @@ FIXTURES_PE32 = [
     ("pe32_arith", "32-bit arithmetic, flags and recursion"),
     ("pe32_abi", "32-bit calling conventions, indirect dispatch and address wrapping"),
     ("pe32_simd_convert", "32-bit packed integer-to-float conversion and MXCSR"),
+    ("teb32", "32-bit TEB access through fs:"),
 ]
 
 EXPECTED_OUTPUT = {
@@ -91,6 +92,12 @@ EXPECTED_OUTPUT = {
                      "extremes", "memory ", "roundtrip=", "restored=", "simdconvert:done"],
     "pe32_simd_convert": ["simdconvert:start", "default_mxcsr=", "mode=0", "mode=3", "boundary",
                           "extremes", "memory ", "roundtrip=", "restored=", "simdconvert:done"],
+    # A 32-bit guest reaches its TEB through fs: with an absolute displacement.
+    # Dropping the segment base turned every one of those reads into a read of
+    # the low page, so these fields all came back zero.
+    "teb32": ["teb32:start", "teb_readable=1", "stack_base_nonzero=1",
+              "stack_limit_below_base=1", "peb_nonzero=1", "self_nonzero=1",
+              "pointer_roundtrip=1", "teb32:done"],
     "pe32_arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "pe32_abi": ["pe32:start", "cdecl=", "stdcall=", "fastcall=", "thiscall=", "dispatch=",
                  "wrapped=16", "checksum=", "pe32:done"],

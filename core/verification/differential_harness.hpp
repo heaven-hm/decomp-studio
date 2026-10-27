@@ -16,6 +16,8 @@ struct ReferenceRun {
   std::string output;
   std::vector<std::uint64_t> trace;
   std::uint64_t instruction_count{};
+  // Set when the reference had to compensate for an emulator limitation.
+  std::string note;
 };
 
 struct DifferentialResult {

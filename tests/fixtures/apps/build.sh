@@ -25,7 +25,7 @@ FIXTURES_AVX="vex"
 
 # Fixtures that must build and pass for the 32-bit target, as source:output pairs
 # so they never collide with the 64-bit fixture built from the same source.
-FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert"
+FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert teb32:teb32"
 
 # Negative fixtures: these must fail explicitly, so they are not in FIXTURES_X64.
 FIXTURES_NEGATIVE="unsupported_instruction unsupported_import"

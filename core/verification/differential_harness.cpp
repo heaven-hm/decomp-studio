@@ -41,6 +41,7 @@ struct ReferenceState {
   std::uint64_t thunk_base{};
   std::uint64_t instruction_count{};
   bool finished{};
+  std::string note;
   // Set when the reference meets something it cannot model. The reference must
   // never invent a result for an import it does not implement: doing so lets a
   // comparison "pass" against a program that never really ran.
@@ -110,6 +111,17 @@ std::uint64_t read_register(uc_engine* engine, int register_id) {
 
 void write_register(uc_engine* engine, int register_id, std::uint64_t value) {
   uc_reg_write(engine, register_id, &value);
+}
+
+// Writes a register and confirms the value stuck. Unicorn 2.1.4 returns
+// UC_ERR_OK for UC_X86_REG_FS_BASE and GS_BASE in 32-bit mode while silently
+// ignoring the write — the readback is 0 — so an unchecked write would surface
+// later as a baffling unmapped-read divergence instead of the real cause.
+bool write_register_checked(uc_engine* engine, int register_id, std::uint64_t value) {
+  uc_reg_write(engine, register_id, &value);
+  std::uint64_t readback = 0;
+  if (uc_reg_read(engine, register_id, &readback) != UC_ERR_OK) return false;
+  return readback == value;
 }
 
 void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
@@ -271,15 +283,31 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
     const std::uint64_t image_base_field = executable.image_base;
     uc_mem_write(engine, peb_address + 0x10, &image_base_field, 8);
   } else {
-    write_register(engine, UC_X86_REG_FS_BASE, teb_address);
+    // A 32-bit guest reaches the TEB through fs:. If the base cannot be set,
+    // put the TEB at address 0 instead: `fs:[offset]` then resolves to
+    // `0 + offset`, which is the layout the guest expects. The trade-off is that
+    // a genuine null-page access no longer faults in the reference, so it is
+    // reported in the run note rather than being left implicit.
+    std::uint64_t effective_teb = teb_address;
+    if (!write_register_checked(engine, UC_X86_REG_FS_BASE, teb_address)) {
+      effective_teb = 0;
+      map_region(engine, 0, 0x2000);
+      state.note =
+          "the reference cannot set FS_BASE in 32-bit mode (unicorn 2.1.4 ignores the write); "
+          "the TEB was placed at address 0 so fs: accesses resolve";
+    }
+    // The self-pointer reports the canonical TEB address even when the block
+    // itself was relocated to 0, so a guest that reads fs:[0x18] sees the same
+    // value on both sides. The alternative - reporting 0 - would make every
+    // 32-bit guest that touches the self-pointer diverge for no reason.
     const std::uint32_t teb_self = static_cast<std::uint32_t>(teb_address);
     const std::uint32_t peb = static_cast<std::uint32_t>(peb_address);
     const std::uint32_t stack_base = static_cast<std::uint32_t>(stack_top);
     const std::uint32_t stack_limit = static_cast<std::uint32_t>(stack_top - kStackSize);
-    uc_mem_write(engine, teb_address + 0x04, &stack_base, 4);
-    uc_mem_write(engine, teb_address + 0x08, &stack_limit, 4);
-    uc_mem_write(engine, teb_address + 0x18, &teb_self, 4);
-    uc_mem_write(engine, teb_address + 0x30, &peb, 4);
+    uc_mem_write(engine, effective_teb + 0x04, &stack_base, 4);
+    uc_mem_write(engine, effective_teb + 0x08, &stack_limit, 4);
+    uc_mem_write(engine, effective_teb + 0x18, &teb_self, 4);
+    uc_mem_write(engine, effective_teb + 0x30, &peb, 4);
     const std::uint32_t image_base_field = static_cast<std::uint32_t>(executable.image_base);
     uc_mem_write(engine, peb_address + 0x08, &image_base_field, 4);
   }
@@ -290,6 +318,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);
   run.output = state.output;
   run.instruction_count = state.instruction_count;
+  run.note = state.note;
   run.trace = std::move(trace);
   uc_close(engine);
   if (!state.failure_reason.empty()) {
@@ -331,6 +360,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.executed_instructions = reference.instruction_count;
   result.reference_output = reference.output;
   result.reference_completed = reference.completed;
+  if (!reference.note.empty()) result.diagnosis = reference.note;
   if (!reference.completed) {
     result.diagnosis = "reference execution did not complete: " + reference.failure_reason;
     return result;

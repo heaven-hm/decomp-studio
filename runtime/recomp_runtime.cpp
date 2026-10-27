@@ -1469,6 +1469,13 @@ void msvcrt_time(GuestContext* context) {
   if (target != 0) store_guest_memory(context, target, static_cast<std::uint64_t>(now), 4);
   set_import_result(context, static_cast<std::uint64_t>(now));
 }
+void msvcrt_time64(GuestContext* context) {
+  const auto target = import_argument(context, 0);
+  const auto now = static_cast<std::uint64_t>(static_cast<std::int64_t>(std::time(nullptr)));
+  if (target != 0) store_guest_memory(context, target, now, 8);
+  set_import_result(context, now);
+  if (guest_pointer_width == 4) context->registers[2] = now >> 32;  // EDX:EAX
+}
 void msvcrt_signal(GuestContext* context) {
   // No signal handlers are installed: the guest gets SIG_ERR (the all-ones
   // handle) rather than a success that would imply one was registered.
@@ -1924,6 +1931,7 @@ const ShimDescriptor kShims[] = {
     {"libstdc++-6.dll", "_ZdlPvj", cxx_operator_delete},
     {"msvcrt.dll", "system", msvcrt_system},
     {"msvcrt.dll", "time", msvcrt_time},
+    {"msvcrt.dll", "_time64", msvcrt_time64},
     {"msvcrt.dll", "signal", msvcrt_signal},
     {"msvcrt.dll", "strcoll", msvcrt_strcoll},
     {"msvcrt.dll", "_stricoll", msvcrt_strcoll},

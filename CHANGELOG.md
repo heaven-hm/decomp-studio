@@ -40,8 +40,27 @@ All notable changes to Recomp Studio are documented here. This project follows
   implemented shim set to agree exactly, so the "implemented" count cannot claim
   an import works when the runtime would terminate on it.
 
+- `autorecomp` command: runs the whole pipeline in order — detect the host
+  target, inspect, recover functions, classify coverage, check import
+  compatibility, translate, build, and with `--buildrun` run and verify — with a
+  live spinner, per-step timings, a log file per run and an optional `--repair`
+  loop. `--target` is detected from the host when omitted; `--buildrun` reuses
+  the existing build and run steps; the animation is suppressed when stdout is
+  not a terminal, under `--json`, or when `NO_COLOR` is set.
+- `tests/autorecomp/autorecomp_test.py`: 36 checks covering the verified path,
+  build-only mode, the log file, agreement with `analyze`, and the honesty rule
+  below.
+
 ### Fixed
 
+- `autorecomp` reported `AUTORECOMP COMPLETE` and exited 0 for a program that
+  built but then failed to run and failed verification, because only thrown
+  exceptions were recorded while the run and verify steps report failure by
+  returning a status. `igi.exe`-class targets would have been declared ported on
+  that basis. Success now requires the requested pipeline to finish *and*, with
+  `--buildrun`, the program to verify; a failed run is reported as
+  `AUTORECOMP FAILED` with a non-zero exit. Verification also still runs after a
+  failed run, since it produces the real diagnosis.
 - `btr` was silently wrong: it emitted `original & mask` instead of
   `original & ~mask`, so instead of clearing the tested bit it kept *only* that
   bit and destroyed every other one. A `btr` of bit 5 in `0xffffffffffffffff`

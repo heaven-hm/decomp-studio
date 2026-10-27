@@ -89,7 +89,13 @@ add_test(NAME import_compatibility
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps
           ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_test(NAME autorecomp_pipeline
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/autorecomp/autorecomp_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
 set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)
 set_tests_properties(coverage_census PROPERTIES TIMEOUT 900)
 set_tests_properties(import_compatibility PROPERTIES TIMEOUT 900)
+set_tests_properties(autorecomp_pipeline PROPERTIES TIMEOUT 1800)

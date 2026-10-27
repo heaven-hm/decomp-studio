@@ -12,12 +12,18 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <sys/utsname.h>
+#include <unistd.h>
 
 namespace {
 
@@ -42,6 +48,7 @@ void print_help() {
             << "  analyze <image>              Recover functions and instructions\n"
             << "  coverage <image>             Instruction coverage and unsupported classes\n"
             << "  imports <image>              Import compatibility and missing shims\n"
+            << "  autorecomp <image> [--output <dir>] [--target <t>] [--buildrun] [--repair]\n"
             << "  functions <image>            List recovered function candidates\n"
             << "  cfg <image> --address <hex>  Export a function CFG as Graphviz DOT\n"
             << "  translate <image> --target <t> --output <dir>   Recompile to a host project\n"
@@ -462,6 +469,449 @@ int command_examples(bool json) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// autorecomp: the whole pipeline, in order, with progress, logs and repair.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kReset = "\x1b[0m";
+constexpr const char* kBold = "\x1b[1m";
+constexpr const char* kDim = "\x1b[2m";
+constexpr const char* kGreen = "\x1b[32m";
+constexpr const char* kRed = "\x1b[31m";
+constexpr const char* kCyan = "\x1b[36m";
+constexpr const char* kYellow = "\x1b[33m";
+
+bool stdout_is_a_terminal() { return ::isatty(STDOUT_FILENO) != 0; }
+
+bool colour_is_enabled(bool animate) { return animate && std::getenv("NO_COLOR") == nullptr; }
+
+// A step display that animates while a step runs and writes every step, its
+// duration and its outcome to a log file. The animation is disabled whenever
+// stdout is not a terminal, when --json is in use, or when NO_COLOR is set, so
+// piped output stays machine-readable.
+class StepDisplay {
+ public:
+  StepDisplay(std::size_t total, bool animate, bool colour, std::ostream& log)
+      : total_(total), animate_(animate), colour_(colour), log_(log) {}
+
+  ~StepDisplay() { stop_spinner(); }
+
+  void begin(const std::string& label) {
+    ++index_;
+    label_ = label;
+    started_ = std::chrono::steady_clock::now();
+    log_ << "[" << index_ << "/" << total_ << "] " << label << "\n";
+    log_.flush();
+    if (animate_) {
+      running_ = true;
+      spinner_ = std::thread([this] { spin(); });
+    } else if (verbose_) {
+      std::cout << "[" << index_ << "/" << total_ << "] " << label << " ..." << std::endl;
+    }
+  }
+
+  void finish(bool ok, const std::string& detail) {
+    emit(ok ? kGreen : kRed, ok ? "✔" : "✘", ok ? "ok" : "FAILED", detail);
+  }
+
+  // A warning is not a pass. The step found something that will stop the port
+  // later — missing shims, say — but the pipeline can keep going and report
+  // more, so it is neither an ok nor a reason to abandon the remaining steps.
+  void warn(const std::string& detail) { emit(kYellow, "⚠", "WARN", detail); }
+
+  // Detail that belongs in the log without disturbing the animation.
+  void note(const std::string& message) {
+    log_ << "      " << message << "\n";
+    log_.flush();
+  }
+
+  void set_verbose(bool verbose) { verbose_ = verbose; }
+
+  std::size_t completed() const { return index_; }
+
+ private:
+  void emit(const char* accent, const char* glyph, const char* label, const std::string& detail) {
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
+    const bool animated = animate_;
+    stop_spinner();
+    if (verbose_) {
+      if (animated) std::cout << "\r\x1b[2K";
+      std::ostringstream line;
+      line << (colour_ ? accent : "") << glyph << (colour_ ? kReset : "") << " " << (colour_ ? kDim : "") << "["
+           << index_ << "/" << total_ << "]" << (colour_ ? kReset : "") << " " << (colour_ ? kBold : "") << label_
+           << (colour_ ? kReset : "");
+      if (!detail.empty()) line << " — " << detail;
+      line << (colour_ ? kDim : "") << " (" << std::fixed << std::setprecision(2) << seconds << "s)"
+           << (colour_ ? kReset : "");
+      std::cout << line.str() << "\n";
+      std::cout.flush();
+    }
+    log_ << "    " << label << ": " << detail << " (" << std::fixed << std::setprecision(3) << seconds << "s)\n";
+    log_.flush();
+  }
+
+  void spin() {
+    static const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+    std::size_t frame = 0;
+    while (running_) {
+      const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
+      std::ostringstream line;
+      line << "\r\x1b[2K" << (colour_ ? kCyan : "") << frames[frame++ % 10] << (colour_ ? kReset : "") << " "
+           << (colour_ ? kDim : "") << "[" << index_ << "/" << total_ << "]" << (colour_ ? kReset : "") << " "
+           << (colour_ ? kBold : "") << label_ << (colour_ ? kReset : "") << " " << (colour_ ? kYellow : "")
+           << std::fixed << std::setprecision(1) << seconds << "s" << (colour_ ? kReset : "");
+      std::cout << line.str() << std::flush;
+      std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    }
+  }
+
+  void stop_spinner() {
+    running_ = false;
+    if (spinner_.joinable()) spinner_.join();
+  }
+
+  std::size_t total_{};
+  std::size_t index_{};
+  bool animate_{};
+  bool colour_{};
+  bool verbose_{true};
+  std::ostream& log_;
+  std::string label_;
+  std::atomic<bool> running_{false};
+  std::thread spinner_;
+  std::chrono::steady_clock::time_point started_{};
+};
+
+struct HostTarget {
+  std::string operating_system;
+  std::string architecture;
+  std::string target;
+};
+
+// Detect the host the studio is running on and map it to a target name. This is
+// runtime detection through uname rather than a compile-time guess, so the
+// reported target is what the machine actually is.
+HostTarget detect_host_target() {
+  struct utsname information {};
+  if (::uname(&information) != 0) throw std::runtime_error("cannot determine the host operating system");
+  const std::string system_name = information.sysname;
+  const std::string machine = information.machine;
+  std::string architecture = machine;
+  if (machine == "arm64" || machine == "aarch64") architecture = "arm64";
+  else if (machine == "x86_64" || machine == "amd64") architecture = "x86_64";
+
+  std::string target;
+  if (system_name == "Darwin") target = architecture == "arm64" ? "macos-arm64" : "macos-x86_64";
+  else if (system_name == "Linux") target = architecture == "arm64" ? "linux-arm64" : "linux-x86_64";
+  if (target.empty())
+    throw std::runtime_error("no native target for host " + system_name + "/" + machine +
+                             "; pass --target explicitly");
+  return {system_name, architecture, target};
+}
+
+int command_autorecomp(const std::filesystem::path& input, const std::filesystem::path& output,
+                       const std::string& requested_target, bool repair, bool build_and_run, bool json,
+                       std::size_t repair_budget) {
+  const bool animate = stdout_is_a_terminal() && !json;
+  const bool colour = colour_is_enabled(animate);
+  std::filesystem::create_directories(output);
+  const auto log_path = output / "autorecomp.log";
+  std::ofstream log_file(log_path, std::ios::trunc);
+  if (!log_file) throw std::runtime_error("cannot open the log file " + log_path.string());
+
+  std::size_t total = 7;  // detect inspect analyze coverage imports translate build
+  if (build_and_run) total += 2;
+  if (repair) total += 1;
+
+  log_file << "recomp-studio autorecomp\n"
+           << "  input   : " << std::filesystem::absolute(input).string() << "\n"
+           << "  output  : " << std::filesystem::absolute(output).string() << "\n"
+           << "  target  : " << (requested_target.empty() ? "detect" : requested_target) << "\n"
+           << "  mode    : " << (build_and_run ? "build and run" : "build only") << "\n"
+           << "  repair  : " << (repair ? "on" : "off") << "\n\n";
+
+  StepDisplay display(total, animate, colour, log_file);
+  display.set_verbose(!json);
+  if (!json && animate) {
+    std::cout << (colour ? kBold : "") << "recomp-studio autorecomp" << (colour ? kReset : "") << "  "
+              << (colour ? kDim : "") << std::filesystem::path(input).filename().string() << " -> "
+              << (requested_target.empty() ? "native host" : requested_target) << (colour ? kReset : "")
+              << "\n\n";
+  }
+
+  std::string failure;
+  auto fail_step = [&](const std::string& detail) {
+    if (failure.empty()) failure = detail;
+  };
+
+  // 1. detect ---------------------------------------------------------------
+  std::string target = requested_target;
+  display.begin("detect host and target");
+  try {
+    const auto host = detect_host_target();
+    if (target.empty()) target = host.target;
+    display.note("host " + host.operating_system + "/" + host.architecture + " -> target " + target);
+    display.finish(true, host.operating_system + "/" + host.architecture + ", target " + target);
+  } catch (const std::exception& error) {
+    display.finish(false, error.what());
+    fail_step(error.what());
+  }
+
+  // Everything below needs the target, so stop here if detection failed.
+  recomp::binary::PortableExecutable executable;
+  if (failure.empty()) {
+    display.begin("inspect executable");
+    try {
+      executable = recomp::binary::PortableExecutable::parse(input);
+      const auto digest = recomp::common::sha256(executable.file_bytes);
+      display.note("format " + executable.format_name() + ", architecture " + executable.architecture_name() +
+                   ", entry " + format_hex(executable.entry_point_rva) + ", image base " +
+                   format_hex(executable.image_base, 9));
+      display.note("sha256 " + digest);
+      display.finish(true, executable.format_name() + " " + executable.architecture_name() + ", " +
+                               std::to_string(executable.imports.size()) + " imports");
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+  }
+
+  std::size_t function_count = 0;
+  std::size_t instruction_count = 0;
+  if (failure.empty()) {
+    display.begin("recover functions");
+    try {
+      recomp::discovery::FunctionDiscovery discovery(executable);
+      discovery.discover();
+      function_count = discovery.functions().size();
+      for (const auto& [address, function] : discovery.functions()) {
+        (void)address;
+        instruction_count += function.instructions.size();
+      }
+      display.note(std::to_string(function_count) + " functions, " + std::to_string(instruction_count) +
+                   " instructions");
+      display.finish(true, std::to_string(function_count) + " functions, " +
+                               std::to_string(instruction_count) + " instructions");
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+  }
+
+  std::size_t unsupported = 0;
+  std::size_t unsupported_classes = 0;
+  if (failure.empty()) {
+    display.begin("classify instruction coverage");
+    try {
+      recomp::discovery::FunctionDiscovery discovery(executable);
+      discovery.discover();
+      recomp::semantics::X86_64Lifter lifter(discovery);
+      const auto census = lifter.census();
+      unsupported = census.unsupported_instructions;
+      unsupported_classes = census.unsupported.size();
+      std::ostringstream detail;
+      detail << census.lifted_instructions << "/" << census.total_instructions << " lifted, " << unsupported
+             << " unsupported";
+      for (std::size_t index = 0; index < census.unsupported.size() && index < 5; ++index)
+        display.note("unsupported " + census.unsupported[index].mnemonic + " x" +
+                     std::to_string(census.unsupported[index].occurrences));
+      display.finish(true, detail.str());
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+  }
+
+  bool translated = false;
+  std::size_t missing_imports = 0;
+  if (failure.empty()) {
+    display.begin("check import compatibility");
+    try {
+      std::size_t implemented = 0;
+      for (const auto& imported : executable.imports)
+        if (is_shimmed_import(imported.library_name, imported.symbol_name)) ++implemented;
+      missing_imports = executable.imports.size() - implemented;
+      display.note(std::to_string(implemented) + " of " + std::to_string(executable.imports.size()) +
+                   " imports have shims");
+      const auto summary = std::to_string(implemented) + "/" + std::to_string(executable.imports.size()) +
+                           " imports shimmed, " + std::to_string(missing_imports) + " missing";
+      if (missing_imports == 0) {
+        display.finish(true, summary);
+      } else {
+        display.warn(summary);
+        display.note("the recompiled program will stop at the first call into an unshimmed import");
+        display.note("run `recomp-studio imports " + input.string() + "` for the full list");
+      }
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+  }
+
+  if (failure.empty()) {
+    display.begin("translate to host source");
+    try {
+      const auto configuration = make_configuration({}, target, output);
+      const auto report = recomp::pipeline::translate(input, output, configuration);
+      recomp::pipeline::write_manifest(report, output);
+      translated = true;
+      display.note("project written to " + std::filesystem::absolute(output).string());
+      display.finish(true, std::to_string(report.function_count) + " functions, " +
+                               std::to_string(report.import_count) + " imports");
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+  }
+
+  std::filesystem::path built_executable;
+  if (failure.empty()) {
+    display.begin("build native executable");
+    try {
+      auto configuration = recomp::pipeline::load_project_configuration(output);
+      if (configuration.compiler.empty()) configuration.compiler = "clang++";
+      if (configuration.target.empty()) configuration.target = target;
+      const auto report = recomp::pipeline::build(output, configuration);
+      built_executable = report.executable;
+      display.note("command: " + report.command);
+      display.finish(true, report.executable.filename().string());
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+  }
+
+  int run_exit_code = 0;
+  bool verified = false;
+  if (failure.empty() && build_and_run) {
+    display.begin("run native executable");
+    try {
+      const auto report = recomp::pipeline::run(output);
+      run_exit_code = report.exit_code;
+      log_file << "---- program output ----\n" << report.standard_output;
+      if (!report.standard_error.empty()) log_file << "---- program stderr ----\n" << report.standard_error;
+      log_file << "---- end program output ----\n";
+      log_file.flush();
+      if (!report.standard_output.empty()) display.note("program produced " +
+                                                        std::to_string(report.standard_output.size()) + " bytes");
+      display.finish(report.exit_code == 0,
+                     "exit code " + std::to_string(report.exit_code) + ", " +
+                         std::to_string(report.standard_output.size()) + " bytes of output");
+      if (report.exit_code != 0) {
+        display.note("the program ran but exited non-zero, so the port is not verified");
+        fail_step("the translated program exited with code " + std::to_string(report.exit_code));
+      }
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      display.note("the translated program could not be executed; see the log for the pipeline's own output");
+      fail_step(error.what());
+    }
+  }
+
+  if (build_and_run && translated) {
+    display.begin("verify against the reference");
+#ifdef RECOMP_HAS_UNICORN
+    try {
+      auto configuration = recomp::pipeline::load_project_configuration(output);
+      if (configuration.target.empty()) configuration.target = target;
+      const auto result = recomp::verification::compare_project(output, configuration);
+      verified = result.verified();
+      display.note("reference executed " + std::to_string(result.executed_instructions) + " instructions");
+      if (!result.diagnosis.empty()) display.note(result.diagnosis);
+      display.finish(verified, verified
+                                  ? "outputs match byte for byte"
+                                  : "reference_completed=" +
+                                        std::string(result.reference_completed ? "yes" : "no") +
+                                        " candidate_completed=" +
+                                        std::string(result.candidate_completed ? "yes" : "no") +
+                                        " outputs_match=" + std::string(result.outputs_match ? "yes" : "no"));
+      if (!verified) {
+        fail_step("differential verification did not pass");
+        display.note("run `recomp-studio verify " + output.string() + "` for the full report");
+      }
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      fail_step(error.what());
+    }
+#else
+    display.finish(false, "the verification backend was not compiled in");
+    display.note("rebuild with Unicorn available (brew install unicorn) to enable differential verification");
+#endif
+  }
+
+  bool repaired = false;
+  if (repair && translated) {
+    display.begin("repair loop");
+#ifdef RECOMP_HAS_UNICORN
+    try {
+      const auto configuration = make_configuration({}, target, output);
+      recomp::harness::RepairOptions options;
+      options.iteration_budget = repair_budget;
+      const auto report = recomp::harness::run_repair(input, output, configuration, options);
+      repaired = report.verified;
+      for (const auto& record : report.iterations)
+        display.note("iteration " + std::to_string(record.iteration) + ": built=" +
+                     (record.built ? "yes" : "no") + " verified=" + (record.verified ? "yes" : "no") +
+                     (record.diagnosis.empty() ? "" : " — " + record.diagnosis));
+      display.note("report: " + report.report_path.string());
+      display.finish(repaired, std::to_string(report.iterations.size()) + " iteration(s), " +
+                                  (repaired ? "verified" : "unresolved"));
+      if (!repaired) fail_step("the repair loop did not reach a verified translation");
+    } catch (const std::exception& error) {
+      display.finish(false, error.what());
+      display.note("the repair harness needs a buildable project; see the log");
+    }
+#else
+    display.finish(false, "the repair harness was not compiled in");
+#endif
+  }
+
+  // Success means the requested pipeline finished *and*, when the program was
+  // run, that it was verified. A program that builds and then fails to run is
+  // not a port, and reporting COMPLETE for it would be exactly the kind of
+  // claim this project refuses to make.
+  const bool ok = failure.empty() && (!build_and_run || verified);
+  if (json) {
+    std::cout << "{\"status\":\"" << (ok ? "ok" : "error") << "\",\"target\":"
+              << recomp::common::quote_json(target) << ",\"output\":"
+              << recomp::common::quote_json(std::filesystem::absolute(output).string())
+              << ",\"build_and_run\":" << (build_and_run ? "true" : "false")
+              << ",\"repair\":" << (repair ? "true" : "false")
+              << ",\"function_count\":" << function_count
+              << ",\"instruction_count\":" << instruction_count
+              << ",\"unsupported_instructions\":" << unsupported
+              << ",\"unsupported_class_count\":" << unsupported_classes
+              << ",\"missing_imports\":" << missing_imports
+              << ",\"built\":" << (built_executable.empty() ? "false" : "true")
+              << ",\"run_exit_code\":" << run_exit_code
+              << ",\"verified\":" << (verified ? "true" : "false")
+              << ",\"repaired\":" << (repaired ? "true" : "false")
+              << ",\"log\":" << recomp::common::quote_json(log_path.string());
+    if (!ok) std::cout << ",\"error\":" << recomp::common::quote_json(failure);
+    std::cout << "}\n";
+  } else {
+    std::cout << "\n" << (colour ? kBold : "")
+              << (ok ? (colour ? kGreen : "") : (colour ? kRed : ""))
+              << (ok ? "AUTORECOMP COMPLETE" : "AUTORECOMP FAILED") << (colour ? kReset : "") << "\n"
+              << "  target      " << target << "\n"
+              << "  project     " << std::filesystem::absolute(output).string() << "\n"
+              << "  functions   " << function_count << "  instructions " << instruction_count << "\n"
+              << "  coverage    " << (instruction_count == 0 ? 100.0
+                                                             : 100.0 * static_cast<double>(instruction_count - unsupported) /
+                                                                   static_cast<double>(instruction_count))
+              << "%  (" << unsupported << " unsupported in " << unsupported_classes << " classes)\n"
+              << "  imports     " << missing_imports << " without shims\n";
+    if (!built_executable.empty()) std::cout << "  executable  " << built_executable.string() << "\n";
+    if (build_and_run) std::cout << "  run         exit code " << run_exit_code << "\n";
+    if (build_and_run) std::cout << "  verified    " << (verified ? "yes" : "no") << "\n";
+    if (repair) std::cout << "  repaired    " << (repaired ? "yes" : "no") << "\n";
+    std::cout << "  log         " << log_path.string() << "\n";
+    if (!ok) std::cout << "\n" << (colour ? kRed : "") << "error: " << failure << (colour ? kReset : "") << "\n";
+  }
+  log_file << "\nresult: " << (ok ? "ok" : "failed") << (failure.empty() ? "" : " — " + failure) << "\n";
+  return ok ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -496,6 +946,25 @@ int main(int argc, char** argv) {
     if (command == "imports") {
       if (argc < 3) return fail("imports requires an image path", json);
       return command_imports(argv[2], json);
+    }
+    if (command == "autorecomp") {
+      std::filesystem::path image, output;
+      std::string target;
+      bool repair = false, build_and_run = false;
+      std::size_t budget = 4;
+      for (int index = 2; index < argc; ++index) {
+        const std::string option{argv[index]};
+        if (option == "--json") continue;
+        if (option == "--repair") { repair = true; continue; }
+        if (option == "--buildrun") { build_and_run = true; continue; }
+        if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
+        if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
+        if (option == "--budget" && index + 1 < argc) { budget = std::stoul(argv[++index]); continue; }
+        if (image.empty()) image = argv[index];
+      }
+      if (image.empty()) return fail("autorecomp requires an image path", json);
+      if (output.empty()) output = std::filesystem::path("out") / image.stem();
+      return command_autorecomp(image, output, target, repair, build_and_run, json, budget);
     }
     if (command == "functions") {
       if (argc < 3) return fail("functions requires an image path", json);

@@ -139,7 +139,67 @@ input:   PE32+ x86_64
 runtime: present (/path/to/recomp-studio/runtime)
 ```
 
-### 4.2 `inspect`
+### 4.2 `autorecomp`
+
+Run the whole pipeline in order — detect the host target, inspect, recover
+functions, classify instruction coverage, check import compatibility, translate,
+build, and optionally run and verify — with live progress, a log file and an
+optional repair loop.
+
+```sh
+build/recomp-studio autorecomp myapp.exe --output out/myapp --buildrun
+```
+
+```
+recomp-studio autorecomp  myapp.exe -> native host
+
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+✔ [2/9] inspect executable — PE32+ x86_64, 3 imports (0.00s)
+✔ [3/9] recover functions — 5 functions, 688 instructions (0.02s)
+✔ [4/9] classify instruction coverage — 688/688 lifted, 0 unsupported (0.01s)
+✔ [5/9] check import compatibility — 3/3 imports shimmed, 0 missing (0.00s)
+✔ [6/9] translate to host source — 5 functions, 3 imports (0.02s)
+✔ [7/9] build native executable — recomp-guest (2.77s)
+✔ [8/9] run native executable — exit code 0, 172 bytes of output (0.38s)
+✔ [9/9] verify against the reference — outputs match byte for byte (0.03s)
+
+AUTORECOMP COMPLETE
+  target      macos-arm64
+  project     /path/to/out/myapp
+  functions   5  instructions 688
+  coverage    100%  (0 unsupported in 0 classes)
+  imports     0 without shims
+  executable  /path/to/out/myapp/recomp-guest
+  run         exit code 0
+  verified    yes
+  log         /path/to/out/myapp/autorecomp.log
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--output <dir>` | Where to write the project and the log. Defaults to `out/<image stem>`. |
+| `--target <t>` | Output target. Left out, the host is detected with `uname` and mapped to `macos-arm64`, `macos-x86_64`, `linux-arm64` or `linux-x86_64`. |
+| `--buildrun` | Run the built program and verify it against the reference, through the same build and run steps the standalone commands use. Without it, `autorecomp` only builds. |
+| `--repair` | Run the repair harness after the pipeline. |
+| `--budget <n>` | Repair iterations (default 4). |
+| `--json` | Machine-readable summary; suppresses the animation. |
+
+Step states are ✔ ok, ⚠ warning and ✘ failed. A warning is not a pass: the
+import check warns when shims are missing, because the program will stop at the
+first call into an unimplemented DLL.
+
+The exit status is 0 only when the requested pipeline finished and, if
+`--buildrun` was given, the program verified. A program that builds and then
+fails to run is reported as `AUTORECOMP FAILED` with a non-zero exit status,
+never as a completed port.
+
+Every step, its duration and its outcome are appended to
+`<output>/autorecomp.log`, along with the program's own output when it is run.
+
+The animation is disabled when stdout is not a terminal, when `--json` is used,
+or when `NO_COLOR` is set, so piped output stays machine-readable.
+
+### 4.3 `inspect`
 
 Parse the executable and report structure, imports and hashes.
 
@@ -160,7 +220,7 @@ imports:     3
   kernel32.dll!WriteFile
 ```
 
-### 4.3 `analyze`
+### 4.4 `analyze`
 
 Recover functions and count instructions.
 
@@ -174,7 +234,7 @@ functions:    4
 instructions: 552
 ```
 
-### 4.4 `coverage`
+### 4.5 `coverage`
 
 Classify every recovered instruction and report the classes the lifter does not
 implement. `translate` stops at the *first* unsupported instruction, so for a
@@ -249,7 +309,7 @@ the census reports 100% coverage, so a census that over-reported would
 contradict a successful translation and one that under-reported would contradict
 a failed one.
 
-### 4.5 `imports`
+### 4.6 `imports`
 
 Report the program's operating-system surface: which imported functions already
 have a shim, and which are missing. Instruction coverage says whether the code
@@ -312,7 +372,7 @@ dispatches through its own table in `runtime/recomp_runtime.cpp`, and the
 regression suite parses both and requires them to agree exactly, so the report
 cannot claim an import works when the runtime would terminate on it.
 
-### 4.6 `functions`
+### 4.7 `functions`
 
 List recovered function candidates with their size.
 
@@ -326,7 +386,7 @@ build/recomp-studio functions tests/fixtures/apps/bin/arith.exe
 ...
 ```
 
-### 4.7 `cfg`
+### 4.8 `cfg`
 
 Export one function's control-flow graph as Graphviz DOT.
 
@@ -342,7 +402,7 @@ build/recomp-studio cfg tests/fixtures/apps/bin/arith.exe --address 0x140001080 
   | dot -Tpng -o cfg.png
 ```
 
-### 4.8 `translate`
+### 4.9 `translate`
 
 Generate a host project from the guest executable. This is the core step.
 
@@ -364,7 +424,7 @@ source:   sha256=36853847e207afef...
 The project contains `guest.cpp`, `recomp_runtime.hpp/.cpp`,
 `recomp-config.toml` and `recomp-manifest.json`.
 
-### 4.9 `build`
+### 4.10 `build`
 
 Compile the generated project into a native executable.
 
@@ -376,7 +436,7 @@ build/recomp-studio build out/arith
 built out/arith/recomp-guest
 ```
 
-### 4.10 `run`
+### 4.11 `run`
 
 Execute the generated binary.
 
@@ -384,7 +444,7 @@ Execute the generated binary.
 build/recomp-studio run out/arith
 ```
 
-### 4.11 `verify`
+### 4.12 `verify`
 
 Compare the generated binary against the original x86-64 code (Unicorn
 reference): output bytes and instruction trace.
@@ -403,7 +463,7 @@ VERIFY: PASS (identical output)
 
 Exit code is `0` on PASS, `1` on FAIL.
 
-### 4.12 `repair`
+### 4.13 `repair`
 
 The autonomous loop: translate, build, verify, localise the first divergence and
 write a per-iteration report.
@@ -432,7 +492,7 @@ mnemonics it saw, e.g.:
       first control-flow divergence at step 0 ...; unsupported mnemonics: addsd, bts, vpxor, ...
 ```
 
-### 4.13 `report`
+### 4.14 `report`
 
 Print the generated project manifest.
 
@@ -440,7 +500,7 @@ Print the generated project manifest.
 build/recomp-studio report out/arith
 ```
 
-### 4.14 `examples`
+### 4.15 `examples`
 
 ```sh
 build/recomp-studio examples list

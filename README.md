@@ -49,6 +49,7 @@ produces exactly the same 117 bytes of output.
 | Recursive-descent function recovery and CFG | Implemented |
 | Instruction coverage census for unsupported programs | Implemented |
 | Import compatibility report (implemented vs missing shims) | Implemented |
+| `autorecomp` end-to-end pipeline with progress, logs and repair loop | Implemented |
 | x86-64 (PE32+) → C++ lifter with exact EFLAGS semantics | Implemented, verified |
 | x86 (PE32) → C++ lifter, 32-bit address wrapping | Implemented, verified |
 | 32-bit calling conventions for imports (stdcall stack cleanup) | Implemented, verified |
@@ -101,6 +102,8 @@ Full documentation, with a worked example for every command and every supported
 operating system and processor, is in [MANUAL.md](MANUAL.md).
 
 ```
+recomp-studio autorecomp <image> [--output <dir>] [--target <t>] [--buildrun] [--repair]
+                                                  Run the whole pipeline with progress and logs
 recomp-studio doctor                              Host and toolchain capability
 recomp-studio inspect   <image>                   PE structure, imports, hashes
 recomp-studio analyze   <image>                   Functions and instruction counts

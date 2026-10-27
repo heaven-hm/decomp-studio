@@ -138,7 +138,12 @@ void FunctionDiscovery::discover() {
   // before it ends the previous routine: x86 decodes almost any byte sequence, so
   // "eight instructions decode here" alone accepts a great deal of data, and the
   // resulting phantom functions then fail to lift.
-  const auto ends_a_routine = [this](std::uint32_t rva) {
+  // A pointer is only believed to be a function entry when the bytes before it
+  // end the previous routine. Inside an executable section a single padding byte
+  // is not enough evidence -- one nop appears inside ordinary code all the time --
+  // so a code section requires either a return or jump, or a run of at least two
+  // padding bytes. In a data section a single terminator byte is already strong.
+  const auto ends_a_routine = [this](std::uint32_t rva, bool in_code_section) {
     if (rva == 0) return true;  // the very start of a section
     const auto previous = executable_.read_rva(rva - 1, 1);
     if (previous.empty()) return false;
@@ -147,18 +152,45 @@ void FunctionDiscovery::discover() {
       case 0xcb:  // retf
       case 0xe9:  // jmp rel32
       case 0xeb:  // jmp rel8
+        return true;
       case 0xcc:  // int3 padding
       case 0x90:  // nop padding
-      case 0x00:  // zero padding
-        return true;
+      case 0x00: {  // zero padding
+        if (!in_code_section) return true;
+        if (rva < 2) return true;
+        // Alignment padding is usually a multi-byte nop, so what precedes the
+        // final padding byte is often a prefix byte rather than another nop:
+        // `66 90` is one two-byte nop, not a nop after an operand-size prefix.
+        // Accept a run of padding and prefix bytes instead of two literal nops.
+        const auto earlier = executable_.read_rva(rva - 2, 1);
+        if (earlier.empty()) return false;
+        switch (earlier[0]) {
+          case 0x90:
+          case 0xcc:
+          case 0x00:
+          case 0x66:  // operand-size prefix
+          case 0x67:  // address-size prefix
+          case 0xf2:
+          case 0xf3:  // rep prefixes
+          case 0x2e:
+          case 0x36:
+          case 0x3e:
+          case 0x26:
+          case 0x64:
+          case 0x65:  // segment prefixes
+            return true;
+          default:
+            return false;
+        }
+      }
       default:
         return false;
     }
   };
-  const auto decodes_as_code = [this, &ends_a_routine](std::uint64_t target) {
+  const auto decodes_as_code = [this, &ends_a_routine](std::uint64_t target, bool in_code_section) {
     if (target < executable_.image_base) return false;
     auto address = static_cast<std::uint32_t>(target - executable_.image_base);
-    if (!ends_a_routine(address)) return false;
+    if (!ends_a_routine(address, in_code_section)) return false;
     for (int index = 0; index < 8; ++index) {
       if (!contains_code(address)) return false;
       const auto instruction = decode(address);
@@ -167,11 +199,16 @@ void FunctionDiscovery::discover() {
     }
     return true;
   };
+  // Executable sections are scanned too: a compiler is free to place a function
+  // pointer table inside .text, and this one does -- the C runtime's exit table
+  // lives there, so skipping code sections missed exactly the entries the
+  // program calls on the way out.
   for (const auto& section : executable_.sections) {
-    if (section.is_executable() || section.raw_size < 4) continue;
+    if (section.raw_size < 4) continue;
+    const bool in_code_section = section.is_executable();
     for (std::uint32_t offset = 0; offset + 4 <= section.raw_size; offset += 4) {
       const auto value = executable_.read_u32(section.virtual_address + offset);
-      if (!value || !decodes_as_code(*value)) continue;
+      if (!value || !decodes_as_code(*value, in_code_section)) continue;
       pending_entries.push_back(*value);
     }
   }

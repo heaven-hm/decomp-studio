@@ -190,6 +190,26 @@ All notable changes to Recomp Studio are documented here. This project follows
   value is otherwise very hard to trace, because the writer computed the address
   and so leaves no literal reference to it in the image.
 
+- Function-pointer recovery from **executable** sections. The scan added earlier
+  only looked at data sections, but a compiler may place a function pointer table
+  inside `.text` — this program's C runtime keeps its exit table there, so
+  skipping code sections missed exactly the entries the program calls on the way
+  out. Tetris.exe: 412 functions becomes 495.
+- The remaining legacy and x87 instructions the widened recovery reaches:
+  `fptan`, `fnsave`/`frstor` (the 108-byte x87 area), `fsincos`, `fyl2xp1`,
+  `xlatb`, `enter` including its display-frame copy, `aaa`, `aam`, `clc`/`stc`/
+  `cmc` and `emms`. `in`, `out` and `bound` cannot work in a user-mode
+  recompilation, so they fail loudly rather than doing something plausible.
+
+  Effect: `igi.exe` lifts completely at 3,370 functions and `igi1ed.exe` at
+  14,774, both with no unsupported instructions.
+
+### Fixed
+
+- Alignment padding was recognised only as two literal `0x90` bytes, so a
+  function preceded by a multi-byte nop (`66 90`) was rejected. That is what
+  assemblers actually emit, and it hid the exit-table entries above.
+
 ### Fixed
 
 - **A `jmp` to an import pushed a second return address.** A `jmp [iat]` thunk is

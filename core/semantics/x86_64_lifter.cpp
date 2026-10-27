@@ -965,8 +965,10 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
   if (mnemonic == "jmp") {
     if (const auto* imported = import_for_instruction(discovery_, instruction); imported != nullptr) {
-      emit("invoke_win32_import(context, \"" + imported->library_name + "\", \"" + imported->symbol_name +
-           "\", " + format_hex(instruction.address + instruction.size) + ");");
+      // A jump to an import is a tail call: the return address is already on the
+      // stack, so this must not push another one.
+      emit("invoke_win32_import_tail(context, \"" + imported->library_name + "\", \"" +
+           imported->symbol_name + "\");");
       emit("return;");
       return;
     }
@@ -1416,6 +1418,76 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
   if ((mnemonic == "fxrstor" || mnemonic == "fxrstor64") && operands.size() == 1) {
     emit("x87_restore_state(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  if (mnemonic == "fsincos") { emit("x87_sine_cosine(context);"); return; }
+  if (mnemonic == "fyl2xp1") { emit("x87_log2_x_plus_one(context);"); return; }
+  // The flag-only instructions and the MMX state reset.
+  if (mnemonic == "clc") { emit("context->carry_flag = 0;"); return; }
+  if (mnemonic == "stc") { emit("context->carry_flag = 1;"); return; }
+  if (mnemonic == "cmc") { emit("context->carry_flag = context->carry_flag != 0 ? 0 : 1;"); return; }
+  if (mnemonic == "emms") { return; }  // no MMX tag state is modelled
+  // AAM: AL = AH-adjusted BCD digit pair. The immediate form is the general one.
+  if (mnemonic == "aam") {
+    const auto base = operands.empty() ? 10 : (operands[0].immediate_value & 0xff);
+    if (base == 0) throw LiftError("AAM with a zero base at " + format_hex(instruction.address));
+    emit("{ const std::uint32_t value = static_cast<std::uint32_t>(context->registers[0] & 0xffu); "
+         "context->registers[0] = (context->registers[0] & ~0xffffull) | "
+         "(static_cast<std::uint64_t>((value / " + std::to_string(base) + ") << 8) | (value % " +
+         std::to_string(base) + ")); "
+         "context->zero_flag = (context->registers[0] & 0xffull) == 0 ? 1 : 0; }");
+    return;
+  }
+  // Port I/O and BOUND cannot work in a user-mode recompilation; they fail
+  // loudly rather than doing something plausible.
+  if (mnemonic == "in" || mnemonic == "out" || mnemonic == "bound") {
+    emit("recomp_trap(context, \"" + mnemonic + "\");");
+    emit("return;");
+    return;
+  }
+  if (mnemonic == "fptan") { emit("x87_partial_tangent(context);"); return; }
+  if (mnemonic == "fnsave" && operands.size() == 1) {
+    emit("x87_save_state_87(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  if (mnemonic == "frstor" && operands.size() == 1) {
+    emit("x87_restore_state_87(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  // XLATB: AL = [EBX + AL], a byte table lookup with no operands.
+  if (mnemonic == "xlatb" || mnemonic == "xlat") {
+    emit("{ const std::uint64_t table = context->registers[3] + "
+         "(context->registers[0] & 0xffull); context->registers[0] = "
+         "(context->registers[0] & ~0xffull) | load_guest_memory(context, mask_guest_address(table), 1); }");
+    return;
+  }
+  // ENTER imm16, imm8. A nonzero nesting level copies display frames; that form
+  // is not modelled, so it fails loudly rather than building a wrong frame.
+  if (mnemonic == "enter" && operands.size() == 2) {
+    const auto frame = operands[0].immediate_value & 0xffff;
+    const auto level = operands[1].immediate_value & 0x1f;
+    emit("push_guest_stack(context, context->registers[5]);");
+    if (level != 0) {
+      // The nesting level copies display words from the frame chain, which is
+      // what makes ENTER usable for block-structured languages.
+      emit("{ const std::uint64_t frame_temporary = context->registers[4];");
+      emit("  for (std::uint32_t nesting = 1; nesting < " + std::to_string(level) + "; ++nesting) {");
+      emit("    context->registers[5] = mask_guest_address(context->registers[5] - 4);");
+      emit("    push_guest_stack(context, load_guest_memory(context, context->registers[5], 4)); }");
+      emit("  push_guest_stack(context, frame_temporary); }");
+    }
+    emit("context->registers[5] = context->registers[4];");
+    emit("context->registers[4] = mask_guest_address(context->registers[4] - " + std::to_string(frame) + ");");
+    return;
+  }
+  // AAA: ASCII adjust AL after addition, in the BCD sense the manual defines.
+  if (mnemonic == "aaa") {
+    emit("{ const std::uint32_t low = static_cast<std::uint32_t>(context->registers[0] & 0x0fu); "
+         "if (low > 9 || context->auxiliary_flag != 0) { "
+         "context->registers[0] = (context->registers[0] + 0x106u) & 0xff0fu; "
+         "context->registers[0] = (context->registers[0] & ~0x100ull) | 0x100ull; "
+         "context->carry_flag = 1; context->auxiliary_flag = 1; } else { "
+         "context->registers[0] &= 0x0fu; context->carry_flag = 0; context->auxiliary_flag = 0; } }");
     return;
   }
   if (mnemonic == "fprem" || mnemonic == "fprem1") {

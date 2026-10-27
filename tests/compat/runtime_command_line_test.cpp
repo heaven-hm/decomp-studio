@@ -24,6 +24,14 @@ int main() {
     if (std::strcmp(reinterpret_cast<const char*>(guest_memory + command), "recomp-guest") != 0) return 8;
     if (environ && environ[0] && load_guest_memory(&context, context.registers[0], 2) !=
                                      static_cast<unsigned char>(environ[0][0])) return 9;
+    // The runtime reports UTF-8 as its ANSI code page; UTF-8 has no DBCS lead bytes.
+    for (const auto byte : {0x41, 0x81, 0xc2, 0xff}) {
+      context.registers[1] = byte;
+      context.registers[4] = 0x700000;
+      store_guest_memory(&context, context.registers[4] + 4, byte, 4);
+      if (!invoke_shared_shim(&context, "kernel32.dll", "IsDBCSLeadByte")) return 10;
+      if (context.registers[0] != 0) return 11;
+    }
     std::printf("width=%d command-line and CRT pointer passed\n", width);
   }
   return 0;

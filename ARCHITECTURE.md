@@ -101,6 +101,10 @@ converge on, and where this tool will grow next:
    need more than 53 mantissa bits differ from true 80-bit extended precision;
    soft-float 80-bit is still open. The Unicorn reference also does not
    initialise FCW, so the reset control word is not compared.
+   MXCSR is modelled as guest state and `CVTDQ2PS` honours its rounding control, but the
+   precision flag is not asserted in differential tests because the Unicorn reference
+   does not model it for packed conversions, and other SSE arithmetic still uses the
+   default rounding mode.
 4. **High-level emulation and native replacement** — already supported by address;
    the next step is hash-guarded replacement (apply only when the guest bytes
    match a known SHA-256), as igi-recomp does for CRT routines.

@@ -405,11 +405,33 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
 
-  if (mnemonic == "ldmxcsr") return;
-  if (mnemonic == "stmxcsr") {
-    if (!operands.empty() && operands[0].kind == discovery::Operand::Kind::Memory)
-      emit("store_guest_memory(context, " + effective_address_expression(instruction, operands[0]) + ", 0x1f80ull, 4);");
+  // MXCSR is real guest state: it must round-trip through memory and drive the
+  // rounding mode of conversions, not be a constant 0x1f80.
+  if (mnemonic == "ldmxcsr" && operands.size() == 1 &&
+      operands[0].kind == discovery::Operand::Kind::Memory) {
+    emit("load_mxcsr(context, " + effective_address_expression(instruction, operands[0]) + ");");
     return;
+  }
+  if (mnemonic == "stmxcsr" && operands.size() == 1 &&
+      operands[0].kind == discovery::Operand::Kind::Memory) {
+    emit("store_mxcsr(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+
+  // CVTDQ2PS: convert four packed signed dwords to four packed single-precision
+  // floats under the MXCSR rounding mode, raising the precision flag if inexact.
+  if (mnemonic == "cvtdq2ps" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    if (is_vector_register(operands[1])) {
+      emit("convert_dwords_to_floats(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("convert_dwords_to_floats_from_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
   }
   if (mnemonic == "cpuid") { emit("execute_cpuid(context);"); return; }
   if (mnemonic == "prefetchnta" || mnemonic == "prefetcht0" || mnemonic == "prefetcht1" ||

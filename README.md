@@ -173,8 +173,10 @@ MSVC emits).
 SSE/AVX subset: `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`/`movss`/
 `movsd`/`movd`/`movq`, scalar float and double arithmetic, vector bitwise and
 integer add/sub/compare, `pshufd`, `punpckldq`/`punpckhdq`/`punpcklqdq`/
-`punpckhqdq`, `vpxor`/`vandps`/`vpor`, conversions, `ldmxcsr`/`stmxcsr`,
-prefetch hints. `lock` and `rep` prefixes are handled.
+`punpckhqdq`, `vpxor`/`vandps`/`vpor`,
+`cvtdq2ps` (packed dword → float, honouring the MXCSR rounding mode),
+`cvtsi2sd`/`cvttsd2si`/`cvtsd2ss`/`cvtss2sd`, `ldmxcsr`/`stmxcsr` (MXCSR is
+modelled as guest state), prefetch hints. `lock` and `rep` prefixes are handled.
 
 x87: `fld`/`fild`, `fst`/`fstp`/`fist`/`fistp`, `fadd`/`fsub`/`fsubr`/`fmul`/
 `fdiv`/`fdivr` and their pop forms, `fcom`/`fcomp`/`fcompp`/`fucom*`/`ftst`,

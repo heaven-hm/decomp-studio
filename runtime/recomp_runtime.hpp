@@ -44,6 +44,7 @@ struct GuestContext {
   std::uint32_t x87_top;
   std::uint32_t x87_control_word;
   std::uint32_t x87_status_word;
+  std::uint32_t mxcsr;
 };
 
 extern std::uint8_t* guest_memory;
@@ -814,6 +815,87 @@ inline void x87_store_status_word(GuestContext* context, std::uint64_t address) 
 
 inline void x87_store_status_word_ax(GuestContext* context) {
   context->registers[0] = (context->registers[0] & ~0xffffull) | (x87_status_value(context) & 0xffffull);
+}
+
+// ---- MXCSR ------------------------------------------------------------
+// MXCSR is architectural state: it lives in the guest context, not in the host
+// FP environment, so a guest rounding-mode change cannot leak into the
+// recompiled program's own arithmetic.
+inline constexpr std::uint32_t kMxcsrDefaultValue = 0x1f80u;
+inline constexpr std::uint32_t kMxcsrPrecisionFlag = 1u << 5;
+inline constexpr std::uint32_t kMxcsrRoundingControlShift = 13;
+inline constexpr std::uint32_t kMxcsrRoundingControlMask = 3u << kMxcsrRoundingControlShift;
+
+inline int mxcsr_rounding_mode(const GuestContext* context) {
+  return static_cast<int>((context->mxcsr & kMxcsrRoundingControlMask) >> kMxcsrRoundingControlShift);
+}
+
+inline void load_mxcsr(GuestContext* context, std::uint64_t address) {
+  context->mxcsr = static_cast<std::uint32_t>(load_guest_memory(context, address, 4));
+}
+
+inline void store_mxcsr(GuestContext* context, std::uint64_t address) {
+  store_guest_memory(context, address, context->mxcsr, 4);
+}
+
+// Converts one signed 32-bit integer to single precision under the requested
+// rounding mode (0 nearest-even, 1 toward -inf, 2 toward +inf, 3 toward zero)
+// and reports whether the result is inexact. Every int32 is exact in double, so
+// the two neighbouring floats bracket the exact value exactly.
+inline float round_integer_to_float(std::int32_t value, int rounding_mode, bool* inexact) {
+  const double exact = static_cast<double>(value);
+  const float nearest = static_cast<float>(value);  // host default: nearest-even
+  if (static_cast<double>(nearest) == exact) {
+    *inexact = false;
+    return nearest;
+  }
+  *inexact = true;
+  // Bracket the exact value with the two adjacent floats. `nearest` is one of
+  // them, but which end it is depends on the value and must not be assumed.
+  float lower = nearest;
+  float upper = nearest;
+  if (static_cast<double>(nearest) < exact) {
+    upper = std::nextafterf(nearest, INFINITY);
+  } else {
+    lower = std::nextafterf(nearest, -INFINITY);
+  }
+  switch (rounding_mode) {
+    case 1: return lower;                      // toward -infinity
+    case 2: return upper;                      // toward +infinity
+    case 3: return value > 0 ? lower : upper;  // toward zero
+    default: return nearest;                   // nearest, ties to even
+  }
+}
+
+inline void convert_dwords_to_floats_array(GuestContext* context, int destination,
+                                           const std::int32_t* values) {
+  const int rounding_mode = mxcsr_rounding_mode(context);
+  float converted[4];
+  bool inexact = false;
+  for (int index = 0; index < 4; ++index) {
+    bool element_inexact = false;
+    converted[index] = round_integer_to_float(values[index], rounding_mode, &element_inexact);
+    inexact = inexact || element_inexact;
+  }
+  std::memcpy(context->vector_registers[destination], converted, 16);
+  if (inexact) context->mxcsr |= kMxcsrPrecisionFlag;
+}
+
+inline void convert_dwords_to_floats(GuestContext* context, int destination, int source) {
+  std::int32_t values[4];
+  std::memcpy(values, context->vector_registers[source], 16);
+  convert_dwords_to_floats_array(context, destination, values);
+}
+
+inline void convert_dwords_to_floats_from_memory(GuestContext* context, int destination,
+                                                 std::uint64_t address) {
+  if (address + 16 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 16, 0);
+    return;
+  }
+  std::int32_t values[4];
+  std::memcpy(values, guest_memory + address, 16);
+  convert_dwords_to_floats_array(context, destination, values);
 }
 
 void string_move(GuestContext* context, int element_size, int repeat);

@@ -11,3 +11,12 @@ APPS.MD
 .cache/
 .tools/
 tests/fixtures/apps/bin/
+
+# Audit reports and design docs are kept local, not published. They are working notes:
+# the repository is the code and the tests, and these describe the process of getting
+# there. Listed here rather than merely deleted so they cannot come back by accident.
+/reports/
+/CHANGELOG.md
+/ARCHITECTURE.md
+/MANUAL.md
+/.audit/

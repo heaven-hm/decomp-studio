@@ -409,9 +409,11 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     std::string body = "{ const std::uint64_t bit = (" + index + ") % " + bits + "; const std::uint64_t original = " +
                        value + "; context->carry_flag = (original >> bit) & 1; ";
     if (mnemonic != "bt") {
-      const std::string mask = mnemonic == "btc" ? "(1ull << bit)" : "(1ull << bit)";
+      const std::string mask = "(1ull << bit)";
+      // BTR must *clear* the bit, so it ands with the complement. Anding with
+      // the mask itself kept only the tested bit and destroyed every other one.
       const auto updated = mnemonic == "bts" ? "(original | " + mask + ")"
-                          : mnemonic == "btr" ? "(original & " + mask + ")"
+                          : mnemonic == "btr" ? "(original & ~" + mask + ")"
                                               : "(original ^ " + mask + ")";
       body += operand_write_statement(instruction, operands[0], updated, width) + " }";
     } else {

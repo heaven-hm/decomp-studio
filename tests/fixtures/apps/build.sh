@@ -18,7 +18,7 @@ CC32="${CC32:-i686-w64-mingw32-gcc}"
 mkdir -p "$out"
 
 # Fixtures that must build and pass for the 64-bit target.
-FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops"
+FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops"
 
 # Fixtures that must build and pass for the 32-bit target (source name == output name).
 FIXTURES_X86="pe32_abi"

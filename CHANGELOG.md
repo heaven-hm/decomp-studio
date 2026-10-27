@@ -29,6 +29,12 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- `btr` was silently wrong: it emitted `original & mask` instead of
+  `original & ~mask`, so instead of clearing the tested bit it kept *only* that
+  bit and destroyed every other one. A `btr` of bit 5 in `0xffffffffffffffff`
+  produced `32` rather than `-33`. The existing fixtures never covered the
+  register form, and the error was found while diagnosing the eight `btr` sites
+  in a real binary. Now covered by the `bitops` fixture.
 - README instruction-coverage list overstated the SSE unpack support as
   `punpck*`; only `punpckldq`/`punpckhdq`/`punpcklqdq`/`punpckhqdq` are lifted.
 - `coverage` classified unsupported instructions by the raw Capstone mnemonic

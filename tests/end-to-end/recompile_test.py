@@ -32,6 +32,7 @@ FIXTURES = [
     ("flagprobe", "per-operation flag semantics"),
     ("wide", "64-bit arithmetic and shifts"),
     ("byteops", "byte swap and the direction flag"),
+    ("bitops", "BT/BTS/BTR/BTC register forms"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -55,6 +56,10 @@ EXPECTED_OUTPUT = {
     # flag changes the printed digits, so the fragments have to pin them.
     "byteops": ["byteops:start", "bswap32=2018915346", "bswap64=", "bswap64_hi=",
                 "backward=abcdefg", "forward=abcdefg", "byteops:done"],
+    # BTR's write-back is the point: anding with the mask instead of its
+    # complement prints 32 instead of -33 and 32768 instead of 32767.
+    "bitops": ["bitops:start", "btr=-33", "btr_cf=1", "bts=8", "bts_cf=0", "btc=0",
+               "btc_cf=1", "bt_cf=1", "btr32=32767", "btr32_cf=1", "bitops:done"],
     "pe32_arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "pe32_abi": ["pe32:start", "cdecl=", "stdcall=", "fastcall=", "thiscall=", "dispatch=",
                  "wrapped=16", "checksum=", "pe32:done"],

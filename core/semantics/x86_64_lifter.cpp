@@ -899,6 +899,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
 
   if (mnemonic == "push") {
+    // Segment registers are not in the general register file, so the generic
+    // path below would emit an empty expression and produce code that does not
+    // compile. A flat address space has no selectors, so this fails loudly
+    // instead of inventing one.
+    if (operands[0].kind == Operand::Kind::Register &&
+        register_read_expression(operands[0].register_name).empty()) {
+      emit("recomp_trap(context, \"push " + operands[0].register_name + "\");");
+      emit("return;");
+      return;
+    }
     if (operands[0].kind == Operand::Kind::Immediate) {
       const auto width = operand_width(operands[0], 4);
       emit("push_guest_stack(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(" +
@@ -1198,8 +1208,15 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          std::to_string(operand_width(operands[0], 4)) + ");");
     return;
   }
-  if ((mnemonic == "fst" || mnemonic == "fstp") && operands.size() == 1) {
-    const int pop = mnemonic == "fstp" ? 1 : 0;
+  if ((mnemonic == "fst" || mnemonic == "fstp" || mnemonic == "fstpnce" || mnemonic == "fstpce" ||
+       mnemonic == "fstcw" || mnemonic == "fnstcw") &&
+      (operands.size() == 1 || (operands.size() == 2 && is_x87_register(operands[0]))) &&
+      mnemonic.rfind("fst", 0) == 0) {
+    if (mnemonic == "fstcw" || mnemonic == "fnstcw") {
+      emit("x87_store_control_word(context, " + effective_address_expression(instruction, operands[0]) + ");");
+      return;
+    }
+    const int pop = mnemonic == "fst" ? 0 : 1;
     if (is_x87_register(operands[0])) {
       emit("x87_write(context, " + std::to_string(x87_operand_index(operands[0].register_name)) +
            ", x87_read(context, 0));");
@@ -1213,6 +1230,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   {
     static const std::map<std::string, int> arithmetic_ops = {
         {"fadd", 0}, {"fmul", 1}, {"fsub", 2}, {"fsubr", 3}, {"fdiv", 4}, {"fdivr", 5},
+        {"fiadd", 0}, {"fimul", 1}, {"fisub", 2}, {"fisubr", 3}, {"fidiv", 4}, {"fidivr", 5},
         {"faddp", 0}, {"fmulp", 1}, {"fsubp", 2}, {"fsubrp", 3}, {"fdivp", 4}, {"fdivrp", 5}};
     const auto entry = arithmetic_ops.find(mnemonic);
     if (entry != arithmetic_ops.end()) {
@@ -1358,6 +1376,40 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       for (int index = 0; index < pops; ++index) emit("(void)x87_pop(context);");
       return;
     }
+  }
+  if (mnemonic == "fprem" || mnemonic == "fprem1") {
+    emit(std::string("x87_partial_remainder(context, ") + (mnemonic == "fprem1" ? "1" : "0") + ");");
+    return;
+  }
+  if (mnemonic == "f2xm1") { emit("x87_exponential_minus_one(context);"); return; }
+  if (mnemonic == "fscale") { emit("x87_scale(context);"); return; }
+  if ((mnemonic == "fnstenv" || mnemonic == "fstenv") && operands.size() == 1) {
+    emit("x87_store_environment(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  if (mnemonic == "fldenv" && operands.size() == 1) {
+    emit("x87_load_environment(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  // Far-pointer loads. In the flat 32-bit model the selector is ignored and the
+  // instruction is a plain 32-bit load.
+  if ((mnemonic == "les" || mnemonic == "lds" || mnemonic == "lss" || mnemonic == "lfs" ||
+       mnemonic == "lgs") &&
+      operands.size() == 2 && operands[1].kind == discovery::Operand::Kind::Memory) {
+    const auto width = operand_width(operands[0], 4);
+    emit(operand_write_statement(instruction, operands[0],
+         "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", " +
+             std::to_string(width) + ")", width));
+    return;
+  }
+  // Instructions this recompiler does not model and that a flat 32-bit user-mode
+  // image cannot meaningfully execute. They fail loudly rather than silently.
+  if (mnemonic == "lcall" || mnemonic == "ljmp" || mnemonic == "insb" || mnemonic == "insw" ||
+      mnemonic == "insd" || mnemonic == "outsb" || mnemonic == "outsw" || mnemonic == "outsd" ||
+      mnemonic == "int") {
+    emit("recomp_trap(context, \"" + mnemonic + "\");");
+    emit("return;");
+    return;
   }
   if (mnemonic == "fsqrt") { emit("x87_write(context, 0, std::sqrt(x87_read(context, 0)));"); return; }
   if (mnemonic == "fsin") { emit("x87_write(context, 0, std::sin(x87_read(context, 0)));"); return; }

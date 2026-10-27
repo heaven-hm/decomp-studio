@@ -135,6 +135,31 @@ All notable changes to Recomp Studio are documented here. This project follows
 - `HeapReAlloc` on the real heap, factored out of `HeapAlloc`/`HeapFree` so the
   three share one allocator.
 
+- Function-pointer recovery from initialised data. A PE32 image with a fixed
+  load address frequently carries no base relocation for an internal pointer, so
+  the relocation-driven pass missed it and recursive descent could not reach it
+  either — the pointer is the only reference. Data sections are now scanned for
+  32-bit values that land on a routine boundary and decode as code. On `igi.exe`
+  this recovers 485 further functions (971 -> 1456, 51,518 -> 83,318
+  instructions) and resolves an indirect call the runtime previously refused.
+  The boundary requirement matters: x86 decodes almost any byte sequence, so
+  "eight instructions decode here" alone accepted a great deal of data and the
+  resulting phantom functions did not lift.
+- The remaining x87 forms `fisub`/`fiadd`/`fimul`/`fidiv`/`fisubr`/`fidivr`,
+  `fprem`/`fprem1`, `f2xm1`, `fscale`, `fldenv`/`fnstenv`, and the no-wait
+  `fstpnce`/`fstpce` stores; and the far-pointer loads `les`/`lds`/`lss`/`lfs`/
+  `lgs`, which in a flat 32-bit model are ordinary 32-bit loads.
+- ole32 `CoInitialize` and `CoUninitialize`, ported from igi-recomp.
+
+### Fixed
+
+- `push <segment register>` emitted an empty operand expression, because segment
+  registers are not in the general register file, so the generated code did not
+  compile. A flat address space has no selector to push, so it now fails loudly
+  at run time instead of emitting nothing.
+- `x87_store_environment` used `x87_status_value` before it was declared, which
+  broke the generated project's build rather than the studio's.
+
 ### Fixed
 
 - The unbound-import diagnostic did not name the import:

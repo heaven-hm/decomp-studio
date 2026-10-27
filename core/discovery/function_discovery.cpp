@@ -127,6 +127,55 @@ void FunctionDiscovery::discover() {
       pending_entries.push_back(target);
   }
 
+  // Function pointers in initialised data that carry no base relocation. A PE32
+  // image with a fixed load address frequently has no relocation for an internal
+  // pointer, so the relocation pass above misses them, and recursive descent
+  // cannot reach them either because nothing calls them directly -- the pointer
+  // is the only reference. Scan the data sections for 32-bit values that land on
+  // a run of decodable instructions; random data that happens to look like an
+  // address rarely decodes as eight valid instructions in a row.
+  // A pointer is only believed to be a function entry when the byte immediately
+  // before it ends the previous routine: x86 decodes almost any byte sequence, so
+  // "eight instructions decode here" alone accepts a great deal of data, and the
+  // resulting phantom functions then fail to lift.
+  const auto ends_a_routine = [this](std::uint32_t rva) {
+    if (rva == 0) return true;  // the very start of a section
+    const auto previous = executable_.read_rva(rva - 1, 1);
+    if (previous.empty()) return false;
+    switch (previous[0]) {
+      case 0xc3:  // ret
+      case 0xcb:  // retf
+      case 0xe9:  // jmp rel32
+      case 0xeb:  // jmp rel8
+      case 0xcc:  // int3 padding
+      case 0x90:  // nop padding
+      case 0x00:  // zero padding
+        return true;
+      default:
+        return false;
+    }
+  };
+  const auto decodes_as_code = [this, &ends_a_routine](std::uint64_t target) {
+    if (target < executable_.image_base) return false;
+    auto address = static_cast<std::uint32_t>(target - executable_.image_base);
+    if (!ends_a_routine(address)) return false;
+    for (int index = 0; index < 8; ++index) {
+      if (!contains_code(address)) return false;
+      const auto instruction = decode(address);
+      if (instruction.size == 0 || instruction.mnemonic.empty()) return false;
+      address += static_cast<std::uint32_t>(instruction.size);
+    }
+    return true;
+  };
+  for (const auto& section : executable_.sections) {
+    if (section.is_executable() || section.raw_size < 4) continue;
+    for (std::uint32_t offset = 0; offset + 4 <= section.raw_size; offset += 4) {
+      const auto value = executable_.read_u32(section.virtual_address + offset);
+      if (!value || !decodes_as_code(*value)) continue;
+      pending_entries.push_back(*value);
+    }
+  }
+
   std::set<std::uint64_t> known_entries(pending_entries.begin(), pending_entries.end());
   constexpr std::size_t kMaximumInstructions = 2'000'000;
   std::size_t recovered_instruction_count = 0;

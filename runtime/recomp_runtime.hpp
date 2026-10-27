@@ -1335,6 +1335,51 @@ inline void x87_arithmetic(GuestContext* context, int operation, double operand)
   x87_write(context, 0, result);
 }
 
+// The transcendental and remainder forms the x87 supports but the game paths do
+// not exercise often. Each is the exact C library equivalent; the x87 computes
+// them in extended precision, which this model does not, so they inherit the
+// documented double-precision limit.
+inline void x87_partial_remainder(GuestContext* context, int round_quotient) {
+  const auto dividend = x87_read(context, 0);
+  const auto divisor = x87_read(context, 1);
+  if (divisor == 0.0 || std::isnan(dividend) || std::isnan(divisor)) {
+    context->x87_status_word |= 0x0001u;  // invalid operation
+    return;
+  }
+  double quotient = dividend / divisor;
+  quotient = round_quotient != 0 ? std::nearbyint(quotient) : std::trunc(quotient);
+  x87_write(context, 0, dividend - quotient * divisor);
+  context->x87_status_word &= ~0x4100u;  // C2 clear: the result is a partial one
+}
+
+inline void x87_exponential_minus_one(GuestContext* context) {
+  x87_write(context, 0, std::exp2(x87_read(context, 0)) - 1.0);
+}
+
+inline void x87_scale(GuestContext* context) {
+  x87_write(context, 0, std::ldexp(x87_read(context, 0), static_cast<int>(std::trunc(x87_read(context, 1)))));
+}
+
+// FNSTENV/FSTENV store the 28-byte environment; FLDENV loads it. Only the
+// control and status words are modelled, so the tag word and the saved
+// instruction and data pointers are written as zero and ignored on load.
+inline std::uint32_t x87_status_value(const GuestContext* context);
+
+inline void x87_store_environment(GuestContext* context, std::uint64_t address) {
+  store_guest_memory(context, address, context->x87_control_word, 4);
+  store_guest_memory(context, address + 4, x87_status_value(context), 4);
+  store_guest_memory(context, address + 8, 0, 4);   // tag word
+  store_guest_memory(context, address + 12, 0, 4);  // instruction pointer
+  store_guest_memory(context, address + 16, 0, 4);
+  store_guest_memory(context, address + 20, 0, 4);  // data pointer
+  store_guest_memory(context, address + 24, 0, 4);
+}
+
+inline void x87_load_environment(GuestContext* context, std::uint64_t address) {
+  context->x87_control_word = static_cast<std::uint32_t>(load_guest_memory(context, address, 4));
+  context->x87_status_word = static_cast<std::uint32_t>(load_guest_memory(context, address + 4, 4));
+}
+
 inline void x87_load_control_word(GuestContext* context, std::uint64_t address) {
   context->x87_control_word = static_cast<std::uint32_t>(load_guest_memory(context, address, 2));
 }

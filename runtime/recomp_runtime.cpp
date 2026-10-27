@@ -5,6 +5,7 @@
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
 
 // The host environment, used to build the guest's environment blocks.
@@ -543,6 +544,117 @@ void win32_heap_realloc(GuestContext* context) {
   set_import_result(context, replacement);
 }
 
+// ---- kernel32: string classification and locale mapping -------------------
+// Ported from HenryKun55/igi-recomp (MIT) shim/src/kernel32.c. The C1_* bits are
+// the ones GetStringTypeA/W report, and the mapping flags are LCMAP_LOWERCASE
+// (0x100) and LCMAP_UPPERCASE (0x200).
+std::uint32_t classify_character(std::uint32_t character) {
+  if (character >= 256u) return 0x100u;  // C1_ALPHA
+  const auto value = static_cast<int>(character);
+  std::uint32_t type = 0;
+  if (std::isupper(value) != 0) type |= 0x001u;  // C1_UPPER
+  if (std::islower(value) != 0) type |= 0x002u;  // C1_LOWER
+  if (std::isdigit(value) != 0) type |= 0x004u;  // C1_DIGIT
+  if (std::isspace(value) != 0) type |= 0x008u;  // C1_SPACE
+  if (std::ispunct(value) != 0) type |= 0x010u;  // C1_PUNCT
+  if (std::iscntrl(value) != 0) type |= 0x020u;  // C1_CNTRL
+  if (character == ' ' || character == '\t') type |= 0x040u;  // C1_BLANK
+  if (std::isxdigit(value) != 0) type |= 0x080u;  // C1_XDIGIT
+  if (std::isalpha(value) != 0) type |= 0x100u;  // C1_ALPHA
+  return type;
+}
+
+std::uint32_t map_character(std::uint32_t flags, std::uint32_t character) {
+  if (character >= 256u) return character;
+  if ((flags & 0x100u) != 0) return static_cast<std::uint32_t>(std::tolower(static_cast<int>(character)));
+  if ((flags & 0x200u) != 0) return static_cast<std::uint32_t>(std::toupper(static_cast<int>(character)));
+  return character;
+}
+
+void win32_get_string_type_a(GuestContext* context) {
+  const auto source = import_argument(context, 2);
+  const auto output = import_argument(context, 4);
+  auto count = static_cast<std::int32_t>(import_argument(context, 3));
+  if (count < 0) count = static_cast<std::int32_t>(read_guest_string(source).size()) + 1;
+  for (std::int32_t index = 0; index < count; ++index)
+    store_guest_memory(context, output + static_cast<std::uint64_t>(index) * 2,
+                       classify_character(load_guest_memory(context, source + static_cast<std::uint64_t>(index), 1)), 2);
+  set_import_result(context, 1);
+}
+
+void win32_get_string_type_w(GuestContext* context) {
+  const auto source = import_argument(context, 1);
+  const auto output = import_argument(context, 3);
+  auto count = static_cast<std::int32_t>(import_argument(context, 2));
+  if (count < 0) {
+    count = 0;
+    while (load_guest_memory(context, source + static_cast<std::uint64_t>(count) * 2, 2) != 0) ++count;
+    ++count;
+  }
+  for (std::int32_t index = 0; index < count; ++index)
+    store_guest_memory(context, output + static_cast<std::uint64_t>(index) * 2,
+                       classify_character(static_cast<std::uint32_t>(
+                           load_guest_memory(context, source + static_cast<std::uint64_t>(index) * 2, 2))), 2);
+  set_import_result(context, 1);
+}
+
+void win32_lc_map_string_a(GuestContext* context) {
+  const auto flags = import_argument(context, 1);
+  const auto source = import_argument(context, 2);
+  const auto destination = import_argument(context, 4);
+  const auto destination_size = import_argument(context, 5);
+  auto count = static_cast<std::int32_t>(import_argument(context, 3));
+  if (count < 0) count = static_cast<std::int32_t>(read_guest_string(source).size()) + 1;
+  if (destination_size != 0) {
+    if (static_cast<std::uint64_t>(count) > destination_size)
+      count = static_cast<std::int32_t>(destination_size);
+    for (std::int32_t index = 0; index < count; ++index)
+      store_guest_memory(context, destination + static_cast<std::uint64_t>(index),
+                         map_character(flags, load_guest_memory(context, source + static_cast<std::uint64_t>(index), 1)), 1);
+  }
+  set_import_result(context, static_cast<std::uint64_t>(count));
+}
+
+void win32_lc_map_string_w(GuestContext* context) {
+  const auto flags = import_argument(context, 1);
+  const auto source = import_argument(context, 2);
+  const auto destination = import_argument(context, 4);
+  const auto destination_size = import_argument(context, 5);
+  auto count = static_cast<std::int32_t>(import_argument(context, 3));
+  if (count < 0) {
+    count = 0;
+    while (load_guest_memory(context, source + static_cast<std::uint64_t>(count) * 2, 2) != 0) ++count;
+    ++count;
+  }
+  if (destination_size != 0) {
+    if (static_cast<std::uint64_t>(count) > destination_size)
+      count = static_cast<std::int32_t>(destination_size);
+    for (std::int32_t index = 0; index < count; ++index)
+      store_guest_memory(context, destination + static_cast<std::uint64_t>(index) * 2,
+                         map_character(flags, static_cast<std::uint32_t>(
+                             load_guest_memory(context, source + static_cast<std::uint64_t>(index) * 2, 2))), 2);
+  }
+  set_import_result(context, static_cast<std::uint64_t>(count));
+}
+
+// ---- ole32 ----------------------------------------------------------------
+// Ported from HenryKun55/igi-recomp (MIT) shim/src/ole32.c. COM apartment
+// initialisation is a no-op in a single-process port: S_OK, and nothing to
+// unwind. CoCreateInstance needs a real COM model and is not implemented.
+void win32_co_initialize(GuestContext* context) {
+  (void)import_argument(context, 0);
+  set_import_result(context, 0);  // S_OK
+}
+void win32_co_uninitialize(GuestContext* context) { set_import_result(context, 0); }
+
+void win32_get_locale_info_a(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  (void)import_argument(context, 2);
+  (void)import_argument(context, 3);
+  set_import_result(context, 0);
+}
+
 void win32_debug_break(GuestContext* context) {
   terminate_with_message("DebugBreak (ip=0x%" PRIx64 ")", context->instruction_pointer);
 }
@@ -642,6 +754,13 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "GetEnvironmentStringsW", win32_get_environment_strings_w},
     {"kernel32.dll", "HeapReAlloc", win32_heap_realloc},
     {"kernel32.dll", "DebugBreak", win32_debug_break},
+    {"kernel32.dll", "GetStringTypeA", win32_get_string_type_a},
+    {"kernel32.dll", "GetStringTypeW", win32_get_string_type_w},
+    {"kernel32.dll", "LCMapStringA", win32_lc_map_string_a},
+    {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
+    {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
+    {"ole32.dll", "CoInitialize", win32_co_initialize},
+    {"ole32.dll", "CoUninitialize", win32_co_uninitialize},
     {"kernel32.dll", "OutputDebugStringA", win32_output_debug_string_a},
     {"kernel32.dll", "GetDriveTypeA", win32_get_drive_type_a},
     {"kernel32.dll", "CompareFileTime", win32_compare_file_time},

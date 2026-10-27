@@ -22,6 +22,11 @@ extern char** environ;
 #include <unistd.h>
 #include <vector>
 
+// Compile the unmodified MIT scanner in callback mode. Its standard-input
+// wrappers are disabled; the guest adapter supplies the host stream explicitly.
+#define SCANF_SSCANF_ONLY 1
+#include "upstream_scanf.c"
+
 namespace recomp {
 
 std::uint8_t* guest_memory = nullptr;
@@ -1645,6 +1650,32 @@ void msvcrt_stdio_common_vfprintf(GuestContext* context) {
   set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
 }
 
+// UCRT uses a guest va_list and Windows-sized pointers, not a host va_list.
+// Bridge the single-character forms for now and reject other formats explicitly.
+void msvcrt_stdio_common_vfscanf(GuestContext* context) {
+  const bool wide_guest = guest_pointer_width >= 8;
+  const auto sp = context->registers[4];
+  const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
+  const auto stream = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
+  const auto format_address = wide_guest ? import_argument(context, 2) : load_guest_memory(context, sp + 16, 4);
+  const auto locale = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
+  const auto arguments = wide_guest ? import_argument(context, 4) : load_guest_memory(context, sp + 24, 4);
+  const auto format = read_guest_string(format_address);
+  // Legacy wide-specifier mode does not change a narrow %c; secure scanf
+  // requires additional buffer-size arguments and remains unsupported.
+  if ((options & ~std::uint64_t{2}) != 0 || locale != 0 || stream != msvcrt_iob ||
+      (format != "%c" && format != " %c"))
+    terminate_with_message("__stdio_common_vfscanf: unsupported options=0x%" PRIx64 " stream=0x%" PRIx64
+                           " stdin=0x%" PRIx64 " locale=0x%" PRIx64 " format='%s'",
+                           options, stream, msvcrt_iob, locale, format.c_str());
+  const auto destination = load_guest_memory(context, arguments, guest_pointer_width);
+  (void)load_guest_memory(context, destination, 1);  // check the destination before passing it to host code
+  const auto getch = [](void* input) { return std::fgetc(static_cast<std::FILE*>(input)); };
+  const auto ungetch = [](int ch, void* input) { (void)std::ungetc(ch, static_cast<std::FILE*>(input)); };
+  const auto result = fctscanf_(getch, ungetch, stdin, format.c_str(), guest_memory + destination);
+  set_import_result(context, static_cast<std::uint32_t>(result));
+}
+
 void msvcrt_memcmp(GuestContext* context) {
   const auto left = import_argument(context, 0);
   const auto right = import_argument(context, 1);
@@ -1925,6 +1956,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_initterm_e", msvcrt_initterm_e},
     {"msvcrt.dll", "__acrt_iob_func", msvcrt_acrt_iob_func},
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
+    {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
     {"msvcrt.dll", "fflush", msvcrt_return_zero},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},

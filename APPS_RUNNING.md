@@ -28,6 +28,13 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 The feature branch's architecture-neutral IR updates were merged at `53f773e`;
 observations made before that merge need to be rerun on the integrated revision.
 
+Ghidra 12.2 headless imported `game2048.exe` and ran its supplied
+`FixSwitchStatementsWithDecompiler.java` and `FindUnrecoveredSwitchesScript.java`
+scripts. The latter reported one possible bad switch without identifying its
+address in headless output. This does not establish that the `q` jump was
+recovered or fixed. The host's Homebrew JDK could not load `libhvf.dylib`;
+the successful run used a checksum-verified Temurin JDK in a temporary directory.
+
 For scanf support, Wine's LGPL implementation in
 [`dlls/msvcrt/scanf.c`](https://github.com/wine-mirror/wine/blob/f343ca6085bfac807c33e9c1a8a43105071f1416/dlls/msvcrt/scanf.c)
 and the MIT-licensed [`hisahi/scanf`](https://github.com/hisahi/scanf/tree/9acf085770db2a7319cdb2d7498e855d5edba9ab)

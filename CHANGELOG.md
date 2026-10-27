@@ -401,6 +401,13 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- Measured the import-report fix against the real corpus, where it matters most:
+  `Tetris.exe` goes from **51 missing imports to 0**, `powder` 536→479, `bat.exe`
+  243→205, `supertux2` 709→675, `openlierox` 577→551, `snake` 140→115, `clipjar`
+  335→313. `Tetris.exe` is the application this project has repeatedly observed running
+  to completion, and it was being reported as missing 51 functions — a diagnostic
+  contradicted by the project's own evidence, sitting in the baseline unnoticed.
+
 - **The `imports` report contradicted the runtime, by a factor of four.** It reported 10
   of 42 implemented (23.81%) for a binary the runtime resolved 41 of, because
   `is_shimmed_import` matched library and symbol directly while the runtime resolves a

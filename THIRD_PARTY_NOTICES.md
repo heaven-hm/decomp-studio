@@ -23,6 +23,25 @@ The `AAS` translation and PE32 fixture also adapt Remill's
 `lib/Arch/X86/Semantics/DECIMAL.cpp` and `tests/X86/DECIMAL/AAS.S` at the same
 revision under the same license.
 
+The `comctl32.dll!InitCommonControls` shim follows Wine's
+`dlls/comctl32/commctrl.c` at commit `f343ca6085bfac807c33e9c1a8a43105071f1416`.
+Wine documents this function as a no-op because common-control classes are
+registered during DLL initialization. The source is LGPL-2.1-or-later; the
+implementation is limited to the compatible no-op adapter and does not copy
+Wine's control-class implementation.
+
+The `user32.dll!LoadIconA` adapter follows Wine's
+`dlls/user32/cursoricon.c` at the same revision: it delegates to `LoadImageA`
+and returns the documented null handle when no image resource is available.
+Only that failure-compatible adapter is included; Wine's resource and window
+manager implementation is not copied.
+The cursor adapter follows the same Wine path and has the same resource-loader
+limitation.
+
+The temporary `RegisterClassA` adapter follows Wine's
+`dlls/user32/class.c` wrapper to `RegisterClassExA`; it returns a stable atom
+until the native window-class registry is integrated.
+
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit
 `9acf085770db2a7319cdb2d7498e855d5edba9ab`, copyright 2021 Sampo Hippeläinen.

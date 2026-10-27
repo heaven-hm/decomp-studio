@@ -1877,6 +1877,18 @@ struct ShimDescriptor {
 };
 
 const ShimDescriptor kShims[] = {
+    // Adapted from Wine's LGPL-2.1-or-later commctrl.c: InitCommonControls
+    // itself is a no-op; class registration belongs to DLL initialization.
+    {"comctl32.dll", "InitCommonControls", win32_ignore},
+    // Wine's LoadIconA delegates to LoadImageA with shared/default-size flags;
+    // this flat runtime has no resource loader yet, so return the documented
+    // null handle until image resources are integrated.
+    {"user32.dll", "LoadIconA", win32_zero},
+    {"user32.dll", "LoadCursorA", win32_zero},
+    // Wine forwards RegisterClassA to RegisterClassExA. Until the native window
+    // manager is present, return a stable nonzero atom so startup can continue
+    // and expose the next required API.
+    {"user32.dll", "RegisterClassA", win32_one},
     {"kernel32.dll", "GetStdHandle", win32_get_std_handle},
     {"kernel32.dll", "WriteFile", win32_write_file},
     {"kernel32.dll", "ReadFile", win32_read_file},

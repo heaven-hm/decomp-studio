@@ -188,6 +188,11 @@ void open_guest_store_log(const char* path);
 void open_guest_memory_windows(const char* path);
 void open_guest_mxcsr_log(const char* path);
 
+// The handlers the guest registered with atexit, oldest first. Exposed so the
+// differential reference can run them: it has no compiled code, so it continues
+// emulation at each handler rather than calling it.
+const std::vector<std::uint64_t>& registered_atexit_handlers();
+
 // Every change to MXCSR, in order, when a log is installed. Comparing two runs
 // instruction by instruction is what localises a control-register divergence to the
 // instruction that caused it, rather than to the checkpoint after it.

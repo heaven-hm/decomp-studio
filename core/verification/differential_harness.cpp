@@ -55,6 +55,7 @@ struct ReferenceState {
   // Guest state at recorded checkpoints, for comparison against the candidate's.
   std::uint64_t guest_instruction_count{};
   std::uint64_t current_instruction{};
+  bool requested_exit{};
   std::uint64_t last_counted_address{~0ull};
   std::FILE* mxcsr_log{};
   std::uint32_t mxcsr_last{0xffffffffu};
@@ -391,6 +392,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
       uc_emu_stop(reference_state->engine);
     }
   };
+  state.requested_exit = false;
   state.trace_limit = trace_limit != 0 ? trace_limit : 1;
   state.thunk_base = thunk_base;
   state.pointer_width = pointer_width;
@@ -470,6 +472,12 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.output = state.output;
   run.instruction_count = state.instruction_count;
   run.note = state.note;
+  // Handlers the guest registered with atexit are NOT run here. The candidate can run
+  // them because they are compiled functions; the reference has no compiled code and
+  // would have to continue emulation, which was tried and consumed the instruction
+  // budget. Running them on one side only makes the two sides' output differ for every
+  // program that registers one, which is worse than not running them on either -- so
+  // neither runs them, and the runtime says so instead of reporting success.
   run.checkpoints = std::move(state.checkpoints);
   run.memory_windows = std::move(state.memory_windows);
   run.trace = std::move(trace);

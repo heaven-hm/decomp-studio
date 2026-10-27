@@ -401,6 +401,29 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **`atexit` registration is real, and non-execution is reported.** `atexit`,
+  `_crt_atexit` and `_cexit` were no-ops that reported success, so a program
+  registering an exit handler produced neither the handler's effect nor a diagnostic.
+  The handlers are now kept, and every one that will not run is named on stderr. They
+  are not executed yet: the candidate could call them as compiled functions but the
+  reference has no compiled code and would have to continue emulation, and doing that
+  on one side only makes the two sides' output differ for every program that registers
+  one. Running them in the reference was implemented and consumed the instruction
+  budget, so it is deferred rather than half-done.
+- **`puts` is implemented.** A compiler emits it for any `printf` whose entire format
+  is a literal ending in a newline, so a program reaches it without naming it. The
+  fixture that exposed the atexit gap hit it immediately.
+- **Address-taken functions are recovered.** `lea reg, [rip + disp]` is how x86-64
+  takes the address of a function; the displacement is relative, so the absolute
+  pointer scan could not see it, and nothing calls the target directly. The C
+  runtime's atexit thunks are reached exactly this way. This is an ABI fact rather
+  than a program-specific one, and it recovered 58 functions where 54 were found
+  before. The seed uses a weaker gate than the pointer scan deliberately: the routine
+  boundary test exists because a 32-bit word in data can land on plausible
+  instructions by chance, but an instruction written to take a code address is not a
+  coincidence, and requiring a boundary there rejected real functions whose
+  predecessor ends in a multi-byte `nop`.
+
 - **The new memory and control-register gate was mutation-tested.** A gate that has
   never been shown to fail proves nothing, so `kMxcsrPrecisionFlag` was set back to
   `1u << 5` and the suite run: `fixture_recompile_end_to_end` fails, 15/16. Restored,

@@ -1094,6 +1094,17 @@ void msvcrt_rand(GuestContext* context) {
   set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
 }
 
+// puts writes the string and a newline. Compilers emit it for any printf whose
+// entire format is a literal ending in a newline, so a program can reach it without
+// ever naming it.
+void msvcrt_puts(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const std::string line = text + "\n";
+  const auto written = write_guest_output(STDOUT_FILENO, line.data(), line.size());
+  // Non-negative on success, EOF on failure.
+  set_import_result(context, written < 0 ? static_cast<std::uint64_t>(-1) : 0);
+}
+
 void msvcrt_fwrite(GuestContext* context) {
   const auto buffer = import_argument(context, 0);
   const auto size = import_argument(context, 1);
@@ -1221,6 +1232,62 @@ void msvcrt_stricmp(GuestContext* context) {
 }
 
 void msvcrt_noop(GuestContext* context) { set_import_result(context, 0); }
+
+// ---- atexit -----------------------------------------------------------------
+// The handlers a guest registers, in registration order. The C runtime runs them in
+// reverse when the process exits. Reporting success without keeping them made a
+// program that registers an exit handler appear to work while the handler never ran,
+// which is the worst of both: no diagnostic and no behaviour.
+std::vector<std::uint64_t> guest_atexit_handlers;
+
+// The live guest context, so the exit path can run the handlers. It is set once, when
+// the guest context is created, and cleared when the image returns.
+GuestContext* guest_context_for_atexit = nullptr;
+
+void run_guest_atexit_handlers(GuestContext* context);
+void report_unrun_atexit_handlers();
+
+const std::vector<std::uint64_t>& registered_atexit_handlers() { return guest_atexit_handlers; }
+
+void msvcrt_cexit(GuestContext* context) {
+  report_unrun_atexit_handlers();
+  set_import_result(context, 0);
+}
+
+void msvcrt_register_atexit(GuestContext* context) {
+  const auto handler = import_argument(context, 0);
+  if (handler != 0) guest_atexit_handlers.push_back(handler);
+  set_import_result(context, 0);
+}
+
+// Names every registered handler that will not run. A guest cannot observe a handler
+// that silently did not run, so the only honest place to report it is here.
+void report_unrun_atexit_handlers() {
+  for (const auto handler : guest_atexit_handlers) {
+    std::fprintf(stderr,
+                 "recomp: the guest registered an atexit handler at 0x%llx, which did not run; "
+                 "exit handlers are registered but not executed\n",
+                 static_cast<unsigned long long>(handler));
+  }
+  guest_atexit_handlers.clear();
+}
+
+void run_guest_atexit_handlers(GuestContext* context) {
+  while (!guest_atexit_handlers.empty()) {
+    const auto handler = guest_atexit_handlers.back();
+    guest_atexit_handlers.pop_back();
+    auto function = lookup_guest_function(handler);
+    if (function == nullptr) {
+      // Fail loudly rather than silently skipping: a handler that did not run is a
+      // behaviour difference, and the guest cannot observe it any other way.
+      std::fprintf(stderr, "recomp: an atexit handler at 0x%llx was not recompiled, so it did not run\n",
+                   static_cast<unsigned long long>(handler));
+      continue;
+    }
+    push_guest_stack(context, 0);
+    function(context);
+  }
+}
 
 // _onexit returns the function pointer it was given (NULL on failure); atexit
 // returns 0. A CRT that stores the return value of _onexit into its exit table
@@ -1826,7 +1893,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_set_invalid_parameter_handler", msvcrt_return_zero},
     {"msvcrt.dll", "_configure_narrow_argv", msvcrt_return_zero},
     {"msvcrt.dll", "_initialize_narrow_environment", msvcrt_return_zero},
-    {"msvcrt.dll", "_crt_atexit", msvcrt_return_zero},
+    {"msvcrt.dll", "_crt_atexit", msvcrt_register_atexit},
     {"msvcrt.dll", "_exit", msvcrt_exit_process},
     {"msvcrt.dll", "__p___argc", msvcrt_p_argc},
     {"msvcrt.dll", "__p___argv", msvcrt_p_argv},
@@ -1881,13 +1948,14 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "srand", msvcrt_srand},
     {"msvcrt.dll", "rand", msvcrt_rand},
     {"msvcrt.dll", "fwrite", msvcrt_fwrite},
+    {"msvcrt.dll", "puts", msvcrt_puts},
     {"msvcrt.dll", "__set_app_type", msvcrt_noop},
     {"msvcrt.dll", "_set_app_type", msvcrt_noop},
     {"msvcrt.dll", "_fpreset", msvcrt_noop},
     {"msvcrt.dll", "_setmode", msvcrt_noop},
-    {"msvcrt.dll", "atexit", msvcrt_noop},
+    {"msvcrt.dll", "atexit", msvcrt_register_atexit},
     {"msvcrt.dll", "_onexit", msvcrt_onexit},
-    {"msvcrt.dll", "_cexit", msvcrt_noop},
+    {"msvcrt.dll", "_cexit", msvcrt_cexit},
     {"msvcrt.dll", "_getch", msvcrt_noop},
     {"msvcrt.dll", "_kbhit", msvcrt_noop},
     {"msvcrt.dll", "abort", msvcrt_abort},
@@ -1954,6 +2022,10 @@ const ShimDescriptor kShims[] = {
 };
 
 }  // namespace
+
+// External linkage: the differential reference uses this to run the handlers, and it
+// has no compiled code of its own.
+const std::vector<std::uint64_t>& registered_atexit_handlers() { return guest_atexit_handlers; }
 
 // ---- guest memory watchpoint ---------------------------------------------
 std::uint64_t watched_guest_address = 0;
@@ -2433,6 +2505,12 @@ void (*guest_exit_handler)(int code) = nullptr;
 
 void guest_request_exit(int code) {
   write_guest_checkpoints_if_requested();
+  // Registered handlers do not run. Saying so is the point: the runtime used to accept
+  // the registration and report success, so a program that registered one produced
+  // neither the handler's effect nor any diagnostic. Running them is the next step and
+  // needs the differential reference to run them too, which means continuing emulation
+  // at each handler rather than calling a compiled function.
+  report_unrun_atexit_handlers();
   if (guest_exit_handler != nullptr) {
     guest_exit_handler(code);
     return;
@@ -2588,12 +2666,14 @@ int run_recompiled_image(const RecompiledImage* image) {
   context.x87_control_word = 0x037f;
   context.mxcsr = kMxcsrDefaultValue;
   push_guest_stack(&context, 0);
+  guest_context_for_atexit = &context;
 
   auto entry = lookup_guest_function(image->image_base + image->entry_point_rva);
   if (entry == nullptr)
     terminate_with_message("entry point 0x%" PRIx64 " was not recompiled",
                            image->image_base + image->entry_point_rva);
   entry(&context);
+  guest_context_for_atexit = nullptr;
   std::fflush(stdout);
   if (guest_trace_stream != nullptr) { std::fflush(guest_trace_stream); std::fclose(guest_trace_stream); guest_trace_stream = nullptr; }
   return static_cast<int>(static_cast<std::uint32_t>(context.registers[kRegisterReturnValue]));

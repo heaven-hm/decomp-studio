@@ -187,10 +187,17 @@ void FunctionDiscovery::discover() {
         return false;
     }
   };
-  const auto decodes_as_code = [this, &ends_a_routine](std::uint64_t target, bool in_code_section) {
+  // Eight decodable instructions in a row, without the routine-boundary test. The
+  // boundary test exists because a 32-bit word in data can land on a run of
+  // plausible instructions by chance, so the pointer scan needs a second kind of
+  // evidence. A `lea reg, [rip+disp]` that lands on code is not a coincidence of
+  // data: the instruction was written to take that address, which is what taking a
+  // function's address looks like. Requiring a routine boundary there rejects real
+  // functions whose predecessor ends in a multi-byte nop, which is exactly what the
+  // C runtime's handler thunks have in front of them.
+  const auto decodes_as_instructions = [this](std::uint64_t target) {
     if (target < executable_.image_base) return false;
     auto address = static_cast<std::uint32_t>(target - executable_.image_base);
-    if (!ends_a_routine(address, in_code_section)) return false;
     for (int index = 0; index < 8; ++index) {
       if (!contains_code(address)) return false;
       const auto instruction = decode(address);
@@ -198,6 +205,13 @@ void FunctionDiscovery::discover() {
       address += static_cast<std::uint32_t>(instruction.size);
     }
     return true;
+  };
+  const auto decodes_as_code = [this, &ends_a_routine, &decodes_as_instructions](std::uint64_t target,
+                                                                                bool in_code_section) {
+    if (target < executable_.image_base) return false;
+    auto address = static_cast<std::uint32_t>(target - executable_.image_base);
+    if (!ends_a_routine(address, in_code_section)) return false;
+    return decodes_as_instructions(target);
   };
   // Executable sections are scanned too: a compiler is free to place a function
   // pointer table inside .text, and this one does -- the C runtime's exit table
@@ -210,6 +224,32 @@ void FunctionDiscovery::discover() {
       const auto value = executable_.read_u32(section.virtual_address + offset);
       if (!value || !decodes_as_code(*value, in_code_section)) continue;
       pending_entries.push_back(*value);
+    }
+  }
+
+  // `lea reg, [rip + disp]` is how x86-64 takes the address of a function. The
+  // displacement is relative, so the absolute-pointer scan above cannot see it, and
+  // nothing calls the target directly -- the taken address is the only reference.
+  // The C runtime registers its atexit handlers this way, so the functions a program
+  // runs on the way out were exactly the ones missing. This is an ABI fact, not a
+  // program-specific one: any address-taken function is reached like this.
+  for (const auto& section : executable_.sections) {
+    if (!section.is_executable() || section.raw_size < 8) continue;
+    for (std::uint32_t offset = 0; offset < section.raw_size;) {
+      const auto address = section.virtual_address + offset;
+      const auto instruction = decode(address);
+      if (instruction.size == 0 || instruction.mnemonic.empty()) {
+        ++offset;
+        continue;
+      }
+      offset += static_cast<std::uint32_t>(instruction.size);
+      if (instruction.mnemonic != "lea") continue;
+      for (const auto& operand : instruction.operands) {
+        if (operand.kind != Operand::Kind::Memory || operand.base_register_name != "rip") continue;
+        const auto target = instruction.address + instruction.size +
+                            static_cast<std::uint64_t>(operand.displacement);
+        if (decodes_as_instructions(target)) pending_entries.push_back(target);
+      }
     }
   }
 

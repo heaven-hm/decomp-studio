@@ -854,3 +854,31 @@ return value and its invisibility to `verify` are findings.
 
 *Runner-up worth a line in the same change: F8's zeroed `_pctype`/`errno` block, because it hands
 the guest a table and a variable that were never written.*
+
+
+## atexit: registration is real, non-execution is reported
+
+The audit found that `atexit`, `_crt_atexit` and `_cexit` were no-ops that reported
+success, so a program registering an exit handler produced neither the handler's
+effect nor a diagnostic -- the worst of both.
+
+The registration is now real: the handlers are kept in a list, `_cexit` and the exit
+path know about them, and **every handler that will not run is named on stderr**:
+
+```
+recomp: the guest registered an atexit handler at 0x140001010, which did not run;
+exit handlers are registered but not executed
+```
+
+They are not executed yet, and the reason is worth recording. The candidate could run
+them: they are compiled functions and calling one is a direct call. The reference
+cannot: it has no compiled code, so it would have to continue emulation at each
+handler. That was implemented, and it **consumed the instruction budget** -- the
+reference's `uc_emu_start` loop ran the handler without the limit the main emulation
+has, and the run then failed with "instruction budget exhausted before ExitProcess".
+
+Running handlers on one side only is worse than running them on neither, because it
+makes the two sides' output differ for every program that registers one, and the
+verification would report a divergence that is really a difference in the harness. So
+neither runs them, and the runtime says so. `tests/verification/atexit_test.py`
+requires the reporting, and will change to require the output when execution lands.

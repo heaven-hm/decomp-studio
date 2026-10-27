@@ -378,6 +378,16 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The guest-memory digest compared **dead stack**. It covered
+  `[ESP - 0x1000, ESP)`, but memory below the stack pointer is memory the program
+  has moved past and cannot read again, and the two sides legitimately differ
+  there. The first comparison reported a divergence at checkpoint 1 that was four
+  bytes of dead stack — a return address the reference had popped and the candidate
+  had overwritten — and nothing observable differed. Digesting the live stack
+  `[ESP, ESP + 0x1000)` instead moved the first divergence from checkpoint 1 to
+  checkpoint 175, which is what made the remaining difference small enough to
+  isolate. See `reports/memory-checkpoint-finding.md`.
+
 - The candidate and the reference did not agree on where the guest's stack begins,
   and nothing could see it. The candidate pushed a sentinel with `push_guest_stack`
   and the reference wrote one at `stack_top - pointer_width`; the two happened to

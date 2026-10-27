@@ -108,6 +108,8 @@ std::ptrdiff_t write_guest_output(int descriptor, const char* data, std::size_t 
 
 extern std::uint8_t* guest_memory;
 extern std::uint64_t guest_memory_size;
+// The base address the guest image was loaded at; set by initialize_guest_state.
+extern std::uint64_t recompiled_image_base;
 extern bool guest_tracing_enabled;
 
 // 4 for a PE32/x86 guest, 8 for a PE32+/x86-64 guest. Set once by

@@ -2298,11 +2298,17 @@ std::uint64_t digest_bytes(std::uint64_t seed, std::uint64_t address, std::uint6
 }
 
 std::uint64_t guest_memory_digest(const GuestContext* context) {
-  constexpr std::uint64_t kStackWindow = 0x1000;   // the live stack, below the pointer
+  // The window starts AT the stack pointer, not below it. Memory below the stack
+  // pointer is dead: the program has moved past it and cannot read it again, and
+  // the two sides legitimately differ there -- the first version of this digest
+  // reported a divergence at checkpoint 1 that was four bytes of dead stack, a
+  // return address the reference had popped and the candidate had overwritten.
+  // Nothing a program can observe differed.
+  constexpr std::uint64_t kStackWindow = 0x1000;   // the live stack, from the pointer up
   constexpr std::uint64_t kDataWindow = 0x10000;   // the image's writable area
   std::uint64_t hash = 14695981039346656037ull;
   const auto stack_pointer = context->registers[4];
-  if (stack_pointer > kStackWindow) hash = digest_bytes(hash, stack_pointer - kStackWindow, kStackWindow);
+  hash = digest_bytes(hash, stack_pointer, kStackWindow);
   if (recompiled_image_base != 0) hash = digest_bytes(hash, recompiled_image_base, kDataWindow);
   return hash;
 }

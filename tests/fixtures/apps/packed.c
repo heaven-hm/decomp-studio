@@ -173,6 +173,10 @@ int app_main(void) {
   out("pshufhw="); outi((i64)fold(result)); crlf();
 
   /* A memory-source PSHUFD selects dwords, including nontrivial reordering. */
+  for (int index = 0; index < LANES; ++index) {
+    left[index] = (u8)(index + 1);
+    right[index] = (u8)(index + 33);
+  }
   __asm__ volatile("pshufd $0x1b, %1, %%xmm0\n\t"
                    "movdqu %%xmm0, %0"
                    : "=m"(*(char(*)[LANES])result)

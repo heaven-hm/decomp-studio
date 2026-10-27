@@ -221,9 +221,14 @@ def main() -> int:
     check_argument_handling()
 
     with tempfile.TemporaryDirectory() as temporary:
-        check_universal_crt_alias(Path(temporary))
         fixture_binaries = Path(temporary) / "bin"
         build_fixtures(fixture_binaries)
+        if shutil.which("x86_64-w64-mingw32-dlltool") is not None:
+            check_universal_crt_alias(Path(temporary))
+        elif OPTIONAL_MODE:
+            print("SKIP (RECOMP_OPTIONAL=1): mingw-w64 dlltool not available")
+        else:
+            FAILURES.append("ucrt-alias: x86_64-w64-mingw32-dlltool is required")
 
         fully = fixture_binaries / f"{FULLY_SHIMMED[0]}.exe"
         if fully.exists():

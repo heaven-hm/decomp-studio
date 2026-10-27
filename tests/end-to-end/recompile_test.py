@@ -79,7 +79,8 @@ EXPECTED_OUTPUT = {
                "psraw3=", "psrad5=", "psrldq4=", "pslldq4=",
                "punpcklbw=", "punpckhbw=", "punpcklwd=", "punpckhwd=",
                "packsswb=", "packuswb=", "packssdw=",
-               "pshufb=", "pshuflw=", "pshufhw=", "pshufd_mem_ok=1", "pmovmskb=",
+               "pshufb=", "pshuflw=", "pshufhw=", "pshufd_mem_ok=1", "shufps_reg_ok=1",
+               "shufps_mem_ok=1", "pmovmskb=",
                # Memory-source forms for the five helpers that once had no
                # _memory twin and so produced code that would not compile.
                "mem_paddd=", "mem_psubd=", "mem_pcmpeqd=", "mem_pmaddwd=", "mem_psadbw=",

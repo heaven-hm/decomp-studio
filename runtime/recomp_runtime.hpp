@@ -1113,6 +1113,30 @@ inline void vector_shuffle_dwords_memory(GuestContext* context, int destination,
   std::memcpy(context->vector_registers[destination], shuffled, 16);
 }
 
+inline void vector_shuffle_single_lanes(GuestContext* context, int destination, const std::uint32_t* source,
+                                        int control) {
+  std::uint32_t left[4], output[4];
+  std::memcpy(left, context->vector_registers[destination], sizeof(left));
+  output[0] = left[control & 3];
+  output[1] = left[(control >> 2) & 3];
+  output[2] = source[(control >> 4) & 3];
+  output[3] = source[(control >> 6) & 3];
+  std::memcpy(context->vector_registers[destination], output, sizeof(output));
+}
+
+inline void vector_shuffle_single(GuestContext* context, int destination, int source, int control) {
+  std::uint32_t lanes[4];
+  std::memcpy(lanes, context->vector_registers[source], sizeof(lanes));
+  vector_shuffle_single_lanes(context, destination, lanes, control);
+}
+
+inline void vector_shuffle_single_memory(GuestContext* context, int destination, std::uint64_t address, int control) {
+  std::uint32_t lanes[4];
+  for (int index = 0; index < 4; ++index)
+    lanes[index] = static_cast<std::uint32_t>(load_guest_memory(context, address + index * 4, 4));
+  vector_shuffle_single_lanes(context, destination, lanes, control);
+}
+
 inline void vector_unpack_dwords(GuestContext* context, int destination, int source, int high) {
   std::uint32_t lanes[4];
   const auto* left = reinterpret_cast<const std::uint32_t*>(context->vector_registers[destination]);

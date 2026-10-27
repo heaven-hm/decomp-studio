@@ -655,6 +655,21 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       return;
     }
   }
+  if (mnemonic == "shufps" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_shuffle_single(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + control + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_shuffle_single_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + control + ");");
+      return;
+    }
+  }
   if ((mnemonic == "punpckldq" || mnemonic == "punpckhdq" || mnemonic == "punpcklqdq" ||
        mnemonic == "punpckhqdq") && operands.size() == 2 && is_vector_register(operands[0]) &&
       is_vector_register(operands[1])) {

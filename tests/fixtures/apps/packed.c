@@ -172,6 +172,31 @@ int app_main(void) {
     if (result[index] != left[(3 - index / 4) * 4 + index % 4]) shuffle_ok = 0;
   out("pshufd_mem_ok="); outi(shuffle_ok); crlf();
 
+  /* SHUFPS selects two lanes from each operand; exercise register and memory sources. */
+  __asm__ volatile("movdqu %1, %%xmm0\n\t"
+                   "movdqu %2, %%xmm1\n\t"
+                   "shufps $0x88, %%xmm1, %%xmm0\n\t"
+                   "movdqu %%xmm0, %0"
+                   : "=m"(*(char(*)[LANES])result)
+                   : "m"(*(char(*)[LANES])left), "m"(*(char(*)[LANES])right) : "xmm0", "xmm1");
+  shuffle_ok = 1;
+  for (int index = 0; index < LANES; ++index) {
+    const u8* source = index < 8 ? left : right;
+    if (result[index] != source[((index % 8) / 4) * 8 + index % 4]) shuffle_ok = 0;
+  }
+  out("shufps_reg_ok="); outi(shuffle_ok); crlf();
+  __asm__ volatile("movdqu %1, %%xmm0\n\t"
+                   "shufps $0x88, %2, %%xmm0\n\t"
+                   "movdqu %%xmm0, %0"
+                   : "=m"(*(char(*)[LANES])result)
+                   : "m"(*(char(*)[LANES])left), "m"(*(char(*)[LANES])right) : "xmm0");
+  shuffle_ok = 1;
+  for (int index = 0; index < LANES; ++index) {
+    const u8* source = index < 8 ? left : right;
+    if (result[index] != source[((index % 8) / 4) * 8 + index % 4]) shuffle_ok = 0;
+  }
+  out("shufps_mem_ok="); outi(shuffle_ok); crlf();
+
   /* PMOVMSKB moves the sign bit of each byte into a general-purpose register. */
   u32 mask = 0;
   __asm__ volatile("movdqu %1, %%xmm0\n\t"

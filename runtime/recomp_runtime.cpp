@@ -338,6 +338,11 @@ void win32_module_handle(GuestContext* context) { set_import_result(context, rec
 void win32_is_processor_feature_present(GuestContext* context) { set_import_result(context, 0); }
 void win32_get_version(GuestContext* context) { set_import_result(context, 0x0a000000); }
 void win32_code_page(GuestContext* context) { set_import_result(context, 65001); }
+// The process ANSI code page above is UTF-8, which has no DBCS lead bytes.
+void win32_is_dbcs_lead_byte(GuestContext* context) {
+  (void)import_argument(context, 0);
+  set_import_result(context, 0);
+}
 
 void win32_virtual_alloc(GuestContext* context) {
   const auto requested = import_argument(context, 0);
@@ -2010,6 +2015,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "lstrlenW", win32_lstrlen_w},
     {"kernel32.dll", "lstrcpyA", win32_lstrcpy_a},
     {"kernel32.dll", "GetACP", win32_code_page},
+    {"kernel32.dll", "IsDBCSLeadByte", win32_is_dbcs_lead_byte},
     {"kernel32.dll", "GetOEMCP", win32_code_page},
     {"kernel32.dll", "GetConsoleOutputCP", win32_code_page},
     {"kernel32.dll", "SetConsoleOutputCP", win32_one},

@@ -241,6 +241,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "lstrlenW", 1, true},
     {"kernel32.dll", "lstrcpyA", 2, true},
     {"kernel32.dll", "GetACP", 0, true},
+    {"kernel32.dll", "IsDBCSLeadByte", 1, true},
     {"kernel32.dll", "GetOEMCP", 0, true},
     {"kernel32.dll", "GetConsoleOutputCP", 0, true},
     {"kernel32.dll", "SetConsoleOutputCP", 1, true},

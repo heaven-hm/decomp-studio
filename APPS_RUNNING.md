@@ -34,6 +34,10 @@ scripts. The latter reported one possible bad switch without identifying its
 address in headless output. This does not establish that the `q` jump was
 recovered or fixed. The host's Homebrew JDK could not load `libhvf.dylib`;
 the successful run used a checksum-verified Temurin JDK in a temporary directory.
+Radare2 6.2.0's `aaa; agfj @ 0x140002d50` identifies a 55-entry switch at
+`0x140002daf` and six distinct code references, including the `q` destination
+`0x140002e10`. This is an independent recovery lead, not a fix: the current
+recompiler does not yet consume those references.
 
 For scanf support, Wine's LGPL implementation in
 [`dlls/msvcrt/scanf.c`](https://github.com/wine-mirror/wine/blob/f343ca6085bfac807c33e9c1a8a43105071f1416/dlls/msvcrt/scanf.c)

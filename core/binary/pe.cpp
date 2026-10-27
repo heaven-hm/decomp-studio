@@ -357,9 +357,20 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
     const auto descriptor_end = delay_directory_rva + delay_directory_size;
     for (std::uint32_t descriptor_rva = delay_directory_rva; descriptor_rva + 32 <= descriptor_end;
          descriptor_rva += 32) {
-      const auto name_rva = executable.read_u32(descriptor_rva + 4).value_or(0);
-      const auto import_name_table = executable.read_u32(descriptor_rva + 16).value_or(0);
-      const auto import_address_table = executable.read_u32(descriptor_rva + 12).value_or(0);
+      const auto attributes = executable.read_u32(descriptor_rva).value_or(0);
+      const bool rva_based = (attributes & 1u) != 0;
+      const auto to_rva = [&](std::uint32_t address) {
+        if (address == 0 || rva_based) return address;
+        if (executable.is_64_bit || address < executable.image_base)
+          throw ParseError("invalid VA-based delay-import descriptor");
+        const auto rva = static_cast<std::uint64_t>(address) - executable.image_base;
+        if (rva >= executable.size_of_image)
+          throw ParseError("VA-based delay-import address is outside the image");
+        return static_cast<std::uint32_t>(rva);
+      };
+      const auto name_rva = to_rva(executable.read_u32(descriptor_rva + 4).value_or(0));
+      const auto import_name_table = to_rva(executable.read_u32(descriptor_rva + 16).value_or(0));
+      const auto import_address_table = to_rva(executable.read_u32(descriptor_rva + 12).value_or(0));
       // The table is terminated by an all-zero descriptor.
       if (name_rva == 0 && import_name_table == 0 && import_address_table == 0) break;
       auto library_name = executable.read_c_string(name_rva);
@@ -381,7 +392,8 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
           imported.ordinal = static_cast<std::uint32_t>(thunk_value & 0xffffu);
           imported.symbol_name = "#" + std::to_string(imported.ordinal);
         } else {
-          imported.symbol_name = executable.read_c_string(static_cast<std::uint32_t>(thunk_value) + 2);
+          const auto import_name_rva = to_rva(static_cast<std::uint32_t>(thunk_value));
+          imported.symbol_name = executable.read_c_string(import_name_rva + 2);
         }
         executable.imports.push_back(imported);
       }

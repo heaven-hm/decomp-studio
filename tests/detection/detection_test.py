@@ -44,7 +44,7 @@ def inspect(path):
         return None, result
 
 
-def write_two_delay_import_pe(path):
+def write_two_delay_import_pe(path, rva_based=True):
     """Write a minimal PE32 whose delay directory names two DLLs."""
     body = bytearray(0x600)
     body[0:2] = b"MZ"
@@ -69,13 +69,18 @@ def write_two_delay_import_pe(path):
     struct.pack_into("<IIII", body, section + 8, 0x400, 0x1000, 0x400, 0x200)
     struct.pack_into("<I", body, section + 36, 0x40000040)
 
-    # Two 32-byte IMAGE_DELAYLOAD_DESCRIPTOR records followed by a zero record.
-    struct.pack_into("<IIIIIIII", body, 0x200, 1, 0x1080, 0, 0x10C0, 0x10A0, 0, 0, 0)
-    struct.pack_into("<IIIIIIII", body, 0x220, 1, 0x1090, 0, 0x10D0, 0x10B0, 0, 0, 0)
+    # Two descriptors followed by a zero record. Legacy descriptors store VAs
+    # when grAttrs.RvaBased is clear; version-2 descriptors store RVAs.
+    base = 0 if rva_based else 0x400000
+    attributes = 1 if rva_based else 0
+    struct.pack_into("<IIIIIIII", body, 0x200, attributes, base + 0x1080, 0,
+                     base + 0x10C0, base + 0x10A0, 0, 0, 0)
+    struct.pack_into("<IIIIIIII", body, 0x220, attributes, base + 0x1090, 0,
+                     base + 0x10D0, base + 0x10B0, 0, 0, 0)
     body[0x280:0x28A] = b"first.dll\0"
     body[0x290:0x29B] = b"second.dll\0"
-    struct.pack_into("<II", body, 0x2A0, 0x10E0, 0)
-    struct.pack_into("<II", body, 0x2B0, 0x10F0, 0)
+    struct.pack_into("<II", body, 0x2A0, base + 0x10E0, 0)
+    struct.pack_into("<II", body, 0x2B0, base + 0x10F0, 0)
     body[0x2E0:0x2E8] = b"\0\0First\0"
     body[0x2F0:0x2F9] = b"\0\0Second\0"
     path.write_bytes(body)
@@ -95,15 +100,16 @@ def main():
         else:
             check("pe/fixture-present", False, f"{pe} is missing; build the fixtures")
 
-        delay_pe = workspace / "two-delay-imports.exe"
-        write_two_delay_import_pe(delay_pe)
-        payload, result = inspect(delay_pe)
-        delay_names = {entry["name"] for entry in (payload or {}).get("imports", [])
-                       if entry.get("delay")}
-        check("pe/all-delay-descriptors-read",
-              result.returncode == 0 and (payload or {}).get("delay_imports") == 2 and
-              delay_names == {"first.dll!First", "second.dll!Second"},
-              result.stdout[:400] + result.stderr[:160])
+        for encoding, rva_based in (("rva", True), ("legacy-va", False)):
+            delay_pe = workspace / f"two-delay-imports-{encoding}.exe"
+            write_two_delay_import_pe(delay_pe, rva_based)
+            payload, result = inspect(delay_pe)
+            delay_names = {entry["name"] for entry in (payload or {}).get("imports", [])
+                           if entry.get("delay")}
+            check(f"pe/all-delay-descriptors-read-{encoding}",
+                  result.returncode == 0 and (payload or {}).get("delay_imports") == 2 and
+                  delay_names == {"first.dll!First", "second.dll!Second"},
+                  result.stdout[:400] + result.stderr[:160])
 
         # A real .NET assembly, if the corpus is available.
         dotnet = pathlib.Path("/Users/haseeb-mir/Downloads/recomp-apps/TicTacToe/TicTacToe.exe")

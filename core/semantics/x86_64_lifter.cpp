@@ -1721,6 +1721,15 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
   ir::Function lifted;
   lifted.address = function.entry;
   lifted.name = guest_function_name(function.entry);
+  // Adapted from igi-recomp tools/recomp/gen.py emit_copy (MIT): recovered
+  // backward blocks can sort before the function's actual entry.
+  if (!function.instructions.empty() && function.instructions.begin()->first != function.entry) {
+    ir::Statement jump;
+    jump.kind = ir::StatementKind::Jump;
+    jump.label = "label_" + std::to_string(function.entry);
+    jump.address_of_instruction = function.entry;
+    lifted.statements.push_back(std::move(jump));
+  }
   for (const auto& [address, instruction] : function.instructions) {
     if (function.block_starts.count(address) != 0) {
       ir::Statement label;

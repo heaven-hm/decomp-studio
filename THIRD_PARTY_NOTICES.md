@@ -11,6 +11,8 @@ Several Win32 shims in `runtime/recomp_runtime.cpp` are adapted from
 HenryKun55. The `GetLocalTime` adaptation comes from commit
 `278eaf6394f7f42c7de6cffef2cf982154f59899`. The MIT license is reproduced in
 [third_party/igi-recomp-LICENSE](third_party/igi-recomp-LICENSE).
+The function-entry jump in `core/semantics/x86_64_lifter.cpp` is also adapted
+from `tools/recomp/gen.py` in the same project at that revision.
 
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit

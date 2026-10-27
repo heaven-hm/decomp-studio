@@ -38,6 +38,7 @@ FIXTURES = [
     ("packed", "SSE2 packed integer, register and immediate forms"),
     ("simd_convert", "packed integer-to-float conversion and MXCSR rounding modes"),
     ("tail_import", "x64 import tail-call stack restoration"),
+    ("backward_entry", "function entry with a lower-address block"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -52,6 +53,7 @@ FIXTURES_PE32 = [
 EXPECTED_OUTPUT = {
     "arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "tail_import": ["tail_stack_ok=1", "tail_rand_in_range=1"],
+    "backward_entry": ["entry_zero=42", "entry_nonzero=7"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
     "snake": ["snake:start", "snake:done"],
     "aliasing": ["aliasing:start", "zero_extend=1", "aliasing:done"],

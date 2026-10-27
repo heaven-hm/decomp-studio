@@ -239,6 +239,14 @@ int app_main(void) {
   MEMOP("punpckhdq"); out("mem_unpack_hd="); outi(unpack_matches(result, left, right, 4, 1)); crlf();
   MEMOP("punpcklqdq"); out("mem_unpack_lq="); outi(unpack_matches(result, left, right, 8, 0)); crlf();
   MEMOP("punpckhqdq"); out("mem_unpack_hq="); outi(unpack_matches(result, left, right, 8, 1)); crlf();
+  BINOP("unpcklps"); out("reg_unpack_lps="); outi(unpack_matches(result, left, right, 4, 0)); crlf();
+  BINOP("unpckhps"); out("reg_unpack_hps="); outi(unpack_matches(result, left, right, 4, 1)); crlf();
+  BINOP("unpcklpd"); out("reg_unpack_lpd="); outi(unpack_matches(result, left, right, 8, 0)); crlf();
+  BINOP("unpckhpd"); out("reg_unpack_hpd="); outi(unpack_matches(result, left, right, 8, 1)); crlf();
+  MEMOP("unpcklps"); out("mem_unpack_lps="); outi(unpack_matches(result, left, right, 4, 0)); crlf();
+  MEMOP("unpckhps"); out("mem_unpack_hps="); outi(unpack_matches(result, left, right, 4, 1)); crlf();
+  MEMOP("unpcklpd"); out("mem_unpack_lpd="); outi(unpack_matches(result, left, right, 8, 0)); crlf();
+  MEMOP("unpckhpd"); out("mem_unpack_hpd="); outi(unpack_matches(result, left, right, 8, 1)); crlf();
 
   out("packed:done"); crlf();
   return 0;

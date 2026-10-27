@@ -492,6 +492,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // family additionally accepts an immediate count.
   if (operands.size() == 2 && is_vector_register(operands[0])) {
     const auto destination = std::to_string(vector_index(operands[0]));
+    if (mnemonic == "unpcklps" || mnemonic == "unpckhps" || mnemonic == "unpcklpd" || mnemonic == "unpckhpd") {
+      const int element_size = mnemonic.find("pd") != std::string::npos ? 8 : 4;
+      const bool high = mnemonic.find('h') != std::string::npos;
+      if (is_vector_register(operands[1])) {
+        const auto helper = element_size == 8 ? "vector_unpack_qwords" : "vector_unpack_dwords";
+        emit(std::string(helper) + "(context, " + destination + ", " +
+             std::to_string(vector_index(operands[1])) + ", " + (high ? "1" : "0") + ");");
+        return;
+      }
+      if (operands[1].kind == discovery::Operand::Kind::Memory) {
+        emit("vector_unpack_memory(context, " + destination + ", " +
+             effective_address_expression(instruction, operands[1]) + ", " + std::to_string(element_size) +
+             ", " + (high ? "1" : "0") + ");");
+        return;
+      }
+    }
     if (operands[1].kind == discovery::Operand::Kind::Memory &&
         (mnemonic == "punpcklbw" || mnemonic == "punpckhbw" || mnemonic == "punpcklwd" ||
          mnemonic == "punpckhwd" || mnemonic == "punpckldq" || mnemonic == "punpckhdq" ||

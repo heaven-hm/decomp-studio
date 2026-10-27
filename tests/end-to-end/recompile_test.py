@@ -85,7 +85,9 @@ EXPECTED_OUTPUT = {
                # _memory twin and so produced code that would not compile.
                "mem_paddd=", "mem_psubd=", "mem_pcmpeqd=", "mem_pmaddwd=", "mem_psadbw=",
                "mem_paddw=", "mem_unpack_lb=1", "mem_unpack_hb=1", "mem_unpack_lw=1", "mem_unpack_hw=1",
-               "mem_unpack_ld=1", "mem_unpack_hd=1", "mem_unpack_lq=1", "mem_unpack_hq=1", "packed:done"],
+               "mem_unpack_ld=1", "mem_unpack_hd=1", "mem_unpack_lq=1", "mem_unpack_hq=1",
+               "reg_unpack_lps=1", "reg_unpack_hps=1", "reg_unpack_lpd=1", "reg_unpack_hpd=1",
+               "mem_unpack_lps=1", "mem_unpack_hps=1", "mem_unpack_lpd=1", "mem_unpack_hpd=1", "packed:done"],
     "vecmove": ["vecmove:start", "movsd_lo=7", "movsd_hi=11", "movss_lo=5",
                 "movss_lane3=33", "load_lo=42", "load_hi=0", "vecmove:done"],
     "x87": ["x87:start", "add ", "fistp ", "sqrt ", "cmp_eq ", "sin ", "cw_trunc ",

@@ -115,6 +115,36 @@ All notable changes to Recomp Studio are documented here. This project follows
 - `teb32` fixture: a 32-bit guest reading its thread environment block through
   `fs:`, which is the first memory access most 32-bit Windows programs make.
 
+- Win32 shim batch ported from HenryKun55/igi-recomp (MIT), each with the
+  stdcall pop removed because this runtime pops centrally: `GetVersionExA`,
+  `SetHandleCount`, `ReleaseMutex`, `FlushFileBuffers`,
+  `FreeEnvironmentStringsW`, `GetEnvironmentVariableA`, `GetCPInfo`,
+  `GetFileType`, `CloseHandle`, `SetStdHandle`, `CreateMutexA`,
+  `GetEnvironmentStringsW`, `HeapReAlloc`, `DebugBreak`, `OutputDebugStringA`,
+  `GetDriveTypeA` and `CompareFileTime`. Effect on `igi.exe`: 31 of 128 imports
+  implemented becomes 42, and it now runs past CRT startup into its own code
+  instead of stopping at the first Windows call.
+- A Win32 handle table. Handles are opaque to the guest, but `GetFileType`,
+  `CloseHandle` and the mutex and file shims have to agree about what a handle
+  refers to. The three standard handles keep the values the reference also
+  returns (10, 11, 12), so introducing the table changes nothing a differential
+  comparison can observe.
+- Real environment blocks. `GetEnvironmentStrings` returned a fixed address with
+  no content, and the wide variant did not exist; both now describe the same
+  host environment, double-NUL terminated, so the ANSI and wide shims agree.
+- `HeapReAlloc` on the real heap, factored out of `HeapAlloc`/`HeapFree` so the
+  three share one allocator.
+
+### Fixed
+
+- The unbound-import diagnostic did not name the import:
+  `call to an unbound import thunk (ip=...)` said where but not what. The
+  dispatcher already knew which import it was about to call, so it now reports
+  `unimplemented Win32 import <library>!<symbol>`. Without this the on-demand
+  shim loop -- run, read the first unshimmed import, port that one, repeat --
+  could not work, which is the only tractable way to find out which of a
+  program's imports it actually executes.
+
 ### Fixed
 
 - **Segment bases were dropped from absolute addresses.** `mov eax, fs:[4]` was

@@ -6,6 +6,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+
+// The host environment, used to build the guest's environment blocks.
+extern char** environ;
 #include <ctime>
 #include <string>
 #include <sys/mman.h>
@@ -73,6 +76,11 @@ std::vector<void (*)(GuestContext*)> import_thunk_functions;
 std::vector<std::string> import_thunk_libraries;
 std::vector<std::string> import_thunk_symbols;
 
+// The dispatcher knows which import it is about to call, so a failure can name
+// it. "call to an unbound import thunk" without a symbol is not actionable: the
+// point of the diagnostic is to say which shim to add next.
+std::size_t current_thunk_index = 0;
+
 std::uint32_t hash_function_address(std::uint64_t address) {
   return static_cast<std::uint32_t>((address * 0x9e3779b97f4a7c15ull) >> (64 - kFunctionHashBits));
 }
@@ -101,6 +109,7 @@ long lookup_import_thunk(std::uint64_t address) {
 void invoke_import_thunk(GuestContext* context, long index, std::uint64_t return_address, bool push_return) {
   if (push_return)
     push_guest_stack(context, return_address);
+  current_thunk_index = static_cast<std::size_t>(index);
   import_thunk_functions[static_cast<std::size_t>(index)](context);
   if (guest_pointer_width < 8) {
     context->registers[4] = mask_guest_address(
@@ -119,10 +128,66 @@ std::string read_guest_string(std::uint64_t address) {
   return value;
 }
 
+// ---- Win32 handle table ---------------------------------------------------
+// Handles are opaque to the guest, but GetFileType, CloseHandle and the file and
+// mutex shims have to agree about what a handle refers to. The three standard
+// handles keep the values the reference also returns for GetStdHandle (10, 11,
+// 12), so introducing the table does not change anything a differential
+// comparison can observe; the table simply knows what those values mean.
+enum GuestHandleType {
+  kGuestHandleFree = 0,
+  kGuestHandleStandard = 1,
+  kGuestHandleFile = 2,
+  kGuestHandleFind = 3,
+  kGuestHandleHeap = 4,
+  kGuestHandleMutex = 5,
+};
+
+struct GuestHandle {
+  int type{kGuestHandleFree};
+  int host_descriptor{-1};
+};
+
+constexpr std::uint32_t kGuestHandleBase = 0x1000;
+constexpr std::uint32_t kGuestHandleCount = 1024;
+GuestHandle guest_handles[kGuestHandleCount];
+GuestHandle standard_handles[3] = {{kGuestHandleStandard, STDIN_FILENO},
+                                   {kGuestHandleStandard, STDOUT_FILENO},
+                                   {kGuestHandleStandard, STDERR_FILENO}};
+
+GuestHandle* guest_handle_lookup(std::uint64_t handle) {
+  if (handle == 10) return &standard_handles[0];
+  if (handle == 11) return &standard_handles[1];
+  if (handle == 12) return &standard_handles[2];
+  if (handle < kGuestHandleBase) return nullptr;
+  const auto index = static_cast<std::uint32_t>((handle - kGuestHandleBase) / 4u);
+  if (index >= kGuestHandleCount) return nullptr;
+  if (guest_handles[index].type == kGuestHandleFree) return nullptr;
+  return &guest_handles[index];
+}
+
+std::uint64_t guest_handle_new(int type, int descriptor = -1) {
+  for (std::uint32_t index = 1; index < kGuestHandleCount; ++index) {
+    if (guest_handles[index].type == kGuestHandleFree) {
+      guest_handles[index].type = type;
+      guest_handles[index].host_descriptor = descriptor;
+      return kGuestHandleBase + index * 4u;
+    }
+  }
+  return 0;  // exhausted; the shim reports the failure
+}
+
+void guest_handle_close(std::uint64_t handle) {
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type == kGuestHandleStandard) return;
+  if (entry->host_descriptor >= 0) ::close(entry->host_descriptor);
+  entry->type = kGuestHandleFree;
+  entry->host_descriptor = -1;
+}
+
 int standard_handle_to_descriptor(std::uint64_t handle) {
-  if (handle == 11) return STDOUT_FILENO;
-  if (handle == 12) return STDERR_FILENO;
-  if (handle == 10) return STDIN_FILENO;
+  const auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr && entry->host_descriptor >= 0) return entry->host_descriptor;
   return STDOUT_FILENO;
 }
 
@@ -235,12 +300,84 @@ void win32_virtual_alloc(GuestContext* context) {
   next_heap_address += aligned;
 }
 void win32_virtual_free(GuestContext* context) { set_import_result(context, 1); }
+// ---- kernel32: environment, version and handle-count ----------------------
+// Ported from HenryKun55/igi-recomp (MIT), shim/src/kernel32.c, with the
+// stdcall pop removed: this runtime pops the guest stack centrally through
+// runtime/win32_abi.hpp, so a shim must only set the result. Each of these also
+// needs an entry in the ABI table there, or `imports` will still report it
+// missing.
+void win32_get_version_ex_a(GuestContext* context) {
+  // OSVERSIONINFOA. The values are igi-recomp's, kept identical so the two
+  // sides of a differential comparison observe the same thing.
+  const auto info = import_argument(context, 0);
+  store_guest_memory(context, info + 4, 5, 4);      // dwMajorVersion
+  store_guest_memory(context, info + 8, 1, 4);      // dwMinorVersion
+  store_guest_memory(context, info + 12, 2600, 4);  // dwBuildNumber
+  store_guest_memory(context, info + 16, 2, 4);     // VER_PLATFORM_WIN32_NT
+  store_guest_memory(context, info + 20, 0, 1);     // szCSDVersion[0] = NUL
+  set_import_result(context, 1);
+}
+void win32_set_handle_count(GuestContext* context) {
+  set_import_result(context, import_argument(context, 0));
+}
+void win32_release_mutex(GuestContext* context) {
+  (void)import_argument(context, 0);
+  set_import_result(context, 1);
+}
+void win32_flush_file_buffers(GuestContext* context) {
+  // Deliberately reports success without flushing, as igi-recomp does; the
+  // reference has to take the same branch or the traces diverge.
+  (void)import_argument(context, 0);
+  set_import_result(context, 1);
+}
+void win32_free_environment_strings_w(GuestContext* context) {
+  (void)import_argument(context, 0);
+  set_import_result(context, 1);
+}
+void win32_get_environment_variable_a(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  (void)import_argument(context, 2);
+  set_import_result(context, 0);  // ERROR_ENVVAR_NOT_FOUND
+}
+void win32_get_cp_info(GuestContext* context) {
+  const auto info = import_argument(context, 1);
+  for (std::uint64_t offset = 0; offset < 20; ++offset)
+    store_guest_memory(context, info + offset, 0, 1);
+  store_guest_memory(context, info, 1, 4);          // MaxCharSize
+  store_guest_memory(context, info + 4, '?', 1);    // DefaultChar[0]
+  set_import_result(context, 1);
+}
+
+void win32_get_file_type(GuestContext* context) {
+  const auto* entry = guest_handle_lookup(import_argument(context, 0));
+  std::uint64_t type = 0;  // FILE_TYPE_UNKNOWN
+  if (entry != nullptr && entry->type == kGuestHandleStandard) type = 2;  // FILE_TYPE_CHAR
+  else if (entry != nullptr && entry->type == kGuestHandleFile) type = 1;  // FILE_TYPE_DISK
+  set_import_result(context, type);
+}
+void win32_close_handle(GuestContext* context) {
+  guest_handle_close(import_argument(context, 0));
+  set_import_result(context, 1);
+}
+void win32_set_std_handle(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, 1);
+}
+void win32_create_mutex_a(GuestContext* context) {
+  (void)import_argument(context, 0);  // attributes
+  (void)import_argument(context, 1);  // initial owner
+  (void)import_argument(context, 2);  // name
+  set_import_result(context, guest_handle_new(kGuestHandleMutex));
+}
+
 void win32_get_process_heap(GuestContext* context) { set_import_result(context, 0x1000); }
 void win32_heap_create(GuestContext* context) { set_import_result(context, 0x1000); }
-void win32_heap_alloc(GuestContext* context) {
-  const auto requested = import_argument(context, 2);
+// Returns the guest pointer for a new block, or 0 when the region is exhausted.
+std::uint64_t heap_allocate(std::uint64_t requested) {
   const auto payload = (requested == 0 ? kHeapAlignment : (requested + kHeapAlignment - 1) & ~(kHeapAlignment - 1));
-  if (heap_first_block == 0 || payload > 0xfffffff0ull) { set_import_result(context, 0); return; }
+  if (heap_first_block == 0 || payload > 0xfffffff0ull) return 0;
   for (std::uint64_t block = heap_first_block; block != 0; block = heap_next_block(block)) {
     const auto size = heap_read_size(block);
     if (heap_read_free(block) == 0 || size < payload) {
@@ -258,20 +395,21 @@ void win32_heap_alloc(GuestContext* context) {
     } else {
       heap_write_header(block, size, 0);
     }
-    set_import_result(context, block + kHeapHeaderSize);
-    return;
+    return block + kHeapHeaderSize;
   }
   // The region is exhausted. Returning null is what the real API does, and the
   // guest is entitled to see it rather than being handed a wild pointer.
-  set_import_result(context, 0);
+  return 0;
 }
 
-void win32_heap_free(GuestContext* context) {
-  const auto pointer = import_argument(context, 2);
-  if (heap_first_block == 0 || pointer < heap_first_block + kHeapHeaderSize || pointer >= heap_region_end) {
-    set_import_result(context, 0);
+void win32_heap_alloc(GuestContext* context) {
+  set_import_result(context, heap_allocate(import_argument(context, 2)));
+}
+
+// Releases a block and coalesces its free neighbours.
+void heap_release(GuestContext* context, std::uint64_t pointer) {
+  if (heap_first_block == 0 || pointer < heap_first_block + kHeapHeaderSize || pointer >= heap_region_end)
     return;
-  }
   const auto block = pointer - kHeapHeaderSize;
   heap_write_header(block, heap_read_size(block), 1);
   // Coalesce with the following free blocks, then with the preceding one if it
@@ -294,6 +432,10 @@ void win32_heap_free(GuestContext* context) {
     if (next + kHeapHeaderSize > heap_region_end) break;
     previous = next;
   }
+}
+
+void win32_heap_free(GuestContext* context) {
+  heap_release(context, import_argument(context, 2));
   set_import_result(context, 1);
 }
 
@@ -335,6 +477,96 @@ void win32_get_command_line(GuestContext* context) {
   }
   set_import_result(context, offset);
 }
+// Environment blocks. Windows hands the guest a double-NUL-terminated block of
+// "NAME=value" strings; the ANSI and wide shims must describe the same content.
+// Both live in a reserved region at the top of guest memory.
+std::uint64_t environment_block_a = 0;
+std::uint64_t environment_block_w = 0;
+
+void build_environment_blocks() {
+  environment_block_a = 0;
+  environment_block_w = 0;
+  if (guest_memory == nullptr || guest_memory_size < 0x300000) return;
+  environment_block_a = guest_memory_size - 0x200000;
+  environment_block_w = guest_memory_size - 0x100000;
+  std::memset(guest_memory + environment_block_a, 0, 0x100000);
+  std::memset(guest_memory + environment_block_w, 0, 0x100000);
+  std::uint64_t ansi = 0;
+  std::uint64_t wide = 0;
+  for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+    const std::string variable{*entry};
+    if (ansi + variable.size() + 1 < 0x0fffff) {
+      std::memcpy(guest_memory + environment_block_a + ansi, variable.data(), variable.size());
+      ansi += variable.size() + 1;  // the terminator is already zero
+    }
+    if (wide + (variable.size() + 1) * 2 < 0x0fffff) {
+      for (std::size_t index = 0; index < variable.size(); ++index)
+        store_guest_memory(nullptr, environment_block_w + wide + index * 2,
+                           static_cast<std::uint8_t>(variable[index]), 2);
+      wide += (variable.size() + 1) * 2;
+    }
+  }
+}
+
+void win32_get_environment_strings_w(GuestContext* context) {
+  set_import_result(context, environment_block_w);
+}
+
+// The size of the block a guest pointer was handed out from, or 0 if it is not
+// one of ours.
+std::uint32_t heap_block_size(std::uint64_t pointer) {
+  if (heap_first_block == 0 || pointer < heap_first_block + kHeapHeaderSize || pointer >= heap_region_end)
+    return 0;
+  return heap_read_size(pointer - kHeapHeaderSize);
+}
+
+std::uint64_t heap_allocate(std::uint64_t requested);
+void heap_release(GuestContext* context, std::uint64_t pointer);
+
+void win32_heap_realloc(GuestContext* context) {
+  const auto flags = import_argument(context, 1);
+  const auto pointer = import_argument(context, 2);
+  const auto size = import_argument(context, 3);
+  const auto old_size = heap_block_size(pointer);
+  if ((flags & 0x10u) != 0) {  // HEAP_REALLOC_IN_PLACE_ONLY
+    set_import_result(context, size <= old_size ? pointer : 0);
+    return;
+  }
+  const auto replacement = heap_allocate(size);
+  if (replacement == 0) { set_import_result(context, 0); return; }
+  const auto copy = old_size < size ? old_size : size;
+  if (pointer != 0 && copy != 0) {
+    for (std::uint64_t offset = 0; offset < copy; ++offset)
+      store_guest_memory(context, replacement + offset, load_guest_memory(context, pointer + offset, 1), 1);
+    heap_release(context, pointer);
+  }
+  set_import_result(context, replacement);
+}
+
+void win32_debug_break(GuestContext* context) {
+  terminate_with_message("DebugBreak (ip=0x%" PRIx64 ")", context->instruction_pointer);
+}
+void win32_output_debug_string_a(GuestContext* context) {
+  // The text goes to the debugger, not to standard output, so it is not part of
+  // what a differential comparison observes.
+  (void)import_argument(context, 0);
+  set_import_result(context, 0);
+}
+void win32_get_drive_type_a(GuestContext* context) {
+  const auto root = import_argument(context, 0);
+  std::uint64_t type = 1;  // DRIVE_NO_ROOT_DIR
+  if (root != 0) {
+    const auto letter = static_cast<char>(load_guest_memory(context, root, 1));
+    if (letter == 'C' || letter == 'c') type = 3;  // DRIVE_FIXED
+  }
+  set_import_result(context, type);
+}
+void win32_compare_file_time(GuestContext* context) {
+  const auto left = load_guest_memory(context, import_argument(context, 0), 8);
+  const auto right = load_guest_memory(context, import_argument(context, 1), 8);
+  set_import_result(context, left < right ? 0xffffffffull : left > right ? 1ull : 0ull);
+}
+
 void win32_get_environment_strings(GuestContext* context) {
   set_import_result(context, guest_memory_size - 0x200000);
 }
@@ -405,6 +637,23 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "VirtualAlloc", win32_virtual_alloc},
     {"kernel32.dll", "VirtualFree", win32_virtual_free},
     {"kernel32.dll", "GetProcessHeap", win32_get_process_heap},
+    {"kernel32.dll", "GetVersionExA", win32_get_version_ex_a},
+    {"kernel32.dll", "GetFileType", win32_get_file_type},
+    {"kernel32.dll", "GetEnvironmentStringsW", win32_get_environment_strings_w},
+    {"kernel32.dll", "HeapReAlloc", win32_heap_realloc},
+    {"kernel32.dll", "DebugBreak", win32_debug_break},
+    {"kernel32.dll", "OutputDebugStringA", win32_output_debug_string_a},
+    {"kernel32.dll", "GetDriveTypeA", win32_get_drive_type_a},
+    {"kernel32.dll", "CompareFileTime", win32_compare_file_time},
+    {"kernel32.dll", "CloseHandle", win32_close_handle},
+    {"kernel32.dll", "SetStdHandle", win32_set_std_handle},
+    {"kernel32.dll", "CreateMutexA", win32_create_mutex_a},
+    {"kernel32.dll", "SetHandleCount", win32_set_handle_count},
+    {"kernel32.dll", "ReleaseMutex", win32_release_mutex},
+    {"kernel32.dll", "FlushFileBuffers", win32_flush_file_buffers},
+    {"kernel32.dll", "FreeEnvironmentStringsW", win32_free_environment_strings_w},
+    {"kernel32.dll", "GetEnvironmentVariableA", win32_get_environment_variable_a},
+    {"kernel32.dll", "GetCPInfo", win32_get_cp_info},
     {"kernel32.dll", "HeapCreate", win32_heap_create},
     {"kernel32.dll", "HeapAlloc", win32_heap_alloc},
     {"kernel32.dll", "HeapFree", win32_heap_free},
@@ -703,7 +952,10 @@ void invoke_win32_import(GuestContext* context, const char* library_name, const 
 namespace {
 
 void unbound_import_thunk(GuestContext* context) {
-  terminate_with_message("call to an unbound import thunk (ip=0x%" PRIx64 ")", context->instruction_pointer);
+  const auto& library = import_thunk_libraries[current_thunk_index];
+  const auto& symbol = import_thunk_symbols[current_thunk_index];
+  terminate_with_message("unimplemented Win32 import %s!%s (ip=0x%" PRIx64 ")",
+                         library.c_str(), symbol.c_str(), context->instruction_pointer);
 }
 
 }  // namespace
@@ -775,6 +1027,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   }
   next_heap_address = image->heap_base;
   heap_initialize(image->heap_base, image->stack_top);
+  build_environment_blocks();
 
   GuestContext context{};
   context.registers[kRegisterStackPointer] = image->stack_top;

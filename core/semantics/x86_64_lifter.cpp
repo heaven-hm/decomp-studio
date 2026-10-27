@@ -1,5 +1,7 @@
 #include "core/semantics/x86_64_lifter.hpp"
 
+#include "core/ir/cpp_backend.hpp"
+
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -302,7 +304,18 @@ std::string X86_64Lifter::guest_function_name(std::uint64_t address) const {
   return stream.str();
 }
 
+// The segment registers a 32-bit guest can name. They are not in the general
+// register file, and the guest model has no GDT, so a segment register reads as
+// zero. That is not a guess: it was measured against the reference, which reports
+// ds, es, ss and cs all as 0x0000 in 32-bit mode because it models no descriptor
+// table either. A candidate that invented the real Windows selector 0x23 would
+// diverge from the reference on every instruction that stored one.
+bool is_segment_register(const std::string& name) {
+  return name == "cs" || name == "ds" || name == "es" || name == "ss" || name == "fs" || name == "gs";
+}
+
 std::string register_read_expression(const std::string& name) {
+  if (is_segment_register(name)) return "0ull";
   const auto iterator = register_descriptors().find(name);
   if (iterator == register_descriptors().end()) return {};
   const auto& descriptor = iterator->second;
@@ -366,9 +379,27 @@ std::string effective_address_expression(const DecodedInstruction& instruction, 
   return "mask_guest_address(" + expression + ")";
 }
 
+// Reading an operand must always produce an expression, and writing one must
+// always produce a statement. Both used to return an empty string when they could
+// not: a segment register has no entry in the general register file, so
+// `mov word ptr [edi], ds` emitted `store_guest_memory(context, addr, , 2);` and
+// the failure surfaced as a C++ syntax error in the generated code rather than as
+// a lifter diagnostic naming the instruction. Failing here means the address and
+// the instruction are both known when the message is written.
+[[noreturn]] void fail_operand(const DecodedInstruction& instruction, const char* what,
+                               const std::string& detail) {
+  throw LiftError("cannot " + std::string(what) + " operand " + detail + " of instruction '" +
+                  instruction.text + "' at " + format_hex(instruction.address));
+}
+
 std::string operand_read_expression(const DecodedInstruction& instruction, const Operand& operand,
                                     int width_in_bytes) {
-  if (operand.kind == Operand::Kind::Register) return register_read_expression(operand.register_name);
+  if (operand.kind == Operand::Kind::Register) {
+    auto expression = register_read_expression(operand.register_name);
+    if (expression.empty())
+      fail_operand(instruction, "read", "'" + operand.register_name + "' (no general register with that name)");
+    return expression;
+  }
   if (operand.kind == Operand::Kind::Immediate) return format_immediate(operand.immediate_value, width_in_bytes);
   return "load_guest_memory(context, " + effective_address_expression(instruction, operand) + ", " +
          std::to_string(width_in_bytes) + ")";
@@ -376,7 +407,12 @@ std::string operand_read_expression(const DecodedInstruction& instruction, const
 
 std::string operand_write_statement(const DecodedInstruction& instruction, const Operand& operand,
                                     const std::string& value, int width_in_bytes) {
-  if (operand.kind == Operand::Kind::Register) return register_write_statement(operand.register_name, value);
+  if (operand.kind == Operand::Kind::Register) {
+    auto statement = register_write_statement(operand.register_name, value);
+    if (statement.empty())
+      fail_operand(instruction, "write", "'" + operand.register_name + "' (no general register with that name)");
+    return statement;
+  }
   return "store_guest_memory(context, " + effective_address_expression(instruction, operand) + ", " + value +
          ", " + std::to_string(width_in_bytes) + ");";
 }
@@ -409,12 +445,32 @@ void X86_64Lifter::record_unsupported(const std::string& mnemonic, const Decoded
 }
 
 void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const RecoveredFunction& function,
-                                    std::string& output) const {
+                                    ir::Function& output) const {
   const auto parsed_mnemonic = parse_mnemonic(instruction.mnemonic);
   std::string mnemonic = parsed_mnemonic.mnemonic;
   const int repeat_prefix = parsed_mnemonic.has_repeat_prefix ? 1 : 0;
   const auto& operands = instruction.operands;
-  const auto emit = [&output](const std::string& line) { output += "  " + line + "\n"; };
+  const auto emit = [&output, &instruction](const std::string& line) {
+    output.statements.push_back(ir::Statement::verbatim(line, instruction.address));
+  };
+  // Structured emitters. A statement built this way describes an effect on the
+  // guest machine and lets the backend decide how to write it, which is what
+  // makes a second backend possible. The C++ backend renders these to exactly the
+  // text the verbatim form produced, so migrating a class of statement cannot
+  // change the generated code.
+  const auto emit_trap = [&output, &instruction](const std::string& what) {
+    ir::Statement statement;
+    statement.kind = ir::StatementKind::Trap;
+    statement.text = what;
+    statement.address_of_instruction = instruction.address;
+    output.statements.push_back(std::move(statement));
+  };
+  const auto emit_return = [&output, &instruction] {
+    ir::Statement statement;
+    statement.kind = ir::StatementKind::Return;
+    statement.address_of_instruction = instruction.address;
+    output.statements.push_back(std::move(statement));
+  };
 
   const auto is_vector_register = [](const discovery::Operand& operand) {
     return operand.kind == discovery::Operand::Kind::Register &&
@@ -906,7 +962,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     if (operands[0].kind == Operand::Kind::Register &&
         register_read_expression(operands[0].register_name).empty()) {
       emit("recomp_trap(context, \"push " + operands[0].register_name + "\");");
-      emit("return;");
+      emit_return();
       return;
     }
     if (operands[0].kind == Operand::Kind::Immediate) {
@@ -969,14 +1025,14 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       // stack, so this must not push another one.
       emit("invoke_win32_import_tail(context, \"" + imported->library_name + "\", \"" +
            imported->symbol_name + "\");");
-      emit("return;");
+      emit_return();
       return;
     }
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate) {
       const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
       if (function.tail_call_targets.count(target) != 0 || function.instructions.count(target) == 0) {
         emit(guest_function_name(target) + "(context);");
-        emit("return;");
+        emit_return();
       } else {
         emit("goto label_" + std::to_string(target) + ";");
       }
@@ -984,7 +1040,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     emit("jump_guest_indirect(context, " +
          operand_read_expression(instruction, operands[0], operand_width(operands[0], 8)) + ");");
-    emit("return;");
+    emit_return();
     return;
   }
   if (kConditionalBranches.count(mnemonic) != 0 && condition_codes().count(mnemonic.substr(1)) != 0) {
@@ -1036,17 +1092,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate)
       adjustment += static_cast<std::uint64_t>(operands[0].immediate_value);
     emit("return_from_guest_function(context, " + std::to_string(adjustment - 8) + ");");
-    emit("return;");
+    emit_return();
     return;
   }
   if (mnemonic == "retf") {
     emit("return_from_guest_function(context, 8);");
-    emit("return;");
+    emit_return();
     return;
   }
   if (mnemonic == "int3" || mnemonic == "hlt" || mnemonic == "ud2" || mnemonic == "ud1" || mnemonic == "ud0") {
-    emit("recomp_trap(context, \"" + mnemonic + "\");");
-    emit("return;");
+    emit_trap(mnemonic);
+    emit_return();
     return;
   }
 
@@ -1441,8 +1497,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // Port I/O and BOUND cannot work in a user-mode recompilation; they fail
   // loudly rather than doing something plausible.
   if (mnemonic == "in" || mnemonic == "out" || mnemonic == "bound") {
-    emit("recomp_trap(context, \"" + mnemonic + "\");");
-    emit("return;");
+    emit_trap(mnemonic);
+    emit_return();
     return;
   }
   if (mnemonic == "fptan") { emit("x87_partial_tangent(context);"); return; }
@@ -1520,8 +1576,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "lcall" || mnemonic == "ljmp" || mnemonic == "insb" || mnemonic == "insw" ||
       mnemonic == "insd" || mnemonic == "outsb" || mnemonic == "outsw" || mnemonic == "outsd" ||
       mnemonic == "int") {
-    emit("recomp_trap(context, \"" + mnemonic + "\");");
-    emit("return;");
+    emit_trap(mnemonic);
+    emit_return();
     return;
   }
   if (mnemonic == "fsqrt") { emit("x87_write(context, 0, std::sqrt(x87_read(context, 0)));"); return; }
@@ -1605,16 +1661,59 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   record_unsupported(mnemonic, instruction);
 }
 
-std::string X86_64Lifter::lift_function(const RecoveredFunction& function) const {
-  std::string output;
-  output += "static void " + guest_function_name(function.entry) + "(GuestContext* context) {\n";
+ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function) const {
+  // The body is built as statements and rendered by the C++ backend. Statements
+  // that have not been given a structured form yet arrive as Verbatim and are
+  // emitted unchanged, so moving the lifter onto the representation cannot alter
+  // the generated code -- which the golden test pins.
+  ir::Function lifted;
+  lifted.address = function.entry;
+  lifted.name = guest_function_name(function.entry);
   for (const auto& [address, instruction] : function.instructions) {
-    if (function.block_starts.count(address) != 0) output += "label_" + std::to_string(address) + ":;\n";
-    output += "  trace_instruction(context, " + format_hex(address) + "); // " + instruction.text + "\n";
-    emit_instruction(instruction, function, output);
+    if (function.block_starts.count(address) != 0) {
+      ir::Statement label;
+      label.kind = ir::StatementKind::Label;
+      label.label = "label_" + std::to_string(address);
+      label.address_of_instruction = address;
+      lifted.statements.push_back(std::move(label));
+    }
+    lifted.statements.push_back(ir::Statement::verbatim(
+        "trace_instruction(context, " + format_hex(address) + "); // " + instruction.text, address));
+    emit_instruction(instruction, function, lifted);
   }
-  output += "  return;\n}\n";
+  {
+    ir::Statement result;
+    result.kind = ir::StatementKind::Return;
+    lifted.statements.push_back(std::move(result));
+  }
+
+  return lifted;
+}
+
+std::string X86_64Lifter::lift_function(const RecoveredFunction& function) const {
+  const auto lifted = lift_function_to_ir(function);
+  std::string output;
+  output += "static void " + lifted.name + "(GuestContext* context) {\n";
+  output += ir::render_function(lifted);
+  output += "}\n";
   return output;
+}
+
+// How much of the recovered program is described as statements rather than as
+// text the backend passes through. Reported so that the migration is a measured
+// fraction rather than an impression.
+ir::StatementCensus X86_64Lifter::statement_census() const {
+  ir::Module module;
+  for (const auto& [address, function] : discovery_.functions()) {
+    if (native_overrides_.count(address) != 0 || stubbed_functions_.count(address) != 0) continue;
+    try {
+      module.functions.push_back(lift_function_to_ir(function));
+    } catch (const LiftError&) {
+      // A function that does not lift contributes nothing; the coverage census is
+      // what reports those.
+    }
+  }
+  return ir::census(module);
 }
 
 std::string X86_64Lifter::lift_all_functions(bool strict) const {
@@ -1655,7 +1754,10 @@ CoverageCensus X86_64Lifter::census() const {
   for (const auto& [function_entry, function] : discovery_.functions()) {
     for (const auto& [address, instruction] : function.instructions) {
       ++result.total_instructions;
-      std::string scratch;
+      // The census only asks whether an instruction lifts, so the statements are
+      // built and discarded. It walks every recovered instruction, so this
+      // deliberately does not render them.
+      ir::Function scratch;
       try {
         emit_instruction(instruction, function, scratch);
         ++result.lifted_instructions;

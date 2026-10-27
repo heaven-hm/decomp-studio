@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/discovery/function_discovery.hpp"
+#include "core/ir/ir.hpp"
 
 #include <cstdint>
 #include <map>
@@ -60,10 +61,15 @@ class X86_64Lifter {
   // lifter cannot translate still produces a complete, accurate diagnostic.
   CoverageCensus census() const;
 
+  // The share of recovered statements that the IR describes structurally rather
+  // than passing through as text.
+  ir::StatementCensus statement_census() const;
+
  private:
+  ir::Function lift_function_to_ir(const discovery::RecoveredFunction& function) const;
   std::string lift_function(const discovery::RecoveredFunction& function) const;
   void emit_instruction(const discovery::DecodedInstruction& instruction,
-                        const discovery::RecoveredFunction& function, std::string& output) const;
+                        const discovery::RecoveredFunction& function, ir::Function& output) const;
   void record_unsupported(const std::string& mnemonic, const discovery::DecodedInstruction& instruction) const;
   std::string guest_function_name(std::uint64_t address) const;
 

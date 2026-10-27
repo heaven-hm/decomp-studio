@@ -201,6 +201,12 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   discovery.discover();
   recomp::semantics::X86_64Lifter lifter(discovery);
   const auto census = lifter.census();
+  // How much of the recovered program the architecture-neutral IR describes as
+  // statements rather than passing through as text.
+  const auto statements = lifter.statement_census();
+
+  std::ostringstream statement_percent;
+  statement_percent << std::fixed << std::setprecision(2) << statements.structured_percent();
 
   std::ostringstream percent;
   percent << std::fixed << std::setprecision(2) << census.coverage_percent();
@@ -232,7 +238,13 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             << "functions:      " << discovery.functions().size() << "\n"
             << "instructions:   " << census.total_instructions << "\n"
             << "lifted:         " << census.lifted_instructions << " (" << percent.str() << "%)\n"
-            << "unsupported:    " << census.unsupported_instructions << "\n";
+            << "unsupported:    " << census.unsupported_instructions << "\n"
+            // How much of the recovered program the architecture-neutral IR
+            // describes as statements rather than passing through as text. The
+            // rest is the migration still to do, and it is a measured fraction
+            // rather than an impression.
+            << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
+            << statement_percent.str() << "%)\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;

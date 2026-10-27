@@ -27,6 +27,8 @@ set(RECOMP_SOURCES
   core/discovery/function_discovery.cpp
   core/pipeline.cpp
   core/semantics/x86_64_lifter.cpp
+  core/ir/ir.cpp
+  core/ir/cpp_backend.cpp
   # The guest runtime is linked into the studio as well as into every generated
   # project. The differential reference dispatches through the same shim table,
   # so there is exactly one implementation of each Win32 call rather than two
@@ -104,6 +106,12 @@ add_test(NAME autorecomp_pipeline
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/autorecomp/autorecomp_test.py
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
+add_test(NAME golden_generated_code
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/golden_code_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/generated_code.sha256)
 
 add_test(NAME cxx_runtime
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cxx/cxx_runtime_test.py

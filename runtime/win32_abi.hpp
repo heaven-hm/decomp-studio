@@ -38,12 +38,6 @@ inline std::uint64_t win32_import_argument_offset(int index, bool this_call) {
 }
 
 inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
-    // Wine's comctl32 implementation defines InitCommonControls as a no-op;
-    // common-control classes are registered during DLL initialization.
-    {"comctl32.dll", "InitCommonControls", 0, true},
-    {"user32.dll", "LoadIconA", 2, true},
-    {"user32.dll", "LoadCursorA", 2, true},
-    {"user32.dll", "RegisterClassA", 1, true},
     {"kernel32.dll", "GetStdHandle", 1, true},
     {"kernel32.dll", "WriteFile", 5, true},
     {"kernel32.dll", "ReadFile", 5, true},

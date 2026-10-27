@@ -24,6 +24,9 @@ target table.
 
 ## Proof
 
+See [APPS_RUNNING.md](APPS_RUNNING.md) for the external application corpus
+audit, observed failures, and evidence for fixes.
+
 Eleven real Windows programs (nine PE32+ and two PE32) are compiled with
 mingw-w64, recompiled to native ARM64, executed, and verified against the
 original x86-64 / x86-32 code running under Unicorn. The output is

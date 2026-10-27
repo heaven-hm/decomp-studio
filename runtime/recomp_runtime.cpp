@@ -192,6 +192,23 @@ int standard_handle_to_descriptor(std::uint64_t handle) {
   return STDOUT_FILENO;
 }
 
+// The general registers, for diagnostics that would otherwise report only an
+// address the guest computed.
+std::string describe_registers(const GuestContext* context) {
+  static const char* names[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
+                                "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15"};
+  std::string text;
+  char buffer[64];
+  for (int index = 0; index < 16; ++index) {
+    const auto value = guest_pointer_width >= 8 ? context->registers[index]
+                                                : (context->registers[index] & 0xffffffffull);
+    std::snprintf(buffer, sizeof(buffer), "%s%s=0x%llx", text.empty() ? "" : " ", names[index],
+                  static_cast<unsigned long long>(value));
+    text += buffer;
+  }
+  return text;
+}
+
 std::uint64_t next_heap_address = 0;
 
 // ---- guest heap ---------------------------------------------------------
@@ -1028,7 +1045,14 @@ void win32_get_proc_address(GuestContext* context) {
   const auto name = read_guest_string(import_argument(context, 1));
   void (*function)(GuestContext*) = nullptr;
   if (!lookup_win32_import("kernel32.dll", name.c_str(), &function)) {
-    terminate_with_message("GetProcAddress(\"%s\") is not implemented", name.c_str());
+    // The real API returns NULL for a name it cannot resolve, and programs probe
+    // for optional symbols precisely because that is allowed. Terminating here
+    // turned a routine negative probe into a hard failure -- and a program that
+    // genuinely needs the symbol still fails, at the call through the null it
+    // was given, which is what Windows does too.
+    std::fprintf(stderr, "recomp: GetProcAddress(\"%s\") not provided; returning NULL\n", name.c_str());
+    set_import_result(context, 0);
+    return;
   }
   static std::uint64_t next_thunk = 0;
   if (next_thunk == 0) next_thunk = import_thunk_base() + 0x00010000;
@@ -1184,6 +1208,23 @@ const ShimDescriptor kShims[] = {
 };
 
 }  // namespace
+
+// ---- guest memory watchpoint ---------------------------------------------
+std::uint64_t watched_guest_address = 0;
+static bool watch_reported = false;
+
+void note_watched_write(const GuestContext* context, std::uint64_t address, int width) {
+  if (watched_guest_address == 0 || watch_reported) return;
+  if (watched_guest_address < address ||
+      watched_guest_address >= address + static_cast<std::uint64_t>(width))
+    return;
+  watch_reported = true;
+  std::fprintf(stderr,
+               "watch: write of %d byte(s) at 0x%llx covers 0x%llx from guest ip 0x%llx\n",
+               width, static_cast<unsigned long long>(address),
+               static_cast<unsigned long long>(watched_guest_address),
+               static_cast<unsigned long long>(context != nullptr ? context->instruction_pointer : 0));
+}
 
 void report_guest_memory_fault(GuestContext* context, std::uint64_t address, int width, int is_write) {
   terminate_with_message("guest %s fault at 0x%" PRIx64 " (width %d) ip=0x%" PRIx64,
@@ -1398,8 +1439,10 @@ void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uin
     invoke_import_thunk(context, thunk, return_address, guest_pointer_width < 8);
     return;
   }
-  terminate_with_message("indirect call to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 ")", target,
-                         context->instruction_pointer);
+  // A bare target address is not actionable: the caller computed it, so the
+  // registers that computed it are the diagnostic.
+  terminate_with_message("indirect call to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 "); %s", target,
+                         context->instruction_pointer, describe_registers(context).c_str());
 }
 
 void jump_guest_indirect(GuestContext* context, std::uint64_t target) {
@@ -1409,8 +1452,27 @@ void jump_guest_indirect(GuestContext* context, std::uint64_t target) {
     invoke_import_thunk(context, thunk, 0, false);
     return;
   }
-  terminate_with_message("indirect jump to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 ")", target,
-                         context->instruction_pointer);
+  terminate_with_message("indirect jump to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 "); %s", target,
+                         context->instruction_pointer, describe_registers(context).c_str());
+}
+
+// A `jmp [iat]` thunk is a tail call: the caller's own `call` already pushed the
+// return address, so this path must NOT push another one. Pushing twice shifts
+// every argument by one slot -- the shim reads the return address as its first
+// argument and the first argument as its second, which for something like memcpy
+// means a wild destination and a pointer-sized count.
+void invoke_win32_import_tail(GuestContext* context, const char* library_name, const char* symbol_name) {
+  const auto* shim = find_win32_shim(library_name, symbol_name);
+  if (shim == nullptr) {
+    terminate_with_message("unimplemented Win32 import %s!%s (ip=0x%" PRIx64 ")", library_name, symbol_name,
+                           context->instruction_pointer);
+  }
+  shim->function(context);
+  if (guest_pointer_width >= 8) return;
+  // The return address is already at [esp], so the shim's `ret`/`ret n` is the
+  // only stack adjustment left to emulate.
+  context->registers[4] = mask_guest_address(
+      context->registers[4] + win32_import_stack_cleanup(library_name, symbol_name));
 }
 
 void invoke_win32_import(GuestContext* context, const char* library_name, const char* symbol_name,
@@ -1514,6 +1576,8 @@ int run_recompiled_image(const RecompiledImage* image) {
   heap_initialize(image->heap_base, image->stack_top);
   build_environment_blocks();
   msvcrt_initialize();
+  if (const char* watch = std::getenv("RECOMP_WATCH"))
+    watched_guest_address = std::strtoull(watch, nullptr, 0);
 
   GuestContext context{};
   context.registers[kRegisterStackPointer] = image->stack_top;

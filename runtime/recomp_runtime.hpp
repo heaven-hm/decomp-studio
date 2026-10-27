@@ -89,6 +89,13 @@ void recomp_trap(GuestContext* context, const char* reason);
 void recomp_unsupported(GuestContext* context, const char* reason);
 void report_divide_error(GuestContext* context);
 
+// Guest memory watchpoint, enabled with RECOMP_WATCH=<hex address>. The first
+// write covering that address reports the guest instruction pointer. Without it
+// a corrupted value is very hard to trace, because the writer computed the
+// address and so leaves no literal reference to it in the image.
+extern std::uint64_t watched_guest_address;
+void note_watched_write(const GuestContext* context, std::uint64_t address, int width);
+
 inline std::uint64_t load_guest_memory(GuestContext* context, std::uint64_t address, int width) {
   if (address + static_cast<std::uint64_t>(width) > guest_memory_size) {
     report_guest_memory_fault(context, address, width, 0);
@@ -100,6 +107,7 @@ inline std::uint64_t load_guest_memory(GuestContext* context, std::uint64_t addr
 }
 
 inline void store_guest_memory(GuestContext* context, std::uint64_t address, std::uint64_t value, int width) {
+  note_watched_write(context, address, width);
   if (address + static_cast<std::uint64_t>(width) > guest_memory_size) {
     report_guest_memory_fault(context, address, width, 1);
     return;
@@ -411,6 +419,7 @@ inline void load_guest_vector_256(GuestContext* context, std::uint64_t address, 
 }
 
 inline void store_guest_vector_256(GuestContext* context, std::uint64_t address, int vector_index) {
+  note_watched_write(context, address, 32);
   if (address + 32 > guest_memory_size) {
     report_guest_memory_fault(context, address, 32, 1);
     return;
@@ -557,6 +566,7 @@ inline std::uint64_t bit_scan_forward(GuestContext* context, std::uint64_t value
   return index;
 }
 inline void store_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {
+  note_watched_write(context, address, byte_count);
   if (address + static_cast<std::uint64_t>(byte_count) > guest_memory_size) {
     report_guest_memory_fault(context, address, byte_count, 1);
     return;
@@ -1390,6 +1400,7 @@ inline void x87_load_environment(GuestContext* context, std::uint64_t address) {
 inline constexpr int kFxsaveAreaBytes = 512;
 
 inline void x87_save_state(GuestContext* context, std::uint64_t address) {
+  note_watched_write(context, address, kFxsaveAreaBytes);
   if (address + kFxsaveAreaBytes > guest_memory_size) {
     report_guest_memory_fault(context, address, kFxsaveAreaBytes, 1);
     return;
@@ -1426,6 +1437,62 @@ inline void x87_restore_state(GuestContext* context, std::uint64_t address) {
                 guest_memory + address + 160 + static_cast<std::uint64_t>(index) * 16, 16);
     std::memset(context->vector_registers[index] + 16, 0, 16);  // FXSAVE covers 128 bits
   }
+}
+
+// FPTAN: ST(0) becomes tan(ST(0)) and 1.0 is pushed above it, which is the
+// documented result order and the reason the instruction has no plain "replace"
+// form.
+// FSINCOS pushes cos(ST(0)) and then sin(ST(0)), so the sine ends up on top.
+inline void x87_sine_cosine(GuestContext* context) {
+  const auto value = x87_read(context, 0);
+  x87_write(context, 0, std::cos(value));
+  x87_push(context, std::sin(value));
+}
+
+// FYL2XP1: ST(1) * log2(ST(0) + 1), with ST(0) popped.
+inline void x87_log2_x_plus_one(GuestContext* context) {
+  const auto argument = x87_read(context, 0);
+  const auto multiplier = x87_read(context, 1);
+  (void)x87_pop(context);
+  x87_write(context, 0, multiplier * std::log2(argument + 1.0));
+}
+
+inline void x87_partial_tangent(GuestContext* context) {
+  const auto value = std::tan(x87_read(context, 0));
+  x87_write(context, 0, value);
+  x87_push(context, 1.0);
+}
+
+// FNSAVE/FRSTOR: the 108-byte x87 environment plus the eight data registers.
+// The same modelling limit as FXSAVE applies: registers are held as doubles, so
+// a value needing more than 53 mantissa bits does not survive 80-bit extended.
+inline constexpr int kX87SaveAreaBytes = 108;
+
+inline void x87_save_state_87(GuestContext* context, std::uint64_t address) {
+  if (address + kX87SaveAreaBytes > guest_memory_size) {
+    report_guest_memory_fault(context, address, kX87SaveAreaBytes, 1);
+    return;
+  }
+  std::memset(guest_memory + address, 0, kX87SaveAreaBytes);
+  store_guest_memory(context, address + 0, context->x87_control_word, 2);
+  store_guest_memory(context, address + 4, x87_status_value(context), 2);
+  store_guest_memory(context, address + 8, 0, 2);  // tag word, not tracked
+  for (int index = 0; index < 8; ++index)
+    x87_store_extended80(context, address + 28 + static_cast<std::uint64_t>(index) * 10,
+                         context->x87_registers[index]);
+}
+
+inline void x87_restore_state_87(GuestContext* context, std::uint64_t address) {
+  if (address + kX87SaveAreaBytes > guest_memory_size) {
+    report_guest_memory_fault(context, address, kX87SaveAreaBytes, 0);
+    return;
+  }
+  context->x87_control_word = static_cast<std::uint32_t>(load_guest_memory(context, address + 0, 2));
+  context->x87_status_word = static_cast<std::uint32_t>(load_guest_memory(context, address + 4, 2));
+  context->x87_top = (context->x87_status_word >> 11) & 7u;
+  for (int index = 0; index < 8; ++index)
+    context->x87_registers[index] =
+        x87_load_extended80(context, address + 28 + static_cast<std::uint64_t>(index) * 10);
 }
 
 inline void x87_load_control_word(GuestContext* context, std::uint64_t address) {
@@ -1559,6 +1626,8 @@ inline void set_import_result(GuestContext* context, std::uint64_t value) {
 
 void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uint64_t return_address);
 void jump_guest_indirect(GuestContext* context, std::uint64_t target);
+void invoke_win32_import_tail(GuestContext* context, const char* library_name, const char* symbol_name);
+
 void invoke_win32_import(GuestContext* context, const char* library_name, const char* symbol_name,
                          std::uint64_t return_address);
 bool lookup_win32_import(const char* library_name, const char* symbol_name, void (**function)(GuestContext*));

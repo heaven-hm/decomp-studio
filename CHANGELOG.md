@@ -185,6 +185,29 @@ All notable changes to Recomp Studio are documented here. This project follows
   Effect on `Tetris.exe`: 16 of 99 imports implemented becomes 48, and it runs
   from process entry through CRT startup and the C runtime into its own code.
 
+- A guest memory watchpoint: `RECOMP_WATCH=<hex address>` reports the first write
+  covering that address together with the guest instruction pointer. A corrupted
+  value is otherwise very hard to trace, because the writer computed the address
+  and so leaves no literal reference to it in the image.
+
+### Fixed
+
+- **A `jmp` to an import pushed a second return address.** A `jmp [iat]` thunk is
+  a tail call: the caller's own `call` already pushed the return address, but the
+  runtime pushed another one, shifting every argument by one slot. `memcpy` then
+  read the return address as its destination and the first argument as its
+  pointer-sized count, and wrote across the program's own code — which surfaced
+  much later as an indirect call to a garbage address. Tail calls now go through
+  `invoke_win32_import_tail`, which does not push.
+- `GetProcAddress` terminated the process for a name it could not resolve. The
+  real API returns NULL, and programs probe for optional symbols precisely
+  because that is allowed; terminating turned a routine negative probe into a
+  hard failure. A program that genuinely needs the symbol still fails, at the
+  call through the null it was given, which is what Windows does too.
+- The unmapped-indirect-call diagnostics reported only the target address, which
+  is not actionable because the guest computed it. They now report the general
+  registers as well.
+
 ### Fixed
 
 - The import-compatibility guard only recognised `win32_`-prefixed function

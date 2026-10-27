@@ -72,6 +72,25 @@ def main():
         if not all("did not run" in line for line in reported):
             return fail("a handler was reported without saying it did not run")
 
+        # The import report and the runtime must agree about what is implemented. They
+        # did not: the report matched library and symbol directly, so every symbol
+        # imported from a universal CRT library was reported missing -- 10 of 42 for a
+        # binary the runtime resolved 41 of. A diagnostic that understates the tool by a
+        # factor of four is worse than no diagnostic, because it is believed.
+        report_run = subprocess.run([CLI, "imports", str(executable), "--json"],
+                                    text=True, capture_output=True)
+        imports_report = json.loads(report_run.stdout)
+        report_implemented = imports_report["implemented_count"]
+        runtime_line = next((line for line in execution.stderr.splitlines()
+                             if "imports implemented" in line), "")
+        if not runtime_line:
+            return fail("the runtime did not report an import count; stderr was:\n"
+                        + execution.stderr[:300])
+        runtime_count = int(runtime_line.split(":")[1].strip().split("/")[0])
+        if report_implemented != runtime_count:
+            return fail(f"the import report says {report_implemented} implemented and the runtime says "
+                        f"{runtime_count}; they must use the same rule\n  {runtime_line.strip()}")
+
         # And the differential reference must agree, which it only can if it runs them
         # through the same path.
         verification = subprocess.run([CLI, "verify", str(project), "--json"],

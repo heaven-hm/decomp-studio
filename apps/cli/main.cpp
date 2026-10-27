@@ -274,11 +274,15 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   return 0;
 }
 
+// Whether the runtime can resolve this import. It must use the SAME rule the runtime
+// does, which is `win32_import_abi`: a symbol in a universal CRT library
+// (`api-ms-win-crt-*`) resolves against the msvcrt table. Matching library and symbol
+// directly here instead reported every UCRT import as missing -- 10 of 42 implemented
+// for a binary the runtime resolved 41 of, which is a diagnostic that understates the
+// tool by a factor of four and would tell a user their program is unsupported when it
+// runs.
 bool is_shimmed_import(const std::string& library, const std::string& symbol) {
-  for (const auto& shim : recomp::kWin32ImportAbiTable) {
-    if (library == shim.library_name && symbol == shim.symbol_name) return true;
-  }
-  return false;
+  return recomp::win32_import_abi(library.c_str(), symbol.c_str()) != nullptr;
 }
 
 // Dependency and compatibility report. Instruction coverage says whether the

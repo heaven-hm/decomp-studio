@@ -300,6 +300,38 @@ void win32_virtual_alloc(GuestContext* context) {
   set_import_result(context, next_heap_address);
   next_heap_address += aligned;
 }
+// VirtualProtect. The guest address space is one flat region that is always
+// readable, writable and executable, so every protection change already holds.
+// The old protection is reported as PAGE_EXECUTE_READWRITE for the same reason.
+void win32_virtual_protect(GuestContext* context) {
+  const auto old_protection = import_argument(context, 3);
+  if (old_protection != 0) store_guest_memory(context, old_protection, 0x40, 4);
+  set_import_result(context, 1);
+}
+
+// VirtualQuery fills a MEMORY_BASIC_INFORMATION. This runtime presents one flat
+// committed region, so every page reports the same state; the fields a program
+// actually inspects (BaseAddress, RegionSize, State, Protect) are the ones
+// filled in, and the structure is 28 bytes on 32-bit and 48 on 64-bit.
+void win32_virtual_query(GuestContext* context) {
+  const auto address = import_argument(context, 0);
+  const auto information = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  const std::uint64_t required = guest_pointer_width >= 8 ? 48 : 28;
+  if (information == 0 || information + required > guest_memory_size) { set_import_result(context, 0); return; }
+  for (std::uint64_t offset = 0; offset < required; ++offset)
+    store_guest_memory(context, information + offset, 0, 1);
+  const auto base = address & ~static_cast<std::uint64_t>(0xfff);
+  const auto width = static_cast<std::uint64_t>(guest_pointer_width);
+  store_guest_memory(context, information + 0, base, static_cast<int>(width));       // BaseAddress
+  store_guest_memory(context, information + width, base, static_cast<int>(width));   // AllocationBase
+  store_guest_memory(context, information + width * 2, 0x40, 4);                     // PAGE_EXECUTE_READWRITE
+  store_guest_memory(context, information + width * 2 + 4, 0x1000, static_cast<int>(width));  // RegionSize
+  store_guest_memory(context, information + width * 3 + 4, 0x1000, 4);               // MEM_COMMIT
+  store_guest_memory(context, information + width * 3 + 8, 0x20000, 4);              // MEM_PRIVATE
+  set_import_result(context, required < length ? required : length);
+}
+
 void win32_virtual_free(GuestContext* context) { set_import_result(context, 1); }
 // ---- kernel32: environment, version and handle-count ----------------------
 // Ported from HenryKun55/igi-recomp (MIT), shim/src/kernel32.c, with the
@@ -637,6 +669,291 @@ void win32_lc_map_string_w(GuestContext* context) {
   set_import_result(context, static_cast<std::uint64_t>(count));
 }
 
+// ---- msvcrt: the C runtime ------------------------------------------------
+// Every MSVC- or mingw-built Windows binary imports its C runtime, so this is not
+// application-specific: these are the standard C library functions implemented
+// against the guest's own heap and address space. They are cdecl, so their ABI
+// rows carry callee_cleans_stack = false and the caller pops, as on Windows.
+std::uint64_t msvcrt_data_block = 0;   // CRT globals: errno, _iob, ctype tables
+std::uint64_t msvcrt_environment_pointer = 0;
+std::uint64_t msvcrt_file_mode_pointer = 0;
+std::uint64_t msvcrt_iob = 0;
+
+constexpr std::uint64_t kMsvcrtFileObjectBytes = 48;
+constexpr std::uint64_t kMsvcrtFileCount = 3;  // stdin, stdout, stderr
+
+void msvcrt_initialize() {
+  msvcrt_data_block = 0;
+  if (guest_memory == nullptr || guest_memory_size < 0x400000) return;
+  msvcrt_data_block = guest_memory_size - 0x300000;
+  std::memset(guest_memory + msvcrt_data_block, 0, 0x1000);
+  msvcrt_environment_pointer = msvcrt_data_block + 0x100;
+  msvcrt_file_mode_pointer = msvcrt_data_block + 0x110;
+  msvcrt_iob = msvcrt_data_block + 0x200;
+  // __p__environ and __p__fmode return the address of a variable, not the value.
+  const std::uint32_t environment = static_cast<std::uint32_t>(environment_block_a);
+  std::memcpy(guest_memory + msvcrt_environment_pointer, &environment, 4);
+  const std::uint32_t mode = 0;  // _O_TEXT
+  std::memcpy(guest_memory + msvcrt_file_mode_pointer, &mode, 4);
+  const std::uint32_t mb_cur_max = 1;
+  std::memcpy(guest_memory + msvcrt_data_block + 0x320, &mb_cur_max, 4);
+}
+
+std::uint64_t msvcrt_stream_index(std::uint64_t stream) {
+  if (msvcrt_iob == 0 || stream < msvcrt_iob) return 0;
+  const auto index = (stream - msvcrt_iob) / kMsvcrtFileObjectBytes;
+  return index < kMsvcrtFileCount ? index : 0;
+}
+
+// The C runtime's allocator is the guest heap, so a pointer it returns is
+// indistinguishable from one HeapAlloc returns -- which is what a program that
+// mixes the two expects.
+void msvcrt_malloc(GuestContext* context) {
+  set_import_result(context, heap_allocate(import_argument(context, 0)));
+}
+void msvcrt_calloc(GuestContext* context) {
+  const auto count = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  const auto total = count * size;
+  const auto block = heap_allocate(total);
+  if (block != 0)
+    for (std::uint64_t offset = 0; offset < total; ++offset) store_guest_memory(context, block + offset, 0, 1);
+  set_import_result(context, block);
+}
+void msvcrt_realloc(GuestContext* context) {
+  const auto pointer = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  if (pointer == 0) { set_import_result(context, heap_allocate(size)); return; }
+  const auto old_size = heap_block_size(pointer);
+  const auto replacement = heap_allocate(size);
+  if (replacement == 0) { set_import_result(context, 0); return; }
+  const auto copy = old_size < size ? old_size : size;
+  for (std::uint64_t offset = 0; offset < copy; ++offset)
+    store_guest_memory(context, replacement + offset, load_guest_memory(context, pointer + offset, 1), 1);
+  heap_release(context, pointer);
+  set_import_result(context, replacement);
+}
+void msvcrt_free(GuestContext* context) {
+  const auto pointer = import_argument(context, 0);
+  if (pointer != 0) heap_release(context, pointer);
+  set_import_result(context, 0);
+}
+void msvcrt_memcpy(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  for (std::uint64_t offset = 0; offset < count; ++offset)
+    store_guest_memory(context, destination + offset, load_guest_memory(context, source + offset, 1), 1);
+  set_import_result(context, destination);
+}
+void msvcrt_memmove(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  // Overlap-safe: copy backwards when the destination is above the source.
+  if (destination > source && destination < source + count) {
+    for (std::uint64_t offset = count; offset > 0; --offset)
+      store_guest_memory(context, destination + offset - 1, load_guest_memory(context, source + offset - 1, 1), 1);
+  } else {
+    for (std::uint64_t offset = 0; offset < count; ++offset)
+      store_guest_memory(context, destination + offset, load_guest_memory(context, source + offset, 1), 1);
+  }
+  set_import_result(context, destination);
+}
+void msvcrt_memset(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto value = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  for (std::uint64_t offset = 0; offset < count; ++offset) store_guest_memory(context, destination + offset, value, 1);
+  set_import_result(context, destination);
+}
+void msvcrt_strdup(GuestContext* context) {
+  const auto source = import_argument(context, 0);
+  const auto text = read_guest_string(source);
+  const auto block = heap_allocate(text.size() + 1);
+  if (block == 0) { set_import_result(context, 0); return; }
+  for (std::size_t index = 0; index < text.size(); ++index)
+    store_guest_memory(context, block + index, static_cast<std::uint8_t>(text[index]), 1);
+  store_guest_memory(context, block + text.size(), 0, 1);
+  set_import_result(context, block);
+}
+
+// A deterministic generator: a program that seeds and then compares output must
+// see the same sequence every run, and a differential comparison requires it.
+std::uint32_t msvcrt_random_state = 1;
+void msvcrt_srand(GuestContext* context) { msvcrt_random_state = static_cast<std::uint32_t>(import_argument(context, 0)); }
+void msvcrt_rand(GuestContext* context) {
+  msvcrt_random_state = msvcrt_random_state * 214013u + 2531011u;
+  set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
+}
+
+void msvcrt_fwrite(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  const auto stream = import_argument(context, 3);
+  const auto total = size * count;
+  const auto index = msvcrt_stream_index(stream);
+  const int descriptor = index == 0 ? STDIN_FILENO : index == 1 ? STDOUT_FILENO : STDERR_FILENO;
+  if (total != 0 && buffer + total <= guest_memory_size)
+    (void)::write(descriptor, guest_memory + buffer, static_cast<std::size_t>(total));
+  set_import_result(context, count);
+}
+
+// CRT globals. Each accessor returns the address of a variable in the reserved
+// CRT block, which is what the real functions do.
+void msvcrt_errno(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x000); }
+void msvcrt_p_environ(GuestContext* context) { set_import_result(context, msvcrt_environment_pointer); }
+void msvcrt_p_fmode(GuestContext* context) { set_import_result(context, msvcrt_file_mode_pointer); }
+void msvcrt_iob_pointer(GuestContext* context) { set_import_result(context, msvcrt_iob); }
+void msvcrt_pctype(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x300); }
+void msvcrt_mb_cur_max(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x320); }
+
+// ---- msvcrt: strings and numeric conversion -------------------------------
+void msvcrt_strlen(GuestContext* context) {
+  set_import_result(context, read_guest_string(import_argument(context, 0)).size());
+}
+void msvcrt_strcmp(GuestContext* context) {
+  const auto left = read_guest_string(import_argument(context, 0));
+  const auto right = read_guest_string(import_argument(context, 1));
+  const auto order = left.compare(right);
+  set_import_result(context, order < 0 ? static_cast<std::uint64_t>(-1)
+                                       : order > 0 ? std::uint64_t{1} : std::uint64_t{0});
+}
+void msvcrt_strncmp(GuestContext* context) {
+  const auto left = read_guest_string(import_argument(context, 0));
+  const auto right = read_guest_string(import_argument(context, 1));
+  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
+  const auto order = left.compare(0, limit, right, 0, limit);
+  set_import_result(context, order < 0 ? static_cast<std::uint64_t>(-1)
+                                       : order > 0 ? std::uint64_t{1} : std::uint64_t{0});
+}
+void msvcrt_strcpy(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto text = read_guest_string(import_argument(context, 1));
+  for (std::size_t index = 0; index <= text.size(); ++index)
+    store_guest_memory(context, destination + index,
+                       index < text.size() ? static_cast<std::uint8_t>(text[index]) : 0, 1);
+  set_import_result(context, destination);
+}
+void msvcrt_strncpy(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto text = read_guest_string(import_argument(context, 1));
+  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
+  for (std::size_t index = 0; index < limit; ++index)
+    store_guest_memory(context, destination + index,
+                       index < text.size() ? static_cast<std::uint8_t>(text[index]) : 0, 1);
+  set_import_result(context, destination);
+}
+void msvcrt_strcat(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto tail = read_guest_string(import_argument(context, 1));
+  const auto offset = read_guest_string(destination).size();
+  for (std::size_t index = 0; index <= tail.size(); ++index)
+    store_guest_memory(context, destination + offset + index,
+                       index < tail.size() ? static_cast<std::uint8_t>(tail[index]) : 0, 1);
+  set_import_result(context, destination);
+}
+void msvcrt_strchr(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  const auto found = text.find(character);
+  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+}
+void msvcrt_strrchr(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  const auto found = text.rfind(character);
+  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+}
+void msvcrt_strstr(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto needle = read_guest_string(import_argument(context, 1));
+  const auto found = text.find(needle);
+  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+}
+void msvcrt_strtol(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = static_cast<int>(import_argument(context, 2));
+  std::size_t consumed = 0;
+  long value = 0;
+  try {
+    value = std::stol(text, &consumed, base == 0 ? 10 : base);
+  } catch (...) {
+    value = 0;
+    consumed = 0;
+  }
+  const auto end = import_argument(context, 1);
+  if (end != 0) store_guest_memory(context, end, import_argument(context, 0) + consumed, 4);
+  set_import_result(context, static_cast<std::uint64_t>(value));
+}
+void msvcrt_atoi(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  try {
+    set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::stol(text))));
+  } catch (...) {
+    set_import_result(context, 0);
+  }
+}
+void msvcrt_toupper(GuestContext* context) {
+  set_import_result(context, static_cast<std::uint64_t>(
+                                 std::toupper(static_cast<int>(import_argument(context, 0) & 0xffu))));
+}
+void msvcrt_tolower(GuestContext* context) {
+  set_import_result(context, static_cast<std::uint64_t>(
+                                 std::tolower(static_cast<int>(import_argument(context, 0) & 0xffu))));
+}
+void msvcrt_stricmp(GuestContext* context) {
+  auto left = read_guest_string(import_argument(context, 0));
+  auto right = read_guest_string(import_argument(context, 1));
+  for (auto& character : left) character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  for (auto& character : right) character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  const auto order = left.compare(right);
+  set_import_result(context, order < 0 ? static_cast<std::uint64_t>(-1)
+                                       : order > 0 ? std::uint64_t{1} : std::uint64_t{0});
+}
+
+void msvcrt_noop(GuestContext* context) { set_import_result(context, 0); }
+
+// _onexit returns the function pointer it was given (NULL on failure); atexit
+// returns 0. A CRT that stores the return value of _onexit into its exit table
+// therefore stores the pointer, and returning 0 there puts a null into the table
+// that the exit loop then calls.
+void msvcrt_onexit(GuestContext* context) { set_import_result(context, import_argument(context, 0)); }
+void msvcrt_abort(GuestContext* context) {
+  terminate_with_message("abort() called by the guest (ip=0x%" PRIx64 ")", context->instruction_pointer);
+}
+void msvcrt_exit(GuestContext* context) {
+  std::exit(static_cast<int>(import_argument(context, 0)));
+}
+void msvcrt_isctype(GuestContext* context) {
+  const auto character = import_argument(context, 1);
+  set_import_result(context, classify_character(static_cast<std::uint32_t>(character & 0xffu)) != 0 ? 1 : 0);
+}
+void msvcrt_mbstowcs(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto maximum = import_argument(context, 2);
+  const auto text = read_guest_string(source);
+  std::uint64_t written = 0;
+  for (std::size_t index = 0; index < text.size(); ++index) {
+    if (maximum != 0 && written >= maximum) break;
+    store_guest_memory(context, destination + written * 2, static_cast<std::uint8_t>(text[index]), 2);
+    ++written;
+  }
+  if (maximum == 0 || written < maximum) {
+    store_guest_memory(context, destination + written * 2, 0, 2);
+    set_import_result(context, written);
+  } else {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+  }
+}
+void msvcrt_setlocale(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, 0);  // the "C" locale has no name to return
+}
+
 // ---- ole32 ----------------------------------------------------------------
 // Ported from HenryKun55/igi-recomp (MIT) shim/src/ole32.c. COM apartment
 // initialisation is a no-op in a single-process port: S_OK, and nothing to
@@ -748,6 +1065,8 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "IsProcessorFeaturePresent", win32_is_processor_feature_present},
     {"kernel32.dll", "VirtualAlloc", win32_virtual_alloc},
     {"kernel32.dll", "VirtualFree", win32_virtual_free},
+    {"kernel32.dll", "VirtualQuery", win32_virtual_query},
+    {"kernel32.dll", "VirtualProtect", win32_virtual_protect},
     {"kernel32.dll", "GetProcessHeap", win32_get_process_heap},
     {"kernel32.dll", "GetVersionExA", win32_get_version_ex_a},
     {"kernel32.dll", "GetFileType", win32_get_file_type},
@@ -759,6 +1078,53 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LCMapStringA", win32_lc_map_string_a},
     {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
     {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
+    // msvcrt: cdecl, so the caller pops and callee_cleans_stack is false below.
+    {"msvcrt.dll", "strlen", msvcrt_strlen},
+    {"msvcrt.dll", "strcmp", msvcrt_strcmp},
+    {"msvcrt.dll", "strncmp", msvcrt_strncmp},
+    {"msvcrt.dll", "strcpy", msvcrt_strcpy},
+    {"msvcrt.dll", "strncpy", msvcrt_strncpy},
+    {"msvcrt.dll", "strcat", msvcrt_strcat},
+    {"msvcrt.dll", "strchr", msvcrt_strchr},
+    {"msvcrt.dll", "strrchr", msvcrt_strrchr},
+    {"msvcrt.dll", "strstr", msvcrt_strstr},
+    {"msvcrt.dll", "strtol", msvcrt_strtol},
+    {"msvcrt.dll", "atoi", msvcrt_atoi},
+    {"msvcrt.dll", "toupper", msvcrt_toupper},
+    {"msvcrt.dll", "tolower", msvcrt_tolower},
+    {"msvcrt.dll", "_stricmp", msvcrt_stricmp},
+    {"msvcrt.dll", "_strcmpi", msvcrt_stricmp},
+    {"msvcrt.dll", "_errno", msvcrt_errno},
+    {"msvcrt.dll", "__p__environ", msvcrt_p_environ},
+    {"msvcrt.dll", "__p__fmode", msvcrt_p_fmode},
+    {"msvcrt.dll", "_iob", msvcrt_iob_pointer},
+    {"msvcrt.dll", "_pctype", msvcrt_pctype},
+    {"msvcrt.dll", "__mb_cur_max", msvcrt_mb_cur_max},
+    {"msvcrt.dll", "malloc", msvcrt_malloc},
+    {"msvcrt.dll", "calloc", msvcrt_calloc},
+    {"msvcrt.dll", "realloc", msvcrt_realloc},
+    {"msvcrt.dll", "free", msvcrt_free},
+    {"msvcrt.dll", "memcpy", msvcrt_memcpy},
+    {"msvcrt.dll", "memmove", msvcrt_memmove},
+    {"msvcrt.dll", "memset", msvcrt_memset},
+    {"msvcrt.dll", "_strdup", msvcrt_strdup},
+    {"msvcrt.dll", "srand", msvcrt_srand},
+    {"msvcrt.dll", "rand", msvcrt_rand},
+    {"msvcrt.dll", "fwrite", msvcrt_fwrite},
+    {"msvcrt.dll", "__set_app_type", msvcrt_noop},
+    {"msvcrt.dll", "_set_app_type", msvcrt_noop},
+    {"msvcrt.dll", "_fpreset", msvcrt_noop},
+    {"msvcrt.dll", "_setmode", msvcrt_noop},
+    {"msvcrt.dll", "atexit", msvcrt_noop},
+    {"msvcrt.dll", "_onexit", msvcrt_onexit},
+    {"msvcrt.dll", "_cexit", msvcrt_noop},
+    {"msvcrt.dll", "_getch", msvcrt_noop},
+    {"msvcrt.dll", "_kbhit", msvcrt_noop},
+    {"msvcrt.dll", "abort", msvcrt_abort},
+    {"msvcrt.dll", "exit", msvcrt_exit},
+    {"msvcrt.dll", "_isctype", msvcrt_isctype},
+    {"msvcrt.dll", "mbstowcs", msvcrt_mbstowcs},
+    {"msvcrt.dll", "setlocale", msvcrt_setlocale},
     {"ole32.dll", "CoInitialize", win32_co_initialize},
     {"ole32.dll", "CoUninitialize", win32_co_uninitialize},
     {"kernel32.dll", "OutputDebugStringA", win32_output_debug_string_a},
@@ -1147,6 +1513,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   next_heap_address = image->heap_base;
   heap_initialize(image->heap_base, image->stack_top);
   build_environment_blocks();
+  msvcrt_initialize();
 
   GuestContext context{};
   context.registers[kRegisterStackPointer] = image->stack_top;

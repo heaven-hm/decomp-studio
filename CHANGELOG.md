@@ -169,6 +169,30 @@ All notable changes to Recomp Studio are documented here. This project follows
   (4 and 2 unsupported instructions respectively, both to zero), so both
   translate to a native project.
 
+- An msvcrt layer: the MSVC C runtime, implemented against the guest's own heap
+  and address space. Every MSVC- or mingw-built Windows binary imports its C
+  runtime, so this is not application-specific. 46 functions: the allocator
+  (`malloc`/`calloc`/`realloc`/`free` on the real guest heap), the memory and
+  string functions, `rand`/`srand` with a deterministic generator, the numeric
+  conversions, the CRT globals (`_errno`, `_iob`, `__p__environ`, `__p__fmode`,
+  `_pctype`, `__mb_cur_max`) as addresses in a reserved block, `fwrite` against
+  the standard handles, and the startup calls. They are cdecl, so their ABI rows
+  carry `callee_cleans_stack = false` and the caller pops, as on Windows.
+- `VirtualQuery` and `VirtualProtect`. The guest address space is one flat
+  committed region, so a protection change already holds and every page reports
+  the same state; the fields a program inspects are filled in and the rest zeroed.
+
+  Effect on `Tetris.exe`: 16 of 99 imports implemented becomes 48, and it runs
+  from process entry through CRT startup and the C runtime into its own code.
+
+### Fixed
+
+- The import-compatibility guard only recognised `win32_`-prefixed function
+  names when parsing the runtime's shim table, so it silently stopped checking
+  anything a differently named shim family added — which is the drift it exists
+  to catch. It now matches the table's shape rather than a naming convention, and
+  immediately confirmed all 46 msvcrt rows have matching implementations.
+
 ### Fixed
 
 ### Fixed

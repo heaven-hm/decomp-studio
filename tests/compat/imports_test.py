@@ -158,7 +158,11 @@ def check_shim_tables_agree() -> None:
 
     declared = set(re.findall(r'\{"([^"]+)",\s*"([^"]+)",\s*\d+,\s*(?:true|false)\}',
                               header.read_text()))
-    implemented = set(re.findall(r'\{"([^"]+)",\s*"([^"]+)",\s*win32_[a-z0-9_]+\}',
+    # The implementation table's third field is a function name; the ABI table's
+    # is a digit, which is what distinguishes the two shapes. Matching only
+    # `win32_` names would silently stop checking anything a differently named
+    # shim family added, which is exactly the drift this guards against.
+    implemented = set(re.findall(r'\{"([^"]+)",\s*"([^"]+)",\s*[A-Za-z_][A-Za-z0-9_]*\}',
                                  runtime.read_text()))
 
     check("shim-tables/non-empty", len(declared) > 0 and len(implemented) > 0,

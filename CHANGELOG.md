@@ -401,6 +401,19 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- Attempted to execute the atexit handlers, and **withdrew the attempt** rather than
+  landing it half-working. A nested emulation per handler either consumed the run's
+  whole instruction budget or did not terminate at all — a 10,000-instruction bound was
+  not respected either, so the hang is neither the bound nor the stop address. Chaining
+  the handlers through the main emulation instead, via a mapped `hlt` page used as each
+  handler's return address, **worked in the reference** (48 bytes of output where there
+  had been 31) but hung the **compiled candidate** on one of the two handlers the C
+  runtime registers for itself. Running handlers on one side only makes the two sides'
+  output differ, which the verification would report as a translation divergence when it
+  is a harness difference, so neither side runs them and the runtime names every handler
+  it did not run. The next attempt should start by finding out why that handler does not
+  return, under the trace log.
+
 - **`atexit` registration is real, and non-execution is reported.** `atexit`,
   `_crt_atexit` and `_cexit` were no-ops that reported success, so a program
   registering an exit handler produced neither the handler's effect nor a diagnostic.

@@ -314,7 +314,32 @@ All notable changes to Recomp Studio are documented here. This project follows
   high-byte offset, and the backend renders the mask — mirroring
   `register_write_statement` rather than approximating it.
 
+- Two instruction forms that were reaching the lifter and being rejected, both
+  with helpers that already existed: `unpcklps`/`unpckhps` (dword interleave) and
+  `unpcklpd`/`unpckhpd` (qword interleave), which are the `punpck` operation at a
+  coarser granularity; and `movq xmm, xmm`, which reads the low 64 bits of a
+  vector source that the generic operand reader treated as a general register and
+  threw on. A new `unpack` fixture exercises all four forms and both halves of the
+  move, and verifies differentially.
+
 ### Fixed
+
+- **Verification passed with zero guest-state checkpoints compared.** The verdict
+  returned true when `checkpoints_compared == 0`, on the reasoning that capture
+  might have been disabled — but the harness enables capture itself before running
+  either side, so zero means the capture *failed*, and the CLI printed
+  `VERIFY: PASS` from a comparison that never happened. That is a verdict issued
+  without the measurement it claims to rest on. A comparison of zero checkpoints
+  is now a failure. Found by an independent honesty audit, not by the tests.
+- `WriteFile` reported the requested length rather than what the host accepted, and
+  `write_guest_output` discarded the host result entirely, so a short write — a
+  full disk, a closed descriptor — was indistinguishable from success and the
+  guest was told its data had been written. Both now report the accepted count.
+- The golden harness passed vacuously: an empty fixture directory reported
+  "checked 0 fixtures ... 0 passed, 0 failed" and exited 0, and deleting one
+  fixture reported "21 passed". A harness that passes when its inputs are missing
+  is worse than no harness. Every baseline entry must now have a fixture, and the
+  count must match. Proven by running it against an empty directory: exit 1.
 
 - The golden test pinned the generated code but not the input, so a rebuilt fixture
   was reported as a changed compiler — a misdiagnosis in the one test whose whole

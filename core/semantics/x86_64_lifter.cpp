@@ -603,6 +603,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            "(context, " + destination + ", " + std::to_string(operands[1].immediate_value & 0xff) + ");");
       return;
     }
+    // unpcklps/unpckhps interleave dwords and unpcklpd/unpckhpd interleave
+    // qwords, the same operation the punpck family performs at byte and word
+    // granularity. The runtime already implements both, so this is a dispatch
+    // entry rather than new semantics.
+    if ((mnemonic == "unpcklps" || mnemonic == "unpckhps" || mnemonic == "unpcklpd" ||
+         mnemonic == "unpckhpd") &&
+        is_vector_register(operands[1])) {
+      const bool qwords = mnemonic.back() == 'd';
+      const bool high = mnemonic.find('h') != std::string::npos;
+      emit(std::string(qwords ? "vector_unpack_qwords" : "vector_unpack_dwords") + "(context, " + destination +
+           ", " + std::to_string(vector_index(operands[1])) + ", " + (high ? "1" : "0") + ");");
+      return;
+    }
     if ((mnemonic == "punpcklbw" || mnemonic == "punpckhbw" || mnemonic == "punpcklwd" ||
          mnemonic == "punpckhwd") &&
         is_vector_register(operands[1])) {
@@ -690,10 +703,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
     const int byte_count = mnemonic == "movd" ? 4 : 8;
     if (is_vector_register(operands[0])) {
+      // A vector source is not a general register: reading it as one throws, and
+      // `movq xmm0, xmm3` moves the low 64 bits of the source, which is exactly
+      // what vector_get_low returns.
       const auto value = operands[1].kind == discovery::Operand::Kind::Memory
           ? "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", " +
                 std::to_string(byte_count) + ")"
-          : operand_read_expression(instruction, operands[1], byte_count);
+          : is_vector_register(operands[1])
+              ? "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                    std::to_string(byte_count) + ")"
+              : operand_read_expression(instruction, operands[1], byte_count);
       emit("vector_set_low(context, " + std::to_string(vector_index(operands[0])) + ", " + value + ", " +
            std::to_string(byte_count) + ");");
     } else {

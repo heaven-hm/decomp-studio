@@ -5,9 +5,29 @@ and `core/semantics/x86_64_lifter.cpp` for places that return a value or report 
 doing the work, invent a constant where a real value exists, discard a host result, or swallow a
 failure the caller should learn about. Read-only except this file.
 
-**Revision audited:** `c2a836c` (`feature/x86-x64-arm64-mvp`), working tree clean for the four
-files above (`git status --porcelain` showed only untracked `reports/*.md` and `.commandcode/`).
-Line numbers are from that revision.
+**Revision audited:** commit `c2a836c` (`feature/x86-x64-arm64-mvp`). **The tree was being edited by
+other agents while this audit ran.** When the citations were pinned, all six files below matched
+`HEAD` (`git diff HEAD --` empty). Since then `core/semantics/x86_64_lifter.cpp` has been changed by
+another agent (20 insertions / 1 deletion adding `unpck*`/`movq` vector handling — unrelated to
+anything in this report), which moved four of its line numbers; both states are recorded so the
+Lead can re-check. `runtime/recomp_runtime.cpp` also changed mtime mid-session and was transiently
+different from `HEAD`.
+
+| file | sha256 (first 16) | citations valid for |
+| --- | --- | --- |
+| `runtime/recomp_runtime.cpp` | `f4f5c336817cd82d` | this hash (= `HEAD`) |
+| `runtime/recomp_runtime.hpp` | `f064c792c3881f96` | this hash (= `HEAD`) |
+| `runtime/win32_abi.hpp` | `1db432f081589b3b` | this hash (= `HEAD`) |
+| `core/semantics/x86_64_lifter.cpp` | `af99a05da8f974f3` (audited) → `30dba8ca3dc69a64` (current) | both, see F9 |
+| `core/verification/differential_harness.hpp` | `49c9c63b66f0e1e8` | this hash (= `HEAD`) |
+| `core/verification/differential_harness.cpp` | `8b1dc4fb34c33081` | this hash (= `HEAD`) |
+
+A programmatic check of all 95 citations (file, line, expected substring) passes against the audited
+hashes; the three that failed on the first pass were corrected (`apps/cli/main.cpp:502`, harness
+`:447-448`, lifter `:469-471`). The only lifter lines that moved are F9's stub block
+(`1771-1773` → `1790-1792`) and the fail-closed fallback (`1782` → `1801`); lines 130 and 469-471 are
+unchanged in both. **Lifter line numbers are a moving target: re-verify against the hash before
+editing.**
 
 **Method.** Full read of `recomp_runtime.cpp` (2441 lines) and `win32_abi.hpp`; targeted read of
 `recomp_runtime.hpp` (helpers, `import_argument`, `set_import_result`, image descriptors),
@@ -23,8 +43,9 @@ are different verdicts. That check changed the classification of six findings (n
 - `[b]` deliberate but **undocumented** in the code (a reader cannot tell it from a bug) → finding.
 - `[c]` genuine bug — the code does not do what its own structure and comments say it does.
 
-**Counts:** `[a]` 15 documented-and-OK items · `[b]` 17 undocumented simplifications ·
-`[c]` 22 genuine bugs. 39 distinct findings.
+**Counts:** `[a]` 15 documented-and-OK items · `[b]` 20 deliberate-but-undocumented
+simplifications · `[c]` 26 genuine bugs. **46 findings** (45 numbered plus F1b), grouped below as
+2 critical / 9 high / 20 medium / 15 low.
 
 **What would change a verdict** is stated for every finding I am not fully sure of.
 
@@ -40,14 +61,14 @@ runtime/recomp_runtime.cpp:2267                  if (file == nullptr) return;
 ```
 
 `DifferentialResult::verified()` returns **true** when no guest-state checkpoint was compared, and
-the CLI turns that into `VERIFY: PASS (identical output)` (`apps/cli/main.cpp:509`) and exit 0.
+the CLI turns that into `VERIFY: PASS (identical output)` (`apps/cli/main.cpp:502`) and exit 0.
 The justification comment above it says *"Checkpoints are only required when some were actually
 compared: a run with capture disabled is not evidence of disagreement"* — but `compare_project`
 **enables capture itself** and deletes the file first:
 
 ```
-core/verification/differential_harness.cpp:446   ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
-core/verification/differential_harness.cpp:447   ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
+core/verification/differential_harness.cpp:447   ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
+core/verification/differential_harness.cpp:448   ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
 ```
 
 So "capture disabled" is not the case being measured. Zero checkpoints means the candidate side
@@ -233,7 +254,7 @@ affected, code that calls `isdigit` is not.
 ### F9 `[b]` `stub_function` emits a fabricated return value and is invisible to `verify`
 
 ```
-core/semantics/x86_64_lifter.cpp:1771-1773
+core/semantics/x86_64_lifter.cpp:1790-1792   (was 1771-1773 at the audited hash af99a05d)
     if (stubbed_functions_.count(address) != 0) {
       definitions += "static void " + guest_function_name(address) +
                      "(GuestContext* context) { context->registers[4] += 8; context->registers[0] = 0; return; }\n\n";
@@ -770,7 +791,8 @@ exactly the pattern this audit is looking for.
 | a15 | `core/verification/differential_harness.cpp:127-136` `write_register_checked` | *"an unchecked write would surface later as a baffling unmapped-read divergence instead of the real cause."* (Documented — but see F26: the helper is applied in only one place.) |
 
 Also `[a]`, in the lifter: unknown instructions fail closed via `LiftError` →
-`recomp_unsupported` (lines 442-445, 1782), the VEX table only maps mnemonics whose SSE form is
+`recomp_unsupported` (lines 469-471, 1801; 1782 at the audited hash), the VEX table only maps
+mnemonics whose SSE form is
 implemented (*"deliberately absent, so it still fails closed rather than being silently
 mistranslated"*, lines 129-131), and `nop`/`endbr`/`pause`/`wait` emit nothing because they have no
 architectural effect. The `stub_function` knob is documented as a knob (F9) — only its fabricated
@@ -820,7 +842,8 @@ return value and its invisibility to `verify` are findings.
    `(void)::write(descriptor, data, size);`. The second is the root cause of the first and of F2;
    fixing the helper fixes the class.
 4. **F9 — the `stub_function` stub returns a fabricated 0 in EAX and is invisible to `verify`.**
-   `core/semantics/x86_64_lifter.cpp:1773` `context->registers[4] += 8; context->registers[0] = 0;`.
+   `core/semantics/x86_64_lifter.cpp:1792` `context->registers[4] += 8; context->registers[0] = 0;`
+   (1773 at the audited hash).
    A user-requested stub currently makes a build that skips real work look like a verified port;
    the design spec forbids exactly this.
 5. **F6 — `atexit`/`_crt_atexit`/`_cexit` report success while exit handlers never run.**

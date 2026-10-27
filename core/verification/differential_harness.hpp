@@ -52,11 +52,15 @@ struct DifferentialResult {
   // -- and reporting a pass while the state disagrees would be exactly the
   // "verified because it ran" claim this project forbids.
   //
-  // Checkpoints are only required when some were actually compared: a run with
-  // capture disabled is not evidence of disagreement.
+  // A comparison of zero checkpoints is not a pass. The harness enables capture
+  // itself before running either side, so zero does not mean "capture was turned
+  // off" -- it means the capture failed, and reporting a pass from it would be a
+  // verdict issued without the measurement it claims to rest on. Any program that
+  // executes at least one guest instruction records checkpoint 0, so requiring one
+  // cannot reject a genuinely verified run.
   bool verified() const {
     if (!reference_completed || !candidate_completed || !outputs_match) return false;
-    if (checkpoints_compared == 0) return true;
+    if (checkpoints_compared == 0) return false;
     return state_match;
   }
 };

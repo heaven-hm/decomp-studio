@@ -94,8 +94,9 @@ extern void (*guest_exit_handler)(int code);
 void guest_request_exit(int code);
 
 // Sends guest output to the capture buffer when one is installed, and to the host
-// descriptor otherwise.
-void write_guest_output(int descriptor, const char* data, std::size_t size);
+// descriptor otherwise. Returns the number of bytes accepted, so a caller can
+// report a short write rather than assuming the whole buffer went out.
+std::ptrdiff_t write_guest_output(int descriptor, const char* data, std::size_t size);
 
 extern std::uint8_t* guest_memory;
 extern std::uint64_t guest_memory_size;

@@ -272,15 +272,22 @@ void win32_write_file(GuestContext* context) {
   const auto written_pointer = import_argument(context, 3);
   if (buffer + length > guest_memory_size) { set_import_result(context, 0); return; }
   const auto descriptor = standard_handle_to_descriptor(handle);
+  // The count reported back is what the host accepted, not what was requested.
+  // Reporting the requested length made a short write -- a full disk, a closed
+  // descriptor -- look like success, and a program that trusts the count would
+  // believe data had been written that had not.
   std::uint64_t written = 0;
   while (written < length) {
-    write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written), static_cast<std::size_t>(length - written));
-    const auto count = static_cast<ssize_t>(length - written);
-    if (count <= 0) break;
-    written += static_cast<std::uint64_t>(count);
+    const auto accepted = write_guest_output(
+        descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written),
+        static_cast<std::size_t>(length - written));
+    if (accepted <= 0) break;
+    written += static_cast<std::uint64_t>(accepted);
   }
   if (written_pointer != 0) store_guest_memory(context, written_pointer, written, 4);
-  set_import_result(context, 1);
+  // WriteFile succeeds when it wrote something; a partial write is still a
+  // success with a short count, which is what the API specifies.
+  set_import_result(context, written != 0 ? 1 : 0);
 }
 void win32_read_file(GuestContext* context) {
   const auto handle = import_argument(context, 0);
@@ -2300,13 +2307,17 @@ void guest_request_exit(int code) {
   std::exit(code);
 }
 
-void write_guest_output(int descriptor, const char* data, std::size_t size) {
-  if (size == 0) return;
+std::ptrdiff_t write_guest_output(int descriptor, const char* data, std::size_t size) {
+  if (size == 0) return 0;
   if (guest_output_capture != nullptr) {
     guest_output_capture->append(data, size);
-    return;
+    return static_cast<std::ptrdiff_t>(size);
   }
-  (void)::write(descriptor, data, size);
+  // A failed or partial write is reported to the caller. Discarding it made a
+  // closed descriptor indistinguishable from a successful write.
+  const auto accepted = ::write(descriptor, data, size);
+  if (accepted < 0) return 0;
+  return accepted;
 }
 
 // Brings the guest address space to the state a program starts in. The image must

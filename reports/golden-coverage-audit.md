@@ -161,7 +161,8 @@ Ranked by frequency in the real binaries (IGI / Tetris split shown):
 | 78 | `fcmovu` | 1 | 1 | 1 | 0 |
 
 **Reading of the table.** The gap is not uniformly spread — it is an **x87-shaped hole**.
-Of the 13,831 uncovered instructions, 11,911 (86 %) are x87. The `x87.exe` fixture covers only **18**
+Of the 13,831 uncovered instructions, **12,124 (87.7 %)** are x87 — and those same mnemonics are
+**13,768 of the 16,019 uncovered statements (85.9 %)**. The `x87.exe` fixture covers only **18**
 x87 mnemonics and, crucially, only the **register-form / pop-form** ones (`faddp`, `fmulp`, `fsubp`,
 `fdivp`, `fld`, `fstp`, `fistp`, `fcompp`, `fabs`, `fchs`, `fsqrt`, `fsin`, `fcos`, `fpatan`, `fyl2x`,
 `fldcw`, `fnstcw`, `fnstsw`). Real 32-bit code overwhelmingly uses the **memory-operand** forms

@@ -36,6 +36,14 @@ def main():
         return 1
 
     checked = 0
+    present = {fixture.name for fixture in (FIXTURES / "bin").glob("*.exe")}
+    # A harness that passes when its inputs are missing is worse than no harness:
+    # an empty bin/ reported "checked 0 fixtures ... 0 passed, 0 failed" and exited
+    # 0, and deleting one fixture reported "21 passed". Both looked green. Every
+    # baseline entry must have a fixture, or this fails.
+    for name in sorted(expected):
+        if name not in present:
+            FAILURES.append(f"{name}: pinned in the baseline but not built; the golden net has a hole")
     for fixture in sorted((FIXTURES / "bin").glob("*.exe")):
         if fixture.name not in expected:
             continue
@@ -67,7 +75,9 @@ def main():
                 PASSES.append(f"{fixture.name}: byte-identical")
             checked += 1
 
-    print(f"checked {checked} fixtures against the golden baseline")
+    if checked != len(expected):
+        FAILURES.append(f"checked {checked} of {len(expected)} pinned fixtures")
+    print(f"checked {checked} of {len(expected)} pinned fixtures against the golden baseline")
     for line in PASSES:
         print("PASS " + line)
     for line in FAILURES:

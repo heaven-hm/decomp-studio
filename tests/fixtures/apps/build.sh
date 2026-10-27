@@ -18,7 +18,7 @@ CC32="${CC32:-i686-w64-mingw32-gcc}"
 mkdir -p "$out"
 
 # Fixtures that must build and pass for the 64-bit target.
-FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert vecmove heap packed"
+FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert vecmove heap packed unpack"
 
 # VEX/AVX fixture: needs -mavx so the compiler emits genuine VEX encodings.
 FIXTURES_AVX="vex"

@@ -22,6 +22,7 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 
 | Corpus slice | Commands completed | Exit 0 | Exit nonzero | Notes |
 | --- | ---: | ---: | ---: | --- |
+| `win32/*.exe` | 74 | 1 | 73 | Requested shared-output loop. `fillingsolver.exe` reported verification with zero output bytes; this does not demonstrate interactive use. The binary was rebuilt during the loop, so results span revisions. |
 | `win64/*.exe` | 52 | 0 | 52 | Sweep used per-app output directories; builds changed during the run, so this is a mixed-revision observation, not a single-version benchmark. |
 
 The feature branch's architecture-neutral IR updates were merged at `53f773e`;

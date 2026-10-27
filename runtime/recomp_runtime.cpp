@@ -70,7 +70,8 @@ constexpr std::uint64_t kGuestMemoryBytes = 0x200000000ull;
 // Runtime-owned blocks must be addressable by the guest, including PE32 images
 // whose pointers cannot represent the upper half of the mapped address space.
 std::uint64_t guest_reserved_top() {
-  return guest_pointer_width >= 8 ? guest_memory_size : std::min(guest_memory_size, 0x100000000ull);
+  return guest_pointer_width >= 8 ? guest_memory_size
+                                  : std::min<std::uint64_t>(guest_memory_size, 0x100000000ull);
 }
 constexpr std::uint64_t kThreadEnvironmentBlockAddress64 = 0x0000000164000000ull;
 constexpr std::uint64_t kProcessEnvironmentBlockAddress64 = 0x0000000164001000ull;
@@ -1084,7 +1085,7 @@ void cxx_file_stream_construct(GuestContext* context, bool for_output) {
   if (object + bytes <= guest_memory_size) std::memset(guest_memory + object, 0, bytes);
   auto flags = for_output ? (O_WRONLY | O_CREAT) : O_RDONLY;
   if ((mode & 1u) != 0 || (mode & 2u) != 0) flags |= O_APPEND; else if (for_output) flags |= O_TRUNC;
-  const auto descriptor = resolved ? ::open(path.c_str(), flags, 0644) : -1;
+  const auto descriptor = resolved ? guest_file_sandbox().open_resolved(path, flags, 0644) : -1;
   if (descriptor < 0) {
     guest_streams.erase(object);  // is_open() reports false, as it should
   } else {
@@ -2016,6 +2017,7 @@ void win32_lstrcpy_a(GuestContext* context) {
 // feature all arrive through here.
 std::map<std::uint64_t, std::string> guest_modules;              // handle -> library name
 std::map<std::string, std::uint64_t> guest_module_handles;       // library name -> handle
+std::map<std::uint64_t, std::size_t> guest_module_references;    // LoadLibrary calls by handle
 
 std::string normalize_library_name(std::string name) {
   for (auto& character : name)
@@ -2097,6 +2099,7 @@ void win32_load_library(GuestContext* context, bool wide) {
   // a missing capability has to be named. Failing here would hide which symbol the
   // program was really after.
   const auto handle = guest_module_handle_for(name);
+  ++guest_module_references[handle];
   clear_guest_last_error();
   set_import_result(context, handle);
 }
@@ -2115,6 +2118,18 @@ void win32_free_library(GuestContext* context) {
     set_import_result(context, 0);
     return;
   }
+  const auto reference = guest_module_references.find(handle);
+  if (reference == guest_module_references.end() || reference->second == 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  if (--reference->second != 0) {
+    clear_guest_last_error();
+    set_import_result(context, 1);
+    return;
+  }
+  guest_module_references.erase(reference);
   guest_module_handles.erase(normalize_library_name(library_name));
   guest_modules.erase(handle);
   clear_guest_last_error();

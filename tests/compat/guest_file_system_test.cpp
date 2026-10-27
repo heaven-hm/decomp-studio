@@ -27,7 +27,9 @@ static void expect(const std::string& what, bool condition, const std::string& d
 static void expect_host(const GuestFileSandbox& sandbox, const std::string& guest,
                         const std::string& wanted) {
   const auto resolution = sandbox.resolve(guest);
-  expect(guest, resolution.status == GuestPathStatus::Allowed && resolution.host_path == wanted,
+  const auto canonical_wanted = std::filesystem::weakly_canonical(wanted);
+  expect(guest, resolution.status == GuestPathStatus::Allowed &&
+                    std::filesystem::path(resolution.host_path) == canonical_wanted,
          std::string(guest_path_status_name(resolution.status)) + " -> '" + resolution.host_path +
              "' " + resolution.reason);
 }
@@ -97,16 +99,31 @@ int main() {
   std::filesystem::create_directories(root);
   std::filesystem::create_directories(outside);
   std::ofstream(outside / "secret.txt") << "outside";
+  std::ofstream(root / "race.txt") << "inside";
   std::filesystem::create_directory_symlink(outside, root / "link");
   GuestFileSandbox symlink_sandbox;
   symlink_sandbox.set_root(root.string());
   expect_refused(symlink_sandbox, "link/secret.txt", GuestPathStatus::OutsideSandbox);
+
+  const auto checked = symlink_sandbox.resolve("race.txt");
+  expect("open checked file", checked.allowed(), checked.reason);
+  if (checked.allowed()) {
+    const auto descriptor = symlink_sandbox.open_resolved(checked.host_path, O_RDONLY);
+    expect("open resolved file", descriptor >= 0, "open_resolved refused an in-sandbox file");
+    if (descriptor >= 0) ::close(descriptor);
+    std::filesystem::rename(root / "race.txt", root / "race-original.txt");
+    std::filesystem::create_symlink(outside / "secret.txt", root / "race.txt");
+    const auto raced_descriptor = symlink_sandbox.open_resolved(checked.host_path, O_RDONLY);
+    expect("reject symlink swapped after check", raced_descriptor < 0,
+           "open_resolved followed a symlink inserted after resolve()");
+  }
   std::filesystem::remove_all(workspace);
 
   // Round-tripping a host path back into guest form has to produce something the
   // guest can feed into resolve() again and get the same file.
-  const auto guest_form = sandbox.to_guest_path("/tmp/app/Games/MyApp/config.ini");
-  expect_host(sandbox, guest_form, "/tmp/app/Games/MyApp/config.ini");
+  const auto host_form = std::filesystem::weakly_canonical("/tmp/app/Games/MyApp/config.ini").string();
+  const auto guest_form = sandbox.to_guest_path(host_form);
+  expect_host(sandbox, guest_form, host_form);
 
   if (failures != 0) {
     std::printf("guest path policy: %d failure(s)\n", failures);

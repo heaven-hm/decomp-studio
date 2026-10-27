@@ -106,5 +106,26 @@ int main() {
     close(saved_stdin);
     clearerr(stdin);
   }
+  guest_pointer_width = 8;
+  std::memcpy(guest_memory + 0x250000, "kernel32.dll", 13);
+  std::memcpy(guest_memory + 0x250100, "GetTickCount", 13);
+  GuestContext module{};
+  module.registers[4] = 0x700000;
+  module.registers[1] = 0x250000;
+  if (!invoke_shared_shim(&module, "kernel32.dll", "LoadLibraryA")) return 25;
+  const auto module_handle = module.registers[0];
+  module.registers[1] = 0x250000;
+  if (!invoke_shared_shim(&module, "kernel32.dll", "LoadLibraryA") || module.registers[0] != module_handle)
+    return 26;
+  module.registers[1] = module_handle;
+  if (!invoke_shared_shim(&module, "kernel32.dll", "FreeLibrary") || module.registers[0] != 1) return 27;
+  module.registers[1] = module_handle;
+  module.registers[2] = 0x250100;
+  if (!invoke_shared_shim(&module, "kernel32.dll", "GetProcAddress") || module.registers[0] == 0) return 28;
+  module.registers[1] = module_handle;
+  if (!invoke_shared_shim(&module, "kernel32.dll", "FreeLibrary") || module.registers[0] != 1) return 29;
+  module.registers[1] = module_handle;
+  module.registers[2] = 0x250100;
+  if (!invoke_shared_shim(&module, "kernel32.dll", "GetProcAddress") || module.registers[0] != 0) return 30;
   return 0;
 }

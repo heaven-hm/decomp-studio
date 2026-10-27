@@ -19,8 +19,10 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <fcntl.h>
 #include <string>
 #include <system_error>
+#include <unistd.h>
 #include <vector>
 
 namespace recomp {
@@ -61,7 +63,9 @@ class GuestFileSandbox {
   const std::string& root() const { return root_; }
 
   void set_root(std::string root) {
-    root_ = std::move(root);
+    std::error_code error;
+    const auto canonical = std::filesystem::weakly_canonical(root, error);
+    root_ = error ? std::filesystem::path(std::move(root)).lexically_normal().string() : canonical.string();
     trim_trailing_separators(root_);
   }
 
@@ -142,17 +146,52 @@ class GuestFileSandbox {
     // Lexical normalization catches explicit `..`; canonicalization also resolves
     // existing symlinks. A link inside the app directory must not turn an allowed
     // guest path into a host path outside the app directory.
-    std::error_code error;
-    const auto canonical = std::filesystem::weakly_canonical(candidate, error);
-    const auto canonical_root = std::filesystem::weakly_canonical(root_, error);
-    if (error || !is_within_root(canonical, canonical_root)) {
+    std::error_code candidate_error;
+    std::error_code root_error;
+    const auto canonical = std::filesystem::weakly_canonical(candidate, candidate_error);
+    const auto canonical_root = std::filesystem::weakly_canonical(root_, root_error);
+    if (candidate_error || root_error || !is_within_root(canonical, canonical_root)) {
       resolution.status = GuestPathStatus::OutsideSandbox;
       resolution.reason = "'" + guest_path + "' resolves outside the app directory '" + root_ + "'";
       return resolution;
     }
     resolution.status = GuestPathStatus::Allowed;
-    resolution.host_path = candidate.lexically_normal().string();
+    resolution.host_path = canonical.string();
     return resolution;
+  }
+
+  // Opens a previously resolved path relative to a pinned sandbox directory.
+  // Each component refuses symlinks, so a link swap between resolve() and open
+  // cannot redirect a guest file request outside the selected app directory.
+  int open_resolved(const std::string& host_path, int flags, unsigned mode = 0) const {
+    if (root_.empty()) return -1;
+    std::error_code root_error;
+    const auto canonical_root = std::filesystem::weakly_canonical(root_, root_error);
+    if (root_error) return -1;
+    const auto relative = std::filesystem::path(host_path).lexically_relative(canonical_root);
+    if (relative.empty() || relative.is_absolute()) return -1;
+    for (const auto& component : relative)
+      if (component == ".." || component == ".") return -1;
+
+    int directory = ::open(canonical_root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directory < 0) return -1;
+    auto component = relative.begin();
+    while (component != relative.end()) {
+      auto next = component;
+      ++next;
+      const bool final = next == relative.end();
+      const auto name = component->string();
+      const auto opened = final
+                              ? ::openat(directory, name.c_str(), flags | O_CLOEXEC | O_NOFOLLOW, mode)
+                              : ::openat(directory, name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      if (directory >= 0) ::close(directory);
+      if (final) return opened;
+      if (opened < 0) return -1;
+      directory = opened;
+      component = next;
+    }
+    ::close(directory);
+    return -1;
   }
 
   // Presents a host path back to the guest in the Windows form it expects:

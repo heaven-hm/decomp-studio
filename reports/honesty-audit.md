@@ -1168,3 +1168,52 @@ rule already existed somewhere else in the same repository. That is a pattern wo
 naming: the duplication is not the bug, but it is why the bug survived — a fact computed
 twice will eventually be computed two ways, and the copy nobody runs is the one that
 stays correct.
+
+
+## 100.0% coverage did not mean zero unsupported instructions
+
+The catalogue found that **12 files report `coverage_percent: 100.0` while still having
+1–4 unsupported instructions**, and every one of them is refused by `translate`.
+
+The value is computed exactly and then written to two decimal places, so a program with
+one unsupported instruction in two hundred thousand printed `100.00`:
+
+```
+100.0 * 200954 / 200955 = 99.9999950...   ->  "100.0"
+```
+
+That is arithmetically honest and practically false. A reader — and a test — treats
+`100.0` as "everything lifts", and this repository already had a test asserting exactly
+that:
+
+```python
+# tests/coverage/coverage_test.py
+check(f"{name}/full-coverage", report["coverage_percent"] == 100.0, ...)
+```
+
+So the gate was satisfiable by a program that would then be refused. `coverage_percent()`
+now keeps the invariant rather than merely rounding: **100.0 means zero unsupported
+instructions**, and anything else stays below it. `busybox.exe` — 200,955 instructions,
+one unsupported — moves from `100.0` to `99.99`.
+
+The coverage test now asserts the invariant as well as the value, so a program cannot
+claim full coverage while carrying an unsupported instruction.
+
+## An environment note that cost several runs
+
+Three suite runs failed with `fixture_recompile_end_to_end` reporting `No space left on
+device`, and the corpus test reported `build failed: error: error opening
+'/var/folders/.../guest-*.o'`. The disk was at **98%** with under 6 GiB free, and the
+temp root held a 6 GiB leftover workspace from the corpus run plus 36 orphaned
+`recomp_runtime-*.o` files from generated-project builds.
+
+None of those failures was a code failure, and the suite passes once the space is
+reclaimed. Two things are worth keeping:
+
+- **A full disk presents as a test failure, not as an environment error.** The first
+  time it happened the failure was in the end-to-end test, which is exactly where a real
+  regression would appear. I re-ran it and it passed; I should have checked the disk
+  before believing either result.
+- **The generated-project build leaves its object files in the temp root.** They are
+  small (2 MB total here) but they accumulate across runs and nothing reclaims them.
+  Worth cleaning up in `build`.

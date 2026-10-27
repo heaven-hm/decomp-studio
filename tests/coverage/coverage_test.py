@@ -105,6 +105,11 @@ def check_fully_covered(name: str, description: str, executable: Path, root: Pat
           f"({[entry['mnemonic'] for entry in report['unsupported']]})")
     check(f"{name}/full-coverage", report["coverage_percent"] == 100.0,
           f"expected 100% coverage, got {report['coverage_percent']}")
+    # 100.0 must mean ZERO unsupported instructions, not "rounds to 100". A program
+    # with one unsupported instruction in a hundred thousand used to report 100.0 and
+    # be refused by translate anyway.
+    check(f"{name}/full-coverage-implies-none-unsupported", report["unsupported_instructions"] == 0,
+          f"reported 100% coverage with {report['unsupported_instructions']} unsupported instructions")
     check(f"{name}/no-classes", report["unsupported_class_count"] == 0,
           f"expected no unsupported classes, got {report['unsupported_class_count']}")
     check(f"{name}/lifted-equals-total",

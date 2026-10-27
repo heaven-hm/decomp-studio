@@ -36,9 +36,18 @@ struct CoverageCensus {
   std::uint64_t unsupported_instructions{};
   std::vector<UnsupportedInstructionClass> unsupported;  // most frequent first
 
+  // A reader treats 100.0 as "everything lifts" -- the coverage test asserts it, and the
+  // JSON is written to two decimal places, so a program with one unsupported instruction
+  // in a hundred thousand reported 100.0 and was refused by `translate` anyway. Twelve
+  // files in the corpus were in exactly that state. The percentage is therefore kept
+  // consistent with the count rather than merely rounded: 100.0 means zero unsupported,
+  // and anything else stays below it.
   double coverage_percent() const {
     if (total_instructions == 0) return 100.0;
-    return 100.0 * static_cast<double>(lifted_instructions) / static_cast<double>(total_instructions);
+    const double exact =
+        100.0 * static_cast<double>(lifted_instructions) / static_cast<double>(total_instructions);
+    if (unsupported_instructions != 0 && exact > 99.99) return 99.99;
+    return exact;
   }
 };
 

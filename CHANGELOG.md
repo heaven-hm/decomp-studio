@@ -401,6 +401,16 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **`coverage_percent: 100.0` did not mean zero unsupported instructions.** The value is
+  exact but is written to two decimal places, so a program with one unsupported
+  instruction in two hundred thousand printed `100.0` — and `tests/coverage` asserted
+  `coverage_percent == 100.0` for full coverage, so the gate was satisfiable by a program
+  that `translate` then refuses. Twelve files in the corpus were in that state.
+  `coverage_percent()` now keeps the invariant rather than merely rounding: **100.0 means
+  zero unsupported**, and anything else stays below it. `busybox.exe` (200,955
+  instructions, one unsupported) moves from `100.0` to `99.99`, and the coverage test
+  asserts the invariant as well as the value.
+
 - **The PE architecture came from the bitness, not the COFF machine field.**
   `architecture_name()` returned `is_64_bit ? "x86_64" : "x86"`, so an **AArch64 PE32+**
   was reported as `x86_64`, its 43,367 ARM64 instructions were decoded as x86-64, and

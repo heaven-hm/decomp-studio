@@ -45,7 +45,13 @@ EXTRA_APPS = [Path(argument) for argument in sys.argv[3:]]
 _APPS_ENVIRONMENT = os.environ.get("RECOMP_APPS_DIR", "").strip()
 APPS_DIRECTORY = Path(_APPS_ENVIRONMENT) if _APPS_ENVIRONMENT else None
 
+# Translating and compiling a real application is genuinely slow, so those stages get a
+# generous budget. Running one is not: the corpus applications are small, and a
+# translated binary that has not finished in two minutes is a signal worth having rather
+# than something to wait out. The same budget applies to verification, which executes the
+# program a second time through the emulator.
 STAGE_TIMEOUT_SECONDS = int(os.environ.get("RECOMP_STAGE_TIMEOUT", "900"))
+RUN_TIMEOUT_SECONDS = int(os.environ.get("RECOMP_RUN_TIMEOUT", "120"))
 BUILD_INSTRUCTION_LIMIT = int(os.environ.get("RECOMP_BUILD_MAX_INSTRUCTIONS", "200000"))
 
 PASSES = []
@@ -121,10 +127,12 @@ def measure(executable: Path, project: Path):
         return record
     record["built"] = True
 
-    executed = run_cli(["run", str(project)])
+    executed = run_cli(["run", str(project)], timeout=RUN_TIMEOUT_SECONDS)
     record["run_exit_code"] = executed.returncode
+    if executed.returncode == 124:
+        record["note"] = f"run did not finish within {RUN_TIMEOUT_SECONDS}s"
 
-    verified = run_cli(["verify", str(project), "--json"])
+    verified = run_cli(["verify", str(project), "--json"], timeout=RUN_TIMEOUT_SECONDS)
     if verified.returncode == 0:
         record["verify"] = json.loads(verified.stdout)["status"]
     else:

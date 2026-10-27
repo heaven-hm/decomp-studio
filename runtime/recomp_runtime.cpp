@@ -1,4 +1,5 @@
 #include "recomp_runtime.hpp"
+#include "win32_abi.hpp"
 
 #include <cerrno>
 #include <cinttypes>
@@ -17,6 +18,7 @@ std::uint8_t* guest_memory = nullptr;
 std::uint64_t guest_memory_size = 0;
 std::uint64_t recompiled_image_base = 0;
 bool guest_tracing_enabled = false;
+int guest_pointer_width = 8;
 
 namespace {
 std::FILE* guest_trace_stream = nullptr;
@@ -48,9 +50,18 @@ constexpr int kRegisterArgument2 = 8;
 constexpr int kRegisterArgument3 = 9;
 
 constexpr std::uint64_t kGuestMemoryBytes = 0x200000000ull;
-constexpr std::uint64_t kThreadEnvironmentBlockAddress = 0x0000000164000000ull;
-constexpr std::uint64_t kProcessEnvironmentBlockAddress = 0x0000000164001000ull;
-constexpr std::uint64_t kImportThunkBase = 0x0000000100000000ull;
+constexpr std::uint64_t kThreadEnvironmentBlockAddress64 = 0x0000000164000000ull;
+constexpr std::uint64_t kProcessEnvironmentBlockAddress64 = 0x0000000164001000ull;
+constexpr std::uint64_t kThreadEnvironmentBlockAddress32 = 0x000000007ffd0000ull;
+constexpr std::uint64_t kProcessEnvironmentBlockAddress32 = 0x000000007ffd1000ull;
+// Import thunk addresses must fit in the guest pointer width: a 32-bit IAT
+// slot can only hold a value below 4 GiB.
+constexpr std::uint64_t kImportThunkBase64 = 0x0000000100000000ull;
+constexpr std::uint64_t kImportThunkBase32 = 0x0000000060000000ull;
+
+std::uint64_t import_thunk_base() {
+  return guest_pointer_width >= 8 ? kImportThunkBase64 : kImportThunkBase32;
+}
 
 constexpr int kFunctionHashBits = 18;
 constexpr std::uint32_t kFunctionHashSize = 1u << kFunctionHashBits;
@@ -59,6 +70,8 @@ std::vector<GuestFunctionDescriptor> function_table;
 std::uint32_t* function_hash = nullptr;
 std::vector<std::uint64_t> import_thunk_addresses;
 std::vector<void (*)(GuestContext*)> import_thunk_functions;
+std::vector<std::string> import_thunk_libraries;
+std::vector<std::string> import_thunk_symbols;
 
 std::uint32_t hash_function_address(std::uint64_t address) {
   return static_cast<std::uint32_t>((address * 0x9e3779b97f4a7c15ull) >> (64 - kFunctionHashBits));
@@ -76,10 +89,25 @@ void (*lookup_guest_function(std::uint64_t address))(GuestContext*) {
   return nullptr;
 }
 
-void (*lookup_import_thunk(std::uint64_t address))(GuestContext*) {
+long lookup_import_thunk(std::uint64_t address) {
   for (std::size_t index = 0; index < import_thunk_addresses.size(); ++index)
-    if (import_thunk_addresses[index] == address) return import_thunk_functions[index];
-  return nullptr;
+    if (import_thunk_addresses[index] == address) return static_cast<long>(index);
+  return -1;
+}
+
+// Runs an import thunk reached through a register or memory operand. On 32-bit
+// x86 the callee's `ret`/`ret n` must still remove the return address and the
+// stdcall arguments, exactly as for a direct import call.
+void invoke_import_thunk(GuestContext* context, long index, std::uint64_t return_address, bool push_return) {
+  if (push_return)
+    push_guest_stack(context, return_address);
+  import_thunk_functions[static_cast<std::size_t>(index)](context);
+  if (guest_pointer_width < 8) {
+    context->registers[4] = mask_guest_address(
+        context->registers[4] +
+        win32_import_stack_cleanup(import_thunk_libraries[static_cast<std::size_t>(index)].c_str(),
+                                   import_thunk_symbols[static_cast<std::size_t>(index)].c_str()));
+  }
 }
 
 std::string read_guest_string(std::uint64_t address) {
@@ -102,15 +130,15 @@ std::uint64_t next_heap_address = 0;
 
 // ---- Win32 shims -------------------------------------------------------
 void win32_get_std_handle(GuestContext* context) {
-  const auto which = static_cast<std::int32_t>(context->registers[kRegisterArgument0]);
-  context->registers[kRegisterReturnValue] = which == -10 ? 10 : which == -12 ? 12 : 11;
+  const auto which = static_cast<std::int32_t>(import_argument(context, 0));
+  set_import_result(context, which == -10 ? 10 : which == -12 ? 12 : 11);
 }
 void win32_write_file(GuestContext* context) {
-  const auto handle = context->registers[kRegisterArgument0];
-  const auto buffer = context->registers[kRegisterArgument1];
-  const auto length = context->registers[kRegisterArgument2];
-  const auto written_pointer = context->registers[kRegisterArgument3];
-  if (buffer + length > guest_memory_size) { context->registers[kRegisterReturnValue] = 0; return; }
+  const auto handle = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  const auto written_pointer = import_argument(context, 3);
+  if (buffer + length > guest_memory_size) { set_import_result(context, 0); return; }
   const auto descriptor = standard_handle_to_descriptor(handle);
   std::uint64_t written = 0;
   while (written < length) {
@@ -119,89 +147,89 @@ void win32_write_file(GuestContext* context) {
     written += static_cast<std::uint64_t>(count);
   }
   if (written_pointer != 0) store_guest_memory(context, written_pointer, written, 4);
-  context->registers[kRegisterReturnValue] = 1;
+  set_import_result(context, 1);
 }
 void win32_read_file(GuestContext* context) {
-  const auto handle = context->registers[kRegisterArgument0];
-  const auto buffer = context->registers[kRegisterArgument1];
-  const auto length = context->registers[kRegisterArgument2];
-  const auto read_pointer = context->registers[kRegisterArgument3];
-  if (buffer + length > guest_memory_size) { context->registers[kRegisterReturnValue] = 0; return; }
+  const auto handle = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  const auto read_pointer = import_argument(context, 3);
+  if (buffer + length > guest_memory_size) { set_import_result(context, 0); return; }
   const auto descriptor = standard_handle_to_descriptor(handle);
   auto count = ::read(descriptor, guest_memory + buffer, static_cast<std::size_t>(length));
   if (count < 0) count = 0;
   if (read_pointer != 0) store_guest_memory(context, read_pointer, static_cast<std::uint64_t>(count), 4);
-  context->registers[kRegisterReturnValue] = 1;
+  set_import_result(context, 1);
 }
 void win32_exit_process(GuestContext* context) {
   std::fflush(stdout);
-  std::exit(static_cast<int>(static_cast<std::uint32_t>(context->registers[kRegisterArgument0])));
+  std::exit(static_cast<int>(static_cast<std::uint32_t>(import_argument(context, 0))));
 }
 void win32_terminate_process(GuestContext* context) {
   (void)context;
   std::fflush(stdout);
   std::exit(1);
 }
-void win32_zero(GuestContext* context) { context->registers[kRegisterReturnValue] = 0; }
+void win32_zero(GuestContext* context) { set_import_result(context, 0); }
 void win32_ignore(GuestContext* context) { (void)context; }
-void win32_one(GuestContext* context) { context->registers[kRegisterReturnValue] = 1; }
-void win32_current_process_id(GuestContext* context) { context->registers[kRegisterReturnValue] = 4321; }
-void win32_current_thread_id(GuestContext* context) { context->registers[kRegisterReturnValue] = 4321; }
-void win32_current_process(GuestContext* context) { context->registers[kRegisterReturnValue] = static_cast<std::uint64_t>(-1); }
-void win32_current_thread(GuestContext* context) { context->registers[kRegisterReturnValue] = static_cast<std::uint64_t>(-2); }
-void win32_module_handle(GuestContext* context) { context->registers[kRegisterReturnValue] = recompiled_image_base; }
-void win32_is_processor_feature_present(GuestContext* context) { context->registers[kRegisterReturnValue] = 0; }
-void win32_get_version(GuestContext* context) { context->registers[kRegisterReturnValue] = 0x0a000000; }
-void win32_code_page(GuestContext* context) { context->registers[kRegisterReturnValue] = 65001; }
+void win32_one(GuestContext* context) { set_import_result(context, 1); }
+void win32_current_process_id(GuestContext* context) { set_import_result(context, 4321); }
+void win32_current_thread_id(GuestContext* context) { set_import_result(context, 4321); }
+void win32_current_process(GuestContext* context) { set_import_result(context, static_cast<std::uint64_t>(-1)); }
+void win32_current_thread(GuestContext* context) { set_import_result(context, static_cast<std::uint64_t>(-2)); }
+void win32_module_handle(GuestContext* context) { set_import_result(context, recompiled_image_base); }
+void win32_is_processor_feature_present(GuestContext* context) { set_import_result(context, 0); }
+void win32_get_version(GuestContext* context) { set_import_result(context, 0x0a000000); }
+void win32_code_page(GuestContext* context) { set_import_result(context, 65001); }
 
 void win32_virtual_alloc(GuestContext* context) {
-  const auto requested = context->registers[kRegisterArgument0];
-  const auto size = context->registers[kRegisterArgument1];
-  if (requested != 0) { context->registers[kRegisterReturnValue] = requested; return; }
+  const auto requested = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  if (requested != 0) { set_import_result(context, requested); return; }
   const auto aligned = (size + 0xfff) & ~0xfffull;
-  if (next_heap_address + aligned > guest_memory_size) { context->registers[kRegisterReturnValue] = 0; return; }
-  context->registers[kRegisterReturnValue] = next_heap_address;
+  if (next_heap_address + aligned > guest_memory_size) { set_import_result(context, 0); return; }
+  set_import_result(context, next_heap_address);
   next_heap_address += aligned;
 }
-void win32_virtual_free(GuestContext* context) { context->registers[kRegisterReturnValue] = 1; }
-void win32_get_process_heap(GuestContext* context) { context->registers[kRegisterReturnValue] = 0x1000; }
-void win32_heap_create(GuestContext* context) { context->registers[kRegisterReturnValue] = 0x1000; }
+void win32_virtual_free(GuestContext* context) { set_import_result(context, 1); }
+void win32_get_process_heap(GuestContext* context) { set_import_result(context, 0x1000); }
+void win32_heap_create(GuestContext* context) { set_import_result(context, 0x1000); }
 void win32_heap_alloc(GuestContext* context) {
-  const auto size = context->registers[kRegisterArgument2];
+  const auto size = import_argument(context, 2);
   const auto aligned = (size + 0xf) & ~0xfull;
-  if (next_heap_address + aligned > guest_memory_size) { context->registers[kRegisterReturnValue] = 0; return; }
-  context->registers[kRegisterReturnValue] = next_heap_address;
+  if (next_heap_address + aligned > guest_memory_size) { set_import_result(context, 0); return; }
+  set_import_result(context, next_heap_address);
   next_heap_address += aligned;
 }
-void win32_heap_free(GuestContext* context) { context->registers[kRegisterReturnValue] = 1; }
+void win32_heap_free(GuestContext* context) { set_import_result(context, 1); }
 
 void win32_get_tick_count(GuestContext* context) {
   timespec now{};
   ::clock_gettime(CLOCK_MONOTONIC, &now);
   const auto milliseconds = static_cast<std::uint64_t>(now.tv_sec) * 1000ull +
                             static_cast<std::uint64_t>(now.tv_nsec) / 1000000ull;
-  context->registers[kRegisterReturnValue] = static_cast<std::uint32_t>(milliseconds);
+  set_import_result(context, static_cast<std::uint32_t>(milliseconds));
 }
 void win32_query_performance_counter(GuestContext* context) {
   timespec now{};
   ::clock_gettime(CLOCK_MONOTONIC, &now);
   const auto nanoseconds = static_cast<std::uint64_t>(now.tv_sec) * 1000000000ull +
                            static_cast<std::uint64_t>(now.tv_nsec);
-  const auto out = context->registers[kRegisterArgument0];
+  const auto out = import_argument(context, 0);
   if (out != 0) store_guest_memory(context, out, nanoseconds, 8);
-  context->registers[kRegisterReturnValue] = 1;
+  set_import_result(context, 1);
 }
 void win32_query_performance_frequency(GuestContext* context) {
-  const auto out = context->registers[kRegisterArgument0];
+  const auto out = import_argument(context, 0);
   if (out != 0) store_guest_memory(context, out, 1000000000ull, 8);
-  context->registers[kRegisterReturnValue] = 1;
+  set_import_result(context, 1);
 }
 void win32_get_system_time_as_file_time(GuestContext* context) {
-  const auto out = context->registers[kRegisterArgument0];
+  const auto out = import_argument(context, 0);
   if (out != 0) { store_guest_memory(context, out, 0, 4); store_guest_memory(context, out + 4, 0, 4); }
 }
 void win32_get_startup_info(GuestContext* context) {
-  const auto out = context->registers[kRegisterArgument0];
+  const auto out = import_argument(context, 0);
   if (out != 0 && out + 68 <= guest_memory_size) std::memset(guest_memory + out, 0, 68);
 }
 void win32_get_command_line(GuestContext* context) {
@@ -211,27 +239,27 @@ void win32_get_command_line(GuestContext* context) {
     const char* command_line = "recomp-guest";
     std::memcpy(guest_memory + offset, command_line, std::strlen(command_line) + 1);
   }
-  context->registers[kRegisterReturnValue] = offset;
+  set_import_result(context, offset);
 }
 void win32_get_environment_strings(GuestContext* context) {
-  context->registers[kRegisterReturnValue] = guest_memory_size - 0x200000;
+  set_import_result(context, guest_memory_size - 0x200000);
 }
 void win32_get_system_info(GuestContext* context) {
-  const auto out = context->registers[kRegisterArgument0];
+  const auto out = import_argument(context, 0);
   if (out != 0 && out + 48 <= guest_memory_size) std::memset(guest_memory + out, 0, 48);
 }
 void win32_lstrlen_a(GuestContext* context) {
-  context->registers[kRegisterReturnValue] = read_guest_string(context->registers[kRegisterArgument0]).size();
+  set_import_result(context, read_guest_string(import_argument(context, 0)).size());
 }
 void win32_lstrlen_w(GuestContext* context) {
-  std::uint64_t address = context->registers[kRegisterArgument0];
+  std::uint64_t address = import_argument(context, 0);
   std::uint64_t length = 0;
   while (address + length * 2 + 1 < guest_memory_size && load_guest_memory(context, address + length * 2, 2) != 0) ++length;
-  context->registers[kRegisterReturnValue] = length;
+  set_import_result(context, length);
 }
 void win32_lstrcpy_a(GuestContext* context) {
-  const auto destination = context->registers[kRegisterArgument0];
-  const auto source = context->registers[kRegisterArgument1];
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
   std::uint64_t index = 0;
   for (;;) {
     const auto byte = static_cast<std::uint8_t>(load_guest_memory(context, source + index, 1));
@@ -239,19 +267,20 @@ void win32_lstrcpy_a(GuestContext* context) {
     if (byte == 0) break;
     ++index;
   }
-  context->registers[kRegisterReturnValue] = destination;
+  set_import_result(context, destination);
 }
 void win32_get_proc_address(GuestContext* context) {
-  const auto name = read_guest_string(context->registers[kRegisterArgument1]);
+  const auto name = read_guest_string(import_argument(context, 1));
   void (*function)(GuestContext*) = nullptr;
   if (!lookup_win32_import("kernel32.dll", name.c_str(), &function)) {
     terminate_with_message("GetProcAddress(\"%s\") is not implemented", name.c_str());
   }
-  static std::uint64_t next_thunk = 0x000000017f000000ull;
+  static std::uint64_t next_thunk = 0;
+  if (next_thunk == 0) next_thunk = import_thunk_base() + 0x00010000;
   const auto address = next_thunk;
   next_thunk += 0x10;
-  register_import_thunk(address, function);
-  context->registers[kRegisterReturnValue] = address;
+  register_import_thunk(address, function, "kernel32.dll", name.c_str());
+  set_import_result(context, address);
 }
 
 struct ShimDescriptor {
@@ -342,19 +371,27 @@ void report_divide_error(GuestContext* context) {
   terminate_with_message("divide error at ip=0x%" PRIx64, context->instruction_pointer);
 }
 
-bool lookup_win32_import(const char* library_name, const char* symbol_name, void (**function)(GuestContext*)) {
+const ShimDescriptor* find_win32_shim(const char* library_name, const char* symbol_name) {
   for (const auto& shim : kShims) {
-    if (std::strcmp(shim.library_name, library_name) == 0 && std::strcmp(shim.symbol_name, symbol_name) == 0) {
-      *function = shim.function;
-      return true;
-    }
+    if (std::strcmp(shim.library_name, library_name) == 0 && std::strcmp(shim.symbol_name, symbol_name) == 0)
+      return &shim;
   }
-  return false;
+  return nullptr;
 }
 
-bool register_import_thunk(std::uint64_t address, void (*function)(GuestContext*)) {
+bool lookup_win32_import(const char* library_name, const char* symbol_name, void (**function)(GuestContext*)) {
+  const auto* shim = find_win32_shim(library_name, symbol_name);
+  if (shim == nullptr) return false;
+  *function = shim->function;
+  return true;
+}
+
+bool register_import_thunk(std::uint64_t address, void (*function)(GuestContext*),
+                           const char* library_name, const char* symbol_name) {
   import_thunk_addresses.push_back(address);
   import_thunk_functions.push_back(function);
+  import_thunk_libraries.emplace_back(library_name != nullptr ? library_name : "");
+  import_thunk_symbols.emplace_back(symbol_name != nullptr ? symbol_name : "");
   return true;
 }
 
@@ -525,8 +562,12 @@ void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uin
     function(context);
     return;
   }
-  if (auto function = lookup_import_thunk(target)) {
-    function(context);
+  const auto thunk = lookup_import_thunk(target);
+  if (thunk >= 0) {
+    // Only 32-bit x86 needs the return address pushed: its cleanup pass then
+    // removes the return address and the stdcall arguments. On x86-64 the shim
+    // returns directly and the guest stack must be left untouched.
+    invoke_import_thunk(context, thunk, return_address, guest_pointer_width < 8);
     return;
   }
   terminate_with_message("indirect call to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 ")", target,
@@ -535,18 +576,34 @@ void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uin
 
 void jump_guest_indirect(GuestContext* context, std::uint64_t target) {
   if (auto function = lookup_guest_function(target)) { function(context); return; }
-  if (auto function = lookup_import_thunk(target)) { function(context); return; }
+  const auto thunk = lookup_import_thunk(target);
+  if (thunk >= 0) {
+    invoke_import_thunk(context, thunk, 0, false);
+    return;
+  }
   terminate_with_message("indirect jump to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 ")", target,
                          context->instruction_pointer);
 }
 
-void invoke_win32_import(GuestContext* context, const char* library_name, const char* symbol_name) {
-  void (*function)(GuestContext*) = nullptr;
-  if (!lookup_win32_import(library_name, symbol_name, &function)) {
+void invoke_win32_import(GuestContext* context, const char* library_name, const char* symbol_name,
+                         std::uint64_t return_address) {
+  const auto* shim = find_win32_shim(library_name, symbol_name);
+  if (shim == nullptr) {
     terminate_with_message("unimplemented Win32 import %s!%s (ip=0x%" PRIx64 ")", library_name, symbol_name,
                            context->instruction_pointer);
   }
-  function(context);
+  if (guest_pointer_width >= 8) {
+    shim->function(context);
+    return;
+  }
+  // 32-bit x86: emulate the `call` and the matching `ret`/`ret n` so the guest
+  // stack matches what real hardware would leave behind. cdecl leaves the
+  // arguments for the caller to pop; stdcall pops them in the callee.
+  context->registers[4] = mask_guest_address(context->registers[4] - 4);
+  store_guest_memory(context, context->registers[4], return_address, 4);
+  shim->function(context);
+  context->registers[4] = mask_guest_address(
+      context->registers[4] + win32_import_stack_cleanup(library_name, symbol_name));
 }
 
 namespace {
@@ -563,6 +620,7 @@ int run_recompiled_image(const RecompiledImage* image) {
     guest_tracing_enabled = guest_trace_stream != nullptr;
   }
   recompiled_image_base = image->image_base;
+  guest_pointer_width = image->pointer_width;
   guest_memory_size = kGuestMemoryBytes;
   guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
                                                  PROT_READ | PROT_WRITE,
@@ -587,8 +645,9 @@ int run_recompiled_image(const RecompiledImage* image) {
     const auto& imported = image->imports[index];
     void (*function)(GuestContext*) = nullptr;
     const auto found = lookup_win32_import(imported.library_name, imported.symbol_name, &function);
-    const auto thunk_address = kImportThunkBase + static_cast<std::uint64_t>(index) * 0x10;
-    register_import_thunk(thunk_address, found ? function : unbound_import_thunk);
+    const auto thunk_address = import_thunk_base() + static_cast<std::uint64_t>(index) * 0x10;
+    register_import_thunk(thunk_address, found ? function : unbound_import_thunk, imported.library_name,
+                          imported.symbol_name);
     store_guest_memory(nullptr, image->image_base + imported.import_address_table_rva, thunk_address,
                        imported.slot_size != 0 ? static_cast<int>(imported.slot_size) : 8);
     if (found) {
@@ -602,17 +661,30 @@ int run_recompiled_image(const RecompiledImage* image) {
                  image->import_count, unsupported.c_str());
   }
 
-  store_guest_memory(nullptr, kThreadEnvironmentBlockAddress + 0x08, image->stack_top, 8);
-  store_guest_memory(nullptr, kThreadEnvironmentBlockAddress + 0x10, image->stack_top - 0x100000, 8);
-  store_guest_memory(nullptr, kThreadEnvironmentBlockAddress + 0x30, kProcessEnvironmentBlockAddress, 8);
-  store_guest_memory(nullptr, kThreadEnvironmentBlockAddress + 0x60, kProcessEnvironmentBlockAddress, 8);
-  store_guest_memory(nullptr, kProcessEnvironmentBlockAddress + 0x10, image->image_base, 8);
+  const auto teb_address =
+      guest_pointer_width >= 8 ? kThreadEnvironmentBlockAddress64 : kThreadEnvironmentBlockAddress32;
+  const auto peb_address =
+      guest_pointer_width >= 8 ? kProcessEnvironmentBlockAddress64 : kProcessEnvironmentBlockAddress32;
+  if (guest_pointer_width >= 8) {
+    store_guest_memory(nullptr, teb_address + 0x08, image->stack_top, 8);
+    store_guest_memory(nullptr, teb_address + 0x10, image->stack_top - 0x100000, 8);
+    store_guest_memory(nullptr, teb_address + 0x30, peb_address, 8);
+    store_guest_memory(nullptr, teb_address + 0x60, peb_address, 8);
+    store_guest_memory(nullptr, peb_address + 0x10, image->image_base, 8);
+  } else {
+    // 32-bit layout: TEB self pointer at +0x18, PEB at +0x30.
+    store_guest_memory(nullptr, teb_address + 0x04, image->stack_top, 4);
+    store_guest_memory(nullptr, teb_address + 0x08, image->stack_top - 0x100000, 4);
+    store_guest_memory(nullptr, teb_address + 0x18, teb_address, 4);
+    store_guest_memory(nullptr, teb_address + 0x30, peb_address, 4);
+    store_guest_memory(nullptr, peb_address + 0x08, image->image_base, 4);
+  }
   next_heap_address = image->heap_base;
 
   GuestContext context{};
   context.registers[kRegisterStackPointer] = image->stack_top;
-  context.fs_base = kThreadEnvironmentBlockAddress;
-  context.gs_base = kThreadEnvironmentBlockAddress;
+  context.fs_base = teb_address;
+  context.gs_base = teb_address;
   context.x87_control_word = 0x027f;
   push_guest_stack(&context, 0);
 

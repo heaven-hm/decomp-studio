@@ -20,6 +20,9 @@ mkdir -p "$out"
 # Fixtures that must build and pass for the 64-bit target.
 FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide"
 
+# Fixtures that must build and pass for the 32-bit target (source name == output name).
+FIXTURES_X86="pe32_abi"
+
 # Negative fixtures: these must fail explicitly, so they are not in FIXTURES_X64.
 FIXTURES_NEGATIVE="unsupported_instruction unsupported_import"
 COMMON_FLAGS="-O2 -nostdlib -ffreestanding -fno-asynchronous-unwind-tables -fno-stack-protector -fno-tree-vectorize -fno-tree-slp-vectorize -Wl,--no-insert-timestamp"
@@ -43,6 +46,9 @@ done
 # the PE32 regression tests.
 if command -v "$CC32" >/dev/null 2>&1; then
   build_one "$CC32" "arith" "pe32_arith"
+  for name in $FIXTURES_X86; do
+    build_one "$CC32" "$name" "$name"
+  done
 fi
 
 # Negative fixtures are built separately because they need extra libraries.

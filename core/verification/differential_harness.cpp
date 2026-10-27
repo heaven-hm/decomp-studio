@@ -2,6 +2,8 @@
 
 #include "core/pipeline.hpp"
 
+#include "win32_abi.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -10,14 +12,19 @@
 #include <sstream>
 #include <stdexcept>
 #include <unicorn/unicorn.h>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace recomp::verification {
 namespace {
 
-constexpr std::uint64_t kThreadEnvironmentBlockAddress = 0x0000000164000000ull;
-constexpr std::uint64_t kProcessEnvironmentBlockAddress = 0x0000000164001000ull;
-constexpr std::uint64_t kImportThunkBase = 0x0000000100000000ull;
+constexpr std::uint64_t kThreadEnvironmentBlockAddress64 = 0x0000000164000000ull;
+constexpr std::uint64_t kProcessEnvironmentBlockAddress64 = 0x0000000164001000ull;
+constexpr std::uint64_t kThreadEnvironmentBlockAddress32 = 0x000000007ffd0000ull;
+constexpr std::uint64_t kProcessEnvironmentBlockAddress32 = 0x000000007ffd1000ull;
+constexpr std::uint64_t kImportThunkBase64 = 0x0000000100000000ull;
+constexpr std::uint64_t kImportThunkBase32 = 0x0000000060000000ull;
 constexpr std::uint64_t kStackSize = 0x00100000ull;
 constexpr std::uint64_t kHeapSize = 0x01000000ull;
 constexpr std::uint64_t kPageSize = 0x1000ull;
@@ -27,8 +34,11 @@ struct ReferenceState {
   uc_engine* engine{};
   std::string output;
   std::vector<std::string> symbol_names;
+  std::vector<std::string> library_names;
   std::vector<std::uint64_t>* trace{};
   std::size_t trace_limit{};
+  int pointer_width{8};
+  std::uint64_t thunk_base{};
   std::uint64_t instruction_count{};
   bool finished{};
 };
@@ -99,17 +109,37 @@ void write_register(uc_engine* engine, int register_id, std::uint64_t value) {
 }
 
 void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
-  const auto index = static_cast<std::size_t>((stub_address - kImportThunkBase) / 0x10);
+  const auto index = static_cast<std::size_t>((stub_address - state.thunk_base) / 0x10);
   const auto& symbol = index < state.symbol_names.size() ? state.symbol_names[index] : std::string{};
   auto* engine = state.engine;
-  const auto argument0 = read_register(engine, UC_X86_REG_RCX);
-  const auto argument1 = read_register(engine, UC_X86_REG_RDX);
-  const auto argument2 = read_register(engine, UC_X86_REG_R8);
-  const auto argument3 = read_register(engine, UC_X86_REG_R9);
+  const bool is_64_bit = state.pointer_width == 8;
+
+  const auto argument = [&](int which) -> std::uint64_t {
+    if (is_64_bit) {
+      switch (which) {
+        case 0: return read_register(engine, UC_X86_REG_RCX);
+        case 1: return read_register(engine, UC_X86_REG_RDX);
+        case 2: return read_register(engine, UC_X86_REG_R8);
+        default: return read_register(engine, UC_X86_REG_R9);
+      }
+    }
+    const auto stack_pointer = read_register(engine, UC_X86_REG_ESP);
+    std::uint64_t value = 0;
+    uc_mem_read(engine, stack_pointer + 4 + static_cast<std::uint64_t>(which) * 4, &value, 4);
+    return value;
+  };
+  const auto set_result = [&](std::uint64_t value) {
+    write_register(engine, is_64_bit ? UC_X86_REG_RAX : UC_X86_REG_EAX, value);
+  };
+
+  const auto argument0 = argument(0);
+  const auto argument1 = argument(1);
+  const auto argument2 = argument(2);
+  const auto argument3 = argument(3);
 
   if (symbol == "GetStdHandle") {
     const auto which = static_cast<std::int32_t>(argument0);
-    write_register(engine, UC_X86_REG_RAX, which == -10 ? 10 : which == -12 ? 12 : 11);
+    set_result(which == -10 ? 10 : which == -12 ? 12 : 11);
   } else if (symbol == "WriteFile") {
     std::vector<char> buffer(static_cast<std::size_t>(argument2));
     if (argument2 != 0) uc_mem_read(engine, argument1, buffer.data(), buffer.size());
@@ -118,33 +148,38 @@ void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
       const std::uint32_t written = static_cast<std::uint32_t>(argument2);
       uc_mem_write(engine, argument3, &written, 4);
     }
-    write_register(engine, UC_X86_REG_RAX, 1);
+    set_result(1);
   } else if (symbol == "ReadFile") {
     if (argument3 != 0) {
       const std::uint32_t read_count = 0;
       uc_mem_write(engine, argument3, &read_count, 4);
     }
-    write_register(engine, UC_X86_REG_RAX, 1);
+    set_result(1);
   } else if (symbol == "ExitProcess") {
     state.finished = true;
     uc_emu_stop(engine);
     return;
   } else {
-    write_register(engine, UC_X86_REG_RAX, 0);
+    set_result(0);
   }
 
-  const auto stack_pointer = read_register(engine, UC_X86_REG_RSP);
+  const int stack_register = is_64_bit ? UC_X86_REG_RSP : UC_X86_REG_ESP;
+  const auto stack_pointer = read_register(engine, stack_register);
   std::uint64_t return_address = 0;
-  uc_mem_read(engine, stack_pointer, &return_address, 8);
-  write_register(engine, UC_X86_REG_RSP, stack_pointer + 8);
-  write_register(engine, UC_X86_REG_RIP, return_address);
+  uc_mem_read(engine, stack_pointer, &return_address, static_cast<std::size_t>(state.pointer_width));
+  std::uint64_t cleanup = state.pointer_width;
+  if (!is_64_bit)
+    cleanup = win32_import_stack_cleanup(
+        index < state.library_names.size() ? state.library_names[index].c_str() : nullptr, symbol.c_str());
+  write_register(engine, stack_register, stack_pointer + cleanup);
+  write_register(engine, is_64_bit ? UC_X86_REG_RIP : UC_X86_REG_EIP, return_address);
 }
 
 void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, void* user_data) {
   (void)size;
   auto& state = *static_cast<ReferenceState*>(user_data);
   ++state.instruction_count;
-  if (address >= kImportThunkBase && address < kImportThunkBase + 0x10000) {
+  if (address >= state.thunk_base && address < state.thunk_base + 0x10000) {
     emulate_shim(state, address);
     return;
   }
@@ -162,47 +197,79 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
 ReferenceRun run_reference(const binary::PortableExecutable& executable,
                            const binary::LoadedImage& loaded_image, std::uint64_t stack_top,
                            std::uint64_t heap_base, std::size_t trace_limit) {
+  // Segment base registers (FS/GS) are written intentionally to model the TEB.
+  // Unicorn marks those accesses deprecated in 2.x and warns on stderr.
+  static const bool ignore_register_warning = [] {
+    return setenv("UC_IGNORE_REG_BREAK", "1", 1) == 0;
+  }();
+  (void)ignore_register_warning;
+
+  const bool is_64_bit = executable.is_64_bit;
+  const int pointer_width = is_64_bit ? 8 : 4;
+  const std::uint64_t thunk_base = is_64_bit ? kImportThunkBase64 : kImportThunkBase32;
+
   ReferenceRun run;
   uc_engine* engine = nullptr;
-  if (uc_open(UC_ARCH_X86, UC_MODE_64, &engine) != UC_ERR_OK) {
-    run.failure_reason = "unicorn: failed to open x86-64 engine";
+  if (uc_open(UC_ARCH_X86, is_64_bit ? UC_MODE_64 : UC_MODE_32, &engine) != UC_ERR_OK) {
+    run.failure_reason = "unicorn: failed to open the x86 engine";
     return run;
   }
   map_region(engine, executable.image_base, loaded_image.image_bytes.size());
   uc_mem_write(engine, executable.image_base, loaded_image.image_bytes.data(), loaded_image.image_bytes.size());
   map_region(engine, stack_top - kStackSize, kStackSize);
   map_region(engine, heap_base, kHeapSize);
-  map_region(engine, kImportThunkBase, 0x10000);
-  map_region(engine, kThreadEnvironmentBlockAddress, 0x2000);
+  const std::uint64_t teb_address =
+      is_64_bit ? kThreadEnvironmentBlockAddress64 : kThreadEnvironmentBlockAddress32;
+  const std::uint64_t peb_address =
+      is_64_bit ? kProcessEnvironmentBlockAddress64 : kProcessEnvironmentBlockAddress32;
+  map_region(engine, thunk_base, 0x10000);
+  map_region(engine, teb_address, 0x2000);
 
   ReferenceState state;
   state.engine = engine;
   state.trace_limit = trace_limit != 0 ? trace_limit : 1;
+  state.thunk_base = thunk_base;
+  state.pointer_width = pointer_width;
   std::vector<std::uint64_t> trace;
   if (trace_limit != 0) state.trace = &trace;
   for (std::size_t index = 0; index < executable.imports.size(); ++index) {
-    std::uint64_t stub_address = kImportThunkBase + index * 0x10;
+    std::uint64_t stub_address = thunk_base + index * 0x10;
     const auto slot_address = executable.image_base + executable.imports[index].import_address_table_rva;
-    uc_mem_write(engine, slot_address, &stub_address, executable.is_64_bit ? 8 : 4);
+    uc_mem_write(engine, slot_address, &stub_address, static_cast<std::size_t>(pointer_width));
     state.symbol_names.push_back(executable.imports[index].symbol_name);
+    state.library_names.push_back(executable.imports[index].library_name);
   }
 
-  const std::uint64_t stack_pointer = stack_top - 8;
+  const int stack_register = is_64_bit ? UC_X86_REG_RSP : UC_X86_REG_ESP;
+  const int instruction_register = is_64_bit ? UC_X86_REG_RIP : UC_X86_REG_EIP;
+  const std::uint64_t stack_pointer = stack_top - pointer_width;
   const std::uint64_t sentinel = 0;
-  uc_mem_write(engine, stack_pointer, &sentinel, 8);
-  write_register(engine, UC_X86_REG_RSP, stack_pointer);
-  write_register(engine, UC_X86_REG_RIP, executable.image_base + executable.entry_point_rva);
-  write_register(engine, UC_X86_REG_GS_BASE, kThreadEnvironmentBlockAddress);
-  write_register(engine, UC_X86_REG_FS_BASE, kThreadEnvironmentBlockAddress);
-  const std::uint64_t teb_fields[] = {stack_top, stack_top - kStackSize, kProcessEnvironmentBlockAddress,
-                                      kProcessEnvironmentBlockAddress};
-  const std::uint64_t teb_offsets[] = {0x08, 0x10, 0x30, 0x60};
-  for (int index = 0; index < 4; ++index) {
-    const auto offset = kThreadEnvironmentBlockAddress + teb_offsets[index];
-    uc_mem_write(engine, offset, &teb_fields[index], 8);
+  uc_mem_write(engine, stack_pointer, &sentinel, static_cast<std::size_t>(pointer_width));
+  write_register(engine, stack_register, stack_pointer);
+  write_register(engine, instruction_register, executable.image_base + executable.entry_point_rva);
+
+  if (is_64_bit) {
+    write_register(engine, UC_X86_REG_GS_BASE, teb_address);
+    write_register(engine, UC_X86_REG_FS_BASE, teb_address);
+    const std::uint64_t fields[] = {stack_top, stack_top - kStackSize, peb_address, peb_address};
+    const std::uint64_t offsets[] = {0x08, 0x10, 0x30, 0x60};
+    for (int index = 0; index < 4; ++index)
+      uc_mem_write(engine, teb_address + offsets[index], &fields[index], 8);
+    const std::uint64_t image_base_field = executable.image_base;
+    uc_mem_write(engine, peb_address + 0x10, &image_base_field, 8);
+  } else {
+    write_register(engine, UC_X86_REG_FS_BASE, teb_address);
+    const std::uint32_t teb_self = static_cast<std::uint32_t>(teb_address);
+    const std::uint32_t peb = static_cast<std::uint32_t>(peb_address);
+    const std::uint32_t stack_base = static_cast<std::uint32_t>(stack_top);
+    const std::uint32_t stack_limit = static_cast<std::uint32_t>(stack_top - kStackSize);
+    uc_mem_write(engine, teb_address + 0x04, &stack_base, 4);
+    uc_mem_write(engine, teb_address + 0x08, &stack_limit, 4);
+    uc_mem_write(engine, teb_address + 0x18, &teb_self, 4);
+    uc_mem_write(engine, teb_address + 0x30, &peb, 4);
+    const std::uint32_t image_base_field = static_cast<std::uint32_t>(executable.image_base);
+    uc_mem_write(engine, peb_address + 0x08, &image_base_field, 4);
   }
-  const std::uint64_t image_base_field = executable.image_base;
-  uc_mem_write(engine, kProcessEnvironmentBlockAddress + 0x10, &image_base_field, 8);
 
   uc_hook hook = 0;
   uc_hook_add(engine, &hook, UC_HOOK_CODE, reinterpret_cast<void*>(code_hook), &state, 1, 0);

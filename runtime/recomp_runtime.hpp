@@ -48,6 +48,14 @@ extern std::uint8_t* guest_memory;
 extern std::uint64_t guest_memory_size;
 extern bool guest_tracing_enabled;
 
+// 4 for a PE32/x86 guest, 8 for a PE32+/x86-64 guest. Set once by
+// run_recompiled_image before any translated code executes.
+extern int guest_pointer_width;
+
+inline std::uint64_t mask_guest_address(std::uint64_t address) {
+  return guest_pointer_width >= 8 ? address : (address & 0xffffffffull);
+}
+
 void guest_trace_address(std::uint64_t address);
 
 // Records the current instruction pointer; when tracing is enabled every
@@ -234,6 +242,39 @@ inline std::uint64_t shift_right_arithmetic(GuestContext* context, std::uint64_t
   return static_cast<std::uint64_t>(result);
 }
 
+// SHLD / SHRD: shift a value, pulling the vacated bits from a second operand.
+inline std::uint64_t shift_right_double(GuestContext* context, std::uint64_t destination,
+                                        std::uint64_t source, std::uint64_t count, int width) {
+  const auto bits = static_cast<unsigned>(width * 8);
+  const auto effective = static_cast<unsigned>(count % bits);
+  const auto mask = value_mask(width);
+  destination &= mask;
+  source &= mask;
+  if (effective == 0) return destination;
+  const auto result = ((destination >> effective) | (source << (bits - effective))) & mask;
+  context->carry_flag = static_cast<std::uint32_t>((destination >> (effective - 1)) & 1);
+  context->overflow_flag = 0;
+  context->auxiliary_flag = 0;
+  update_zero_sign_parity(context, result, width);
+  return result;
+}
+
+inline std::uint64_t shift_left_double(GuestContext* context, std::uint64_t destination,
+                                       std::uint64_t source, std::uint64_t count, int width) {
+  const auto bits = static_cast<unsigned>(width * 8);
+  const auto effective = static_cast<unsigned>(count % bits);
+  const auto mask = value_mask(width);
+  destination &= mask;
+  source &= mask;
+  if (effective == 0) return destination;
+  const auto result = ((destination << effective) | (source >> (bits - effective))) & mask;
+  context->carry_flag = static_cast<std::uint32_t>((destination >> (bits - effective)) & 1);
+  context->overflow_flag = 0;
+  context->auxiliary_flag = 0;
+  update_zero_sign_parity(context, result, width);
+  return result;
+}
+
 inline std::uint64_t rotate_left(GuestContext* context, std::uint64_t value, std::uint64_t count, int width) {
   const auto bits = static_cast<unsigned>(width * 8);
   const auto effective = static_cast<unsigned>(count % bits);
@@ -324,14 +365,20 @@ inline int evaluate_condition(GuestContext* context, int condition) {
 }
 
 inline void push_guest_stack(GuestContext* context, std::uint64_t value) {
-  context->registers[4] -= 8;
-  store_guest_memory(context, context->registers[4], value, 8);
+  context->registers[4] = mask_guest_address(context->registers[4] - static_cast<std::uint64_t>(guest_pointer_width));
+  store_guest_memory(context, context->registers[4], value, guest_pointer_width);
 }
 
 inline std::uint64_t pop_guest_stack(GuestContext* context) {
-  const auto value = load_guest_memory(context, context->registers[4], 8);
-  context->registers[4] += 8;
+  const auto value = load_guest_memory(context, context->registers[4], guest_pointer_width);
+  context->registers[4] = mask_guest_address(context->registers[4] + static_cast<std::uint64_t>(guest_pointer_width));
   return value;
+}
+
+// Emulates the return address pop for `ret`/`ret imm16`.
+inline void return_from_guest_function(GuestContext* context, std::uint32_t extra_bytes) {
+  context->registers[4] = mask_guest_address(context->registers[4] +
+                                             static_cast<std::uint64_t>(guest_pointer_width) + extra_bytes);
 }
 
 inline void load_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {
@@ -548,11 +595,34 @@ void string_scan(GuestContext* context, int element_size, int repeat);
 void string_compare(GuestContext* context, int element_size, int repeat);
 void execute_cpuid(GuestContext* context);
 
+// Win32 calling convention access. x86-64 passes the first four arguments in
+// rcx/rdx/r8/r9 and the rest on the stack above 32 bytes of shadow space; x86
+// passes every argument on the stack above the return address.
+inline std::uint64_t import_argument(GuestContext* context, int index) {
+  if (guest_pointer_width >= 8) {
+    switch (index) {
+      case 0: return context->registers[1];
+      case 1: return context->registers[2];
+      case 2: return context->registers[8];
+      case 3: return context->registers[9];
+      default: break;
+    }
+    return load_guest_memory(context, context->registers[4] + 0x28 + static_cast<std::uint64_t>(index - 4) * 8, 8);
+  }
+  return load_guest_memory(context, context->registers[4] + 4 + static_cast<std::uint64_t>(index) * 4, 4);
+}
+
+inline void set_import_result(GuestContext* context, std::uint64_t value) {
+  context->registers[0] = guest_pointer_width >= 8 ? value : (value & 0xffffffffull);
+}
+
 void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uint64_t return_address);
 void jump_guest_indirect(GuestContext* context, std::uint64_t target);
-void invoke_win32_import(GuestContext* context, const char* library_name, const char* symbol_name);
+void invoke_win32_import(GuestContext* context, const char* library_name, const char* symbol_name,
+                         std::uint64_t return_address);
 bool lookup_win32_import(const char* library_name, const char* symbol_name, void (**function)(GuestContext*));
-bool register_import_thunk(std::uint64_t address, void (*function)(GuestContext*));
+bool register_import_thunk(std::uint64_t address, void (*function)(GuestContext*),
+                           const char* library_name, const char* symbol_name);
 
 struct GuestFunctionDescriptor {
   std::uint64_t address;
@@ -568,6 +638,7 @@ struct GuestImportDescriptor {
 
 struct RecompiledImage {
   std::uint64_t image_base;
+  std::uint32_t pointer_width;   // 4 for PE32/x86, 8 for PE32+/x86-64
   std::uint32_t image_size;
   std::uint32_t entry_point_rva;
   std::uint64_t stack_top;

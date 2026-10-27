@@ -23,7 +23,7 @@ code runs as a normal native process.
 |-------|--------|----------------|-----------|
 | Binary format | `core/binary/pe.hpp` | Parse the executable, sections, imports, exports, relocations, TLS; build a loadable image | Add a sibling such as `elf.hpp` producing the same facts |
 | Discovery | `core/discovery/function_discovery.hpp` | Decode instructions, recover function entries, basic blocks and tail calls | Swap the decoder (Zydis, Ghidra) behind the same interface |
-| Lifting | `core/semantics/x86_64_lifter.hpp` | Emit C++ for each instruction against the runtime helpers | Add `aarch64_lifter`, `mips_lifter`, ... emitting the same runtime calls |
+| Lifting | `core/semantics/x86_64_lifter.hpp` | Emit C++ for each instruction against the runtime helpers; the same emitter serves PE32 and PE32+ (decode mode and pointer width come from the image) | Add `aarch64_lifter`, `mips_lifter`, ... emitting the same runtime calls |
 | Code generation | `core/codegen/project_generator.hpp` | Emit `guest.cpp`, copy the runtime, embed the image | Add per-function output files or a single-file patch mode |
 | Pipeline | `core/pipeline.hpp` | Orchestrate translate / build / run and the manifest | Add targets; the target name maps to an LLVM triple |
 | Runtime | `runtime/recomp_runtime.hpp` | Guest memory, CPU context, dispatch, import thunks, Win32 shims | Add shim families (user32, ddraw, d3d) and other guest ABIs |
@@ -52,6 +52,13 @@ igi-recomp (registers in a context, memory as a flat array).
   `div`, `inc`/`dec` and `neg` follow their own rules.
 - **Partial registers** are modelled precisely: 32-bit writes zero-extend, 16-bit
   and 8-bit writes merge, and `ah`/`ch`/`dh`/`bh` address bits 8-15.
+- **Guest pointer width** is carried by the runtime (`guest_pointer_width`):
+  stack pushes/pops, call/return, and effective-address computation all adapt, so
+  a PE32 guest wraps at 2^32 while a PE32+ guest does not.
+- **Import calling convention** is data, not code: `runtime/win32_abi.hpp` records
+  each shim's argument count and whether it cleans the stack, and the runtime and
+  the Unicorn reference both consume that table. On x86 the runtime emulates the
+  `call`→`ret`/`ret n` sequence so the guest stack matches hardware.
 - **Imports** are bound by writing a per-import thunk address into each IAT slot,
   exactly as a loader would, so both direct `call [iat]` and a pointer loaded and
   called later resolve to the shim.

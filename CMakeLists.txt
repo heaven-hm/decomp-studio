@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.26)
-project(recomp_studio VERSION 0.2.0 LANGUAGES CXX)
+project(recomp_studio VERSION 0.3.0 LANGUAGES CXX)
 
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -28,7 +28,7 @@ set(RECOMP_SOURCES
   core/pipeline.cpp
   core/semantics/x86_64_lifter.cpp
 )
-set(RECOMP_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CAPSTONE_INCLUDE_DIR})
+set(RECOMP_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime ${CAPSTONE_INCLUDE_DIR})
 set(RECOMP_LIBRARIES ${CAPSTONE_LIBRARY})
 
 if(RECOMP_ENABLE_UNICORN)

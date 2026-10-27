@@ -109,13 +109,12 @@ def main() -> int:
         else:
             check("unsupported import fixture present", False, "run tests/fixtures/apps/build.sh")
 
-        # 32-bit PE32 input: detected, and refused (until x86 lifting is enabled).
+        # 32-bit PE32 input: the machine type must be reported as x86, not x86_64.
         pe32 = APPS_DIRECTORY / "bin" / "pe32_arith.exe"
         if pe32.exists():
             inspected = run_cli(["inspect", str(pe32), "--json"])
-            check("PE32 is detected", inspected.returncode == 0 and '"x86"' in inspected.stdout, inspected.stdout)
-            expect_error("PE32 is refused explicitly",
-                         ["translate", str(pe32), "--output", str(root / "pe32-out")])
+            check("PE32 is detected as x86",
+                  inspected.returncode == 0 and '"architecture":"x86"' in inspected.stdout, inspected.stdout)
         elif shutil.which("i686-w64-mingw32-gcc") is None and OPTIONAL_MODE:
             print("SKIP (RECOMP_OPTIONAL=1): no i686 toolchain for the PE32 fixture")
         else:

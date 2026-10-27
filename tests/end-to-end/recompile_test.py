@@ -20,7 +20,7 @@ CLI = sys.argv[1]
 APPS_DIRECTORY = Path(sys.argv[2])
 OPTIONAL_MODE = os.environ.get("RECOMP_OPTIONAL") == "1"
 
-# Fixtures that must recompile, execute and verify.
+# 64-bit (PE32+) fixtures that must recompile, execute and verify.
 FIXTURES = [
     ("arith", "arithmetic, recursion, flags"),
     ("tictactoe", "minimax game"),
@@ -33,6 +33,13 @@ FIXTURES = [
     ("wide", "64-bit arithmetic and shifts"),
 ]
 
+# 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
+# 32-bit guest context, stack handling and the Win32 stdcall ABI.
+FIXTURES_PE32 = [
+    ("pe32_arith", "32-bit arithmetic, flags and recursion"),
+    ("pe32_abi", "32-bit calling conventions, indirect dispatch and address wrapping"),
+]
+
 EXPECTED_OUTPUT = {
     "arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
@@ -43,6 +50,9 @@ EXPECTED_OUTPUT = {
     "memory": ["memory:start", "table_checksum=", "memory:done"],
     "flagprobe": ["add ", "imul ", "shln "],
     "wide": ["wide:start", "roll=", "wide:done"],
+    "pe32_arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
+    "pe32_abi": ["pe32:start", "cdecl=", "stdcall=", "fastcall=", "thiscall=", "dispatch=",
+                 "wrapped=16", "checksum=", "pe32:done"],
 }
 
 
@@ -125,13 +135,19 @@ def main() -> int:
         fixture_binaries = root / "bin"
         build_fixtures(fixture_binaries)
 
-        for name, description in FIXTURES:
+        required = FIXTURES + FIXTURES_PE32
+        for name, description in required:
             executable = fixture_binaries / f"{name}.exe"
             if not executable.exists():
+                if name.startswith("pe32_") and OPTIONAL_MODE:
+                    print(f"SKIP (RECOMP_OPTIONAL=1): {name} needs the i686 toolchain")
+                    continue
                 fail(f"{name}: fixture was not built ({description})")
             print("PASS " + verify_fixture(name, executable, root / f"project-{name}"))
 
-        print(f"PASS: {len(FIXTURES)} fixtures recompiled, executed and verified")
+        executed = sum(1 for name, _ in required if (fixture_binaries / f"{name}.exe").exists())
+        print(f"PASS: {executed} fixtures recompiled, executed and verified "
+              f"({len(FIXTURES)} PE32+, {len(FIXTURES_PE32)} PE32)")
     return 0
 
 

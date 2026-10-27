@@ -41,11 +41,16 @@ std::uint64_t choose_heap_base(const binary::PortableExecutable& executable, con
   if (configuration.heap_base) return *configuration.heap_base;
   const auto image_end = executable.image_base + std::max<std::uint32_t>(executable.size_of_image, 0x10000);
   const auto aligned = (image_end + 0xffff) & ~0xffffull;
-  return std::max<std::uint64_t>(0x0000000160000000ull, aligned + 0x100000);
+  if (executable.is_64_bit) return std::max<std::uint64_t>(0x0000000160000000ull, aligned + 0x100000);
+  // A 32-bit guest lives entirely below 4 GiB.
+  return std::min<std::uint64_t>(0x40000000ull, std::max<std::uint64_t>(0x01000000ull, aligned + 0x100000));
 }
 
-std::uint64_t choose_stack_top(const common::Configuration& configuration, std::uint64_t heap_base) {
-  return configuration.stack_top ? *configuration.stack_top : heap_base + 0x08000000ull;
+std::uint64_t choose_stack_top(const binary::PortableExecutable& executable,
+                               const common::Configuration& configuration, std::uint64_t heap_base) {
+  if (configuration.stack_top) return *configuration.stack_top;
+  const auto stack_top = heap_base + 0x08000000ull;
+  return executable.is_64_bit ? stack_top : std::min<std::uint64_t>(0x7f000000ull, stack_top);
 }
 
 std::string read_file(const std::filesystem::path& path) {
@@ -57,7 +62,7 @@ std::string read_file(const std::filesystem::path& path) {
 
 std::string ProjectGenerator::build_guest_source() const {
   const auto heap_base = choose_heap_base(executable_, configuration_);
-  const auto stack_top = choose_stack_top(configuration_, heap_base);
+  const auto stack_top = choose_stack_top(executable_, configuration_, heap_base);
   const auto entry_point_rva = configuration_.entry_point_rva.value_or(executable_.entry_point_rva);
 
   std::ostringstream stream;
@@ -87,6 +92,7 @@ std::string ProjectGenerator::build_guest_source() const {
 
   stream << "static const RecompiledImage recompiled_image = {\n";
   stream << "  .image_base = " << format_hex(executable_.image_base) << ",\n";
+  stream << "  .pointer_width = " << (executable_.is_64_bit ? 8 : 4) << ",\n";
   stream << "  .image_size = " << loaded_image_.image_bytes.size() << ",\n";
   stream << "  .entry_point_rva = 0x" << std::hex << entry_point_rva << std::dec << ",\n";
   stream << "  .stack_top = " << format_hex(stack_top) << ",\n";
@@ -113,7 +119,7 @@ GeneratedProject ProjectGenerator::generate(const std::filesystem::path& output_
   }
 
   const auto runtime_directory = configuration_.runtime_directory;
-  for (const auto name : {"recomp_runtime.hpp", "recomp_runtime.cpp"}) {
+  for (const auto name : {"recomp_runtime.hpp", "recomp_runtime.cpp", "win32_abi.hpp"}) {
     const auto source = runtime_directory / name;
     const auto destination = output_directory / name;
     std::ofstream output(destination, std::ios::binary);
@@ -122,8 +128,8 @@ GeneratedProject ProjectGenerator::generate(const std::filesystem::path& output_
   }
 
   project.image_base = executable_.image_base;
-  project.stack_top = choose_stack_top(configuration_, choose_heap_base(executable_, configuration_));
   project.heap_base = choose_heap_base(executable_, configuration_);
+  project.stack_top = choose_stack_top(executable_, configuration_, project.heap_base);
   project.function_count = discovery_.functions().size();
   project.import_count = executable_.imports.size();
   return project;

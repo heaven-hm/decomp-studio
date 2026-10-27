@@ -46,9 +46,14 @@ its output, and its instruction trace, with the compiled host binary.
 
 | Guest OS | Container | CPU | Lifting | Notes |
 | --- | --- | --- | --- | --- |
-| Windows | PE32+ | x86-64 | **Supported** | The primary and only enabled input today. |
-| Windows | PE32 | IA-32 (x86) | Not enabled | The parser detects it; `translate` refuses with a clear message. |
+| Windows | PE32+ | x86-64 | **Supported, verified** | `CS_MODE_64` decode, 64-bit pointer width. |
+| Windows | PE32 | IA-32 (x86) | **Supported, verified** | `CS_MODE_32` decode, 32-bit pointer width and address wrapping, stdcall import stack cleanup. |
 | Any other | ELF / Mach-O / ROM | any | Not implemented | Kept behind the format layer for future work. |
+
+Both guest architectures share one translation core. The decoder mode, the
+guest pointer width and the emulated import calling convention are selected from
+the PE header and the per-import ABI table (`runtime/win32_abi.hpp`), so a
+32-bit stdcall callee pops its arguments exactly as on real hardware.
 
 ### 2.2 Host (output) platforms
 
@@ -358,11 +363,27 @@ build/recomp-studio build out/arith-wasm      # requires wasi-sdk / wasm-ld + a 
 The wasm runtime backend (browser I/O instead of file descriptors) is part of
 the roadmap.
 
-### 5.5 Every bundled fixture in one loop
+### 5.5 32-bit guest (PE32) → macOS ARM64
+
+```sh
+build/recomp-studio translate tests/fixtures/apps/bin/pe32_abi.exe \
+    --target macos-arm64 --output out/pe32abi
+build/recomp-studio build  out/pe32abi
+build/recomp-studio run    out/pe32abi
+build/recomp-studio verify out/pe32abi
+```
+
+`pe32_abi` exercises cdecl, stdcall, fastcall and thiscall guest functions, a
+relocation-backed function-pointer table (indirect dispatch) and 32-bit address
+wrapping. The Unicorn reference runs in `UC_MODE_32` with 32-bit registers, a
+32-bit stack and the 32-bit TEB layout.
+
+### 5.6 Every bundled fixture in one loop
 
 ```sh
 cd tests/fixtures/apps && ./build.sh && cd ../../..
-for app in arith tictactoe snake; do
+for app in arith tictactoe snake aliasing eflags calls memory flagprobe wide \
+           pe32_arith pe32_abi; do
   build/recomp-studio translate tests/fixtures/apps/bin/$app.exe --output out/$app
   build/recomp-studio build out/$app
   build/recomp-studio verify out/$app
@@ -515,7 +536,7 @@ int app_main(void) {
 }
 ```
 
-Build for x86-64 (supported) and IA-32 (detected, not yet liftable):
+Build for x86-64 or IA-32 (both supported):
 
 ```sh
 x86_64-w64-mingw32-gcc -O2 -nostdlib -ffreestanding \
@@ -524,8 +545,12 @@ x86_64-w64-mingw32-gcc -O2 -nostdlib -ffreestanding \
     -Wl,-e,recomp_entry -Wl,--subsystem,console \
     -o myapp.exe myapp.c -lkernel32 -lgcc
 
-# 32-bit: parses, but translate refuses (x86 lifting not enabled)
-i686-w64-mingw32-gcc ... -o myapp32.exe myapp.c -lkernel32 -lgcc
+# 32-bit: for a real PE32 image, including the stdcall import ABI
+i686-w64-mingw32-gcc -O2 -nostdlib -ffreestanding \
+    -fno-asynchronous-unwind-tables -fno-stack-protector \
+    -fno-tree-vectorize -fno-tree-slp-vectorize \
+    -Wl,--no-insert-timestamp -Wl,-e,recomp_entry -Wl,--subsystem,console \
+    -o myapp32.exe myapp.c -lkernel32 -lgcc
 ```
 
 `tests/fixtures/apps/build.sh` builds all bundled fixtures; override the compiler
@@ -539,7 +564,7 @@ with `CC=…`.
 | --- | --- | --- |
 | `not a DOS MZ executable` | Input is not a PE file | Supply a Windows PE executable |
 | `unsupported PE optional header magic` | Not PE32/PE32+ | Only PE32/PE32+ are accepted |
-| `32-bit x86 lifting is not enabled` | PE32/x86 input | Supply a PE32+ (x86-64) image, or wait for x86 lifting |
+| `unsupported instruction '<mnemonic>'` on a PE32 image | The 32-bit lifter has no rule for it | Set `strict = false` to stub the function, or extend the lifter |
 | `unsupported instruction '<mnemonic>'` | The lifter has no rule | Set `strict = false` to stub the function, or extend the lifter |
 | `indirect call to unmapped guest address` | Target never discovered | The call is genuine; add the entry as an export/manual function |
 | `unimplemented Win32 import <dll>!<name>` | Missing shim | Add a shim in `runtime/recomp_runtime.cpp` |
@@ -554,7 +579,9 @@ addresses to `<path>` (used by the trace comparison).
 
 ## 10. Limitations
 
-- Only **PE32+ x86-64** input is lifted today; PE32/x86 is parsed but refused.
+- Both **PE32+ x86-64** and **PE32 x86** input are lifted. The 32-bit path
+  models 4-byte pointers, wrapping addresses, the 32-bit TEB layout and stdcall
+  import cleanup; it is verified against the Unicorn x86-32 reference.
 - **x87** (80-bit) floating point is modelled in the context but not yet lifted;
   MMX is not implemented.
 - Graphics APIs (`user32`, `gdi32`, `ddraw`, `d3d8/9`) have no shims yet — the

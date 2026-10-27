@@ -24,7 +24,10 @@ std::string register_name(csh handle, unsigned int register_id) {
 }  // namespace
 
 FunctionDiscovery::FunctionDiscovery(const binary::PortableExecutable& executable) : executable_(executable) {
-  if (cs_open(CS_ARCH_X86, CS_MODE_64, &capstone_handle_) != CS_ERR_OK)
+  // Decoding mode follows the PE machine type: PE32 is 32-bit x86, PE32+ is
+  // 64-bit x86. Operand widths, branch targets and addressing all depend on it.
+  const auto decode_mode = executable_.is_64_bit ? CS_MODE_64 : CS_MODE_32;
+  if (cs_open(CS_ARCH_X86, decode_mode, &capstone_handle_) != CS_ERR_OK)
     throw std::runtime_error("failed to initialise capstone");
   cs_option(capstone_handle_, CS_OPT_DETAIL, CS_OPT_ON);
   for (const auto* section : executable_.executable_sections())

@@ -16,14 +16,20 @@ decoded, lifted and re-emitted; the resulting binary is a genuine native
 executable that is then checked, instruction by instruction, against the
 original code.
 
-The first working target is **Windows x86-64 (PE32+) → native macOS ARM64**,
-with Linux x86-64/ARM64 and wasm32 wired through the target table.
+Two guest architectures are supported: **Windows x86-64 (PE32+)** and
+**Windows x86 (PE32)**, both → **native macOS ARM64**. The translation core is
+shared; only the decoder mode, the guest pointer width and the emulated
+calling convention differ. Linux x86-64/ARM64 and wasm32 are wired through the
+target table.
 
 ## Proof
 
-Three real Windows PE32+ programs are compiled with mingw-w64, recompiled to
-native ARM64, executed, and verified against the original x86-64 code running
-under Unicorn. The output is byte-identical.
+Eleven real Windows programs (nine PE32+ and two PE32) are compiled with
+mingw-w64, recompiled to native ARM64, executed, and verified against the
+original x86-64 / x86-32 code running under Unicorn. The output is
+byte-identical. The set covers register aliasing, EFLAGS, calling conventions
+(cdecl/stdcall/fastcall/thiscall), indirect dispatch, memory addressing and
+64-bit arithmetic.
 
 ![arith](assets/screenshots/arith.png)
 
@@ -41,7 +47,9 @@ produces exactly the same 117 bytes of output.
 | --- | --- |
 | PE32/PE32+ parsing (sections, imports, exports, relocations, TLS) | Implemented |
 | Recursive-descent function recovery and CFG | Implemented |
-| x86-64 → C++ lifter with exact EFLAGS semantics | Implemented |
+| x86-64 (PE32+) → C++ lifter with exact EFLAGS semantics | Implemented, verified |
+| x86 (PE32) → C++ lifter, 32-bit address wrapping | Implemented, verified |
+| 32-bit calling conventions for imports (stdcall stack cleanup) | Implemented, verified |
 | Native macOS ARM64 code generation and execution | Implemented, verified |
 | Guest runtime: memory, CPU context, dispatch, import thunks | Implemented |
 | Win32 compatibility shims (kernel32 subset) | Implemented subset |
@@ -49,7 +57,7 @@ produces exactly the same 117 bytes of output.
 | Autonomous translate/build/verify/repair harness | Implemented |
 | Config-driven stubs, native overrides, instruction patches | Implemented |
 | Linux / WebAssembly targets | Targets wired, platform runtimes pending |
-| 32-bit x86, x87, graphics (ddraw/d3d), .NET | Not implemented |
+| x87, graphics (ddraw/d3d), DirectInput/DirectSound, .NET | Not implemented |
 | Full commercial-game portability | Not claimed |
 
 Anything not supported fails closed: unsupported instructions, unresolved
@@ -72,11 +80,17 @@ cd recomp-studio
 Recompile and verify the bundled fixtures by hand:
 
 ```sh
+# 64-bit guest (PE32+)
 ./build/recomp-studio translate tests/fixtures/apps/bin/tictactoe.exe \
     --target macos-arm64 --output out/tictactoe
 ./build/recomp-studio build out/tictactoe
 ./build/recomp-studio run   out/tictactoe
 ./build/recomp-studio verify out/tictactoe      # PASS: byte-identical to the x86-64 reference
+
+# 32-bit guest (PE32) — exercising cdecl/stdcall/fastcall/thiscall
+./build/recomp-studio translate tests/fixtures/apps/bin/pe32_abi.exe \
+    --target macos-arm64 --output out/pe32abi
+./build/recomp-studio build out/pe32abi && ./build/recomp-studio verify out/pe32abi
 ```
 
 ## CLI
@@ -144,8 +158,8 @@ Integer and control flow: `mov`/`movabs`, `movzx`/`movsx`/`movsxd`, `lea`,
 `xchg`, `push`/`pop`, `leave`, `add`/`sub`/`adc`/`sbb`, `and`/`or`/`xor`/`not`,
 `inc`/`dec`/`neg`, `cmp`/`test`, `shl`/`shr`/`sar`/`rol`/`ror`/`rcl`/`rcr`,
 `imul`/`mul`/`div`/`idiv`, `cdq`/`cqo`/`cwde`/`cdqe`, `setcc`, `cmovcc`,
-`bt`/`bts`/`btr`/`btc`, `bsr`/`bsf`, `xadd`/`cmpxchg`, `cpuid`, `call`/`ret`/
-`jmp`/`jcc`, string ops with `rep`.
+`bt`/`bts`/`btr`/`btc`, `bsr`/`bsf`, `shld`/`shrd`, `xadd`/`cmpxchg`, `cpuid`,
+`lahf`/`sahf`, `call`/`ret`/`jmp`/`jcc`, string ops with `rep`.
 
 SSE/AVX subset: `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`/`movss`/
 `movsd`/`movd`/`movq`, scalar float and double arithmetic, vector bitwise and

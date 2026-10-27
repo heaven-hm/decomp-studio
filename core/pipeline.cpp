@@ -101,8 +101,6 @@ TranslateReport translate(const std::filesystem::path& input, const std::filesys
     throw std::runtime_error("unsupported input format: " + configuration.input_format);
   if (configuration.architecture != "auto" && configuration.architecture != executable.architecture_name())
     throw std::runtime_error("configured architecture does not match the input image");
-  if (!executable.is_64_bit)
-    throw std::runtime_error("32-bit x86 lifting is not enabled in this build (input is PE32/x86)");
 
   apply_instruction_patches(executable, configuration.instruction_patches);
   auto loaded_image = binary::load_image(executable, executable.image_base);

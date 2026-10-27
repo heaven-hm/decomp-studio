@@ -182,6 +182,8 @@ std::string effective_address_expression(const DecodedInstruction& instruction, 
     const auto address = instruction.address + instruction.size + operand.displacement;
     return format_hex(static_cast<std::uint64_t>(address));
   }
+  if (operand.base_register_name.empty() && operand.index_register_name.empty())
+    return "mask_guest_address(" + format_hex(static_cast<std::uint64_t>(operand.displacement)) + ")";
   std::string expression;
   if (has_segment_prefix(instruction, 0x64)) {
     expression = "context->fs_base";
@@ -201,7 +203,7 @@ std::string effective_address_expression(const DecodedInstruction& instruction, 
     expression += operand.displacement < 0 ? " - " + std::to_string(-operand.displacement)
                                            : " + " + std::to_string(operand.displacement);
   }
-  return "(" + expression + ")";
+  return "mask_guest_address(" + expression + ")";
 }
 
 std::string operand_read_expression(const DecodedInstruction& instruction, const Operand& operand,
@@ -227,8 +229,16 @@ const binary::ImportedSymbol* import_for_instruction(const discovery::FunctionDi
                                                      const DecodedInstruction& instruction) {
   if (instruction.operands.empty()) return nullptr;
   const auto& operand = instruction.operands.front();
-  if (operand.kind != Operand::Kind::Memory || operand.base_register_name != "rip") return nullptr;
-  const auto address = instruction.address + instruction.size + operand.displacement;
+  if (operand.kind != Operand::Kind::Memory) return nullptr;
+  std::uint64_t address = 0;
+  if (operand.base_register_name == "rip") {
+    address = instruction.address + instruction.size + operand.displacement;
+  } else if (operand.base_register_name.empty() && operand.index_register_name.empty()) {
+    address = static_cast<std::uint64_t>(operand.displacement);  // 32-bit absolute addressing
+  } else {
+    return nullptr;
+  }
+  if (address < discovery.image_base()) return nullptr;
   const auto slot_rva = static_cast<std::uint32_t>(address - discovery.image_base());
   return discovery.import_for_slot(slot_rva);
 }
@@ -464,6 +474,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
 
+  if ((mnemonic == "shrd" || mnemonic == "shld") && operands.size() == 3) {
+    const auto width = operand_width(operands[0], 8);
+    const std::string helper = mnemonic == "shrd" ? "shift_right_double" : "shift_left_double";
+    emit(operand_write_statement(instruction, operands[0],
+                                 helper + "(context, " + operand_read_expression(instruction, operands[0], width) +
+                                     ", " + operand_read_expression(instruction, operands[1], width) + ", " +
+                                     operand_read_expression(instruction, operands[2], 1) + ", " +
+                                     std::to_string(width) + ")",
+                                 width));
+    return;
+  }
   if (shift_helpers().count(mnemonic) != 0) {
     const auto width = operand_width(operands[0], 8);
     const auto count = operands.size() > 1 ? operand_read_expression(instruction, operands[1], 1) : "1ull";
@@ -581,7 +602,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
 
   if (mnemonic == "call") {
     if (const auto* imported = import_for_instruction(discovery_, instruction); imported != nullptr) {
-      emit("invoke_win32_import(context, \"" + imported->library_name + "\", \"" + imported->symbol_name + "\");");
+      emit("invoke_win32_import(context, \"" + imported->library_name + "\", \"" + imported->symbol_name +
+           "\", " + format_hex(instruction.address + instruction.size) + ");");
       return;
     }
     const auto target = operands.empty() ? std::optional<std::uint64_t>{} : std::optional<std::uint64_t>{
@@ -591,13 +613,15 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       emit(guest_function_name(*target) + "(context);");
       return;
     }
-    emit("invoke_guest_indirect(context, " + operand_read_expression(instruction, operands[0], 8) + ", " +
+    emit("invoke_guest_indirect(context, " +
+         operand_read_expression(instruction, operands[0], operand_width(operands[0], 8)) + ", " +
          format_hex(instruction.address + instruction.size) + ");");
     return;
   }
   if (mnemonic == "jmp") {
     if (const auto* imported = import_for_instruction(discovery_, instruction); imported != nullptr) {
-      emit("invoke_win32_import(context, \"" + imported->library_name + "\", \"" + imported->symbol_name + "\");");
+      emit("invoke_win32_import(context, \"" + imported->library_name + "\", \"" + imported->symbol_name +
+           "\", " + format_hex(instruction.address + instruction.size) + ");");
       emit("return;");
       return;
     }
@@ -611,7 +635,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       }
       return;
     }
-    emit("jump_guest_indirect(context, " + operand_read_expression(instruction, operands[0], 8) + ");");
+    emit("jump_guest_indirect(context, " +
+         operand_read_expression(instruction, operands[0], operand_width(operands[0], 8)) + ");");
     emit("return;");
     return;
   }
@@ -630,12 +655,12 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     std::uint64_t adjustment = 8;
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate)
       adjustment += static_cast<std::uint64_t>(operands[0].immediate_value);
-    emit("context->registers[" + std::to_string(kRegisterRsp) + "] += " + std::to_string(adjustment) + ";");
+    emit("return_from_guest_function(context, " + std::to_string(adjustment - 8) + ");");
     emit("return;");
     return;
   }
   if (mnemonic == "retf") {
-    emit("context->registers[" + std::to_string(kRegisterRsp) + "] += 16;");
+    emit("return_from_guest_function(context, 8);");
     emit("return;");
     return;
   }

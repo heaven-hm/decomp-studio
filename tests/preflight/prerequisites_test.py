@@ -15,10 +15,10 @@ CLI = sys.argv[1]
 OPTIONAL_MODE = os.environ.get("RECOMP_OPTIONAL") == "1"
 
 REQUIRED_TOOLS = {
-    "x86_64-w64-mingw32-gcc": "compiles the x86-64 PE fixtures used by the end-to-end tests",
+    "x86_64-w64-mingw32-gcc": "compiles the x86-64 (PE32+) fixtures used by the end-to-end tests",
+    "i686-w64-mingw32-gcc": "compiles the x86 (PE32) fixtures used by the end-to-end tests",
 }
 OPTIONAL_TOOLS = {
-    "i686-w64-mingw32-gcc": "compiles the 32-bit PE fixtures used by the PE32 regression tests",
     "clang++": "compiles generated host projects (the CLI also honours RECOMP_CC)",
     "file": "reports the produced executable's architecture",
 }

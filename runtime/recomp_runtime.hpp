@@ -186,9 +186,17 @@ void open_guest_store_log(const char* path);
 // documented limit -- needs the bytes. The windows are written per checkpoint,
 // with the stack pointer and image base that locate them.
 void open_guest_memory_windows(const char* path);
+void open_guest_mxcsr_log(const char* path);
+
+// Every change to MXCSR, in order, when a log is installed. Comparing two runs
+// instruction by instruction is what localises a control-register divergence to the
+// instruction that caused it, rather than to the checkpoint after it.
+extern bool guest_mxcsr_logging;
+void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr);
 
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
   context->instruction_pointer = address;
+  if (guest_mxcsr_logging) record_mxcsr_change(address, context->mxcsr);
   if (guest_checkpoint_interval != 0) capture_guest_checkpoint(context, address);
   if (guest_tracing_enabled) guest_trace_address(address);
 }

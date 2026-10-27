@@ -401,6 +401,15 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **Every change to MXCSR is logged on both sides** (`RECOMP_MXCSR_LOG`,
+  `RECOMP_REF_MXCSR_LOG`), so the two runs can be compared by change rather than at
+  checkpoints 1000 instructions apart. The reference makes 7 changes and the candidate
+  12; the seven are shared, and the five the candidate makes alone are `0x1fa0`,
+  `0x3fa0`, `0x5fa0`, `0x7fa0` and `0x1fa0` — every one a value the reference also
+  reaches, **with bit 5 set**. Bit 5 of MXCSR is **FTZ**. So the two sides agree about
+  every field of MXCSR except that one bit. The instruction producing the differing
+  value is `LDMXCSR` reading `0x167ffff80` at ip `0x14000148c`.
+
 - **MXCSR and the x87 control and status words are compared at every checkpoint**, as
   first-class fields rather than inferred from the memory a guest eventually stores
   them to. Two of the last three divergences found were control registers a guest read

@@ -2349,6 +2349,24 @@ void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t 
 
 std::FILE* guest_memory_windows = nullptr;
 
+bool guest_mxcsr_logging = false;
+static std::FILE* guest_mxcsr_log = nullptr;
+static std::uint32_t guest_mxcsr_last = 0;
+
+void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr) {
+  if (guest_mxcsr_log == nullptr || mxcsr == guest_mxcsr_last) return;
+  guest_mxcsr_last = mxcsr;
+  std::fprintf(guest_mxcsr_log, "%llx %x\n", static_cast<unsigned long long>(address), mxcsr);
+}
+
+void open_guest_mxcsr_log(const char* path) {
+  if (path == nullptr) return;
+  guest_mxcsr_log = std::fopen(path, "w");
+  guest_mxcsr_logging = guest_mxcsr_log != nullptr;
+  // The starting value, so the first line is a change rather than a baseline.
+  guest_mxcsr_last = 0xffffffffu;
+}
+
 void open_guest_memory_windows(const char* path) {
   if (path == nullptr) return;
   guest_memory_windows = std::fopen(path, "wb");
@@ -2544,6 +2562,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   // interval; the reference uses the same one, so the two streams line up.
   open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
   open_guest_memory_windows(std::getenv("RECOMP_MEMORY_WINDOWS"));
+  open_guest_mxcsr_log(std::getenv("RECOMP_MXCSR_LOG"));
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))
     guest_checkpoint_interval = std::strtoull(interval, nullptr, 0);
   if (const char* watch = std::getenv("RECOMP_WATCH"))

@@ -542,9 +542,42 @@ diagnosed gets weakened or ignored. It is recorded with its checkpoint so it can
 be lost, and it appears in `verify --json` as `control_registers_match` and
 `control_diagnosis`.
 
+## MXCSR changes logged on both sides: the FTZ bit only on one
+
+Every change to MXCSR is now logged on both sides — `RECOMP_MXCSR_LOG` and
+`RECOMP_REF_MXCSR_LOG` — so the two runs can be compared by change rather than at
+checkpoints 1000 instructions apart.
+
+```
+reference MXCSR changes: 7
+candidate MXCSR changes: 12
+```
+
+The seven the reference has are the seven the candidate has. The five the candidate
+has alone are:
+
+```
+140001167 1fa0       140001167 3fa0       140001167 5fa0       140001167 7fa0
+1400015ee 1fa0
+```
+
+Every one of them is a value the **reference also reaches**, with **bit 5 set**:
+`0x1f80` against `0x1fa0`, `0x3f80` against `0x3fa0`, and so on. Bit 5 of MXCSR is
+**FTZ**, flush to zero. So the two sides agree about every field of MXCSR except that
+one bit, and the candidate has it set where the reference does not.
+
+That is as far as this round got. The instruction that produces the differing value
+is `LDMXCSR` reading `0x167ffff80` at ip `0x14000148c`, and the memory it reads is on
+the stack — the same stack whose comparison already disagrees. Whether the candidate
+writes a wrong value there, or reads a right value and sets the bit afterwards, is
+not yet established, and the next step is to log the value at the `LDMXCSR` on both
+sides rather than the resulting MXCSR.
+
 ## Not established
 
-Which instruction between index 3000 and 4000 sets the FTZ bit on the candidate. The
+Whether the candidate sets FTZ that the guest did not ask for, or the reference drops
+FTZ that it did. The two sides agree on every other MXCSR bit, so the question is one
+bit wide. The
 window is now 1000 instructions and the instruction that reads MXCSR is known, so the
 next step is to log every write to MXCSR in that window on both sides and diff them., and whether the
 candidate or the reference is right about it.: whether they are the same precision limit at a

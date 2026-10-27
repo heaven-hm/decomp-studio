@@ -56,6 +56,8 @@ struct ReferenceState {
   std::uint64_t guest_instruction_count{};
   std::uint64_t current_instruction{};
   std::uint64_t last_counted_address{~0ull};
+  std::FILE* mxcsr_log{};
+  std::uint32_t mxcsr_last{0xffffffffu};
   std::FILE* store_log{};
   std::vector<GuestCheckpoint> checkpoints;
   // The memory windows themselves, when a byte-level comparison is asked for. A
@@ -247,6 +249,16 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
   // an address does not repeat it consecutively, so it is unaffected.
   if (address == state.last_counted_address) return;
   state.last_counted_address = address;
+  // Every change to MXCSR, so the two sides can be compared instruction by
+  // instruction rather than at checkpoints 1000 apart. The collapse above means a
+  // `rep` is seen once, which matches how the candidate traces it.
+  if (state.mxcsr_log != nullptr) {
+    const auto mxcsr = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_MXCSR));
+    if (mxcsr != state.mxcsr_last) {
+      state.mxcsr_last = mxcsr;
+      std::fprintf(state.mxcsr_log, "%llx %x\n", static_cast<unsigned long long>(address), mxcsr);
+    }
+  }
   // An import thunk is a host bridge, not a guest instruction, and the candidate
   // never executes one. Counting it here made the reported instruction count
   // describe a stream the candidate does not have -- it was inflated by exactly
@@ -445,6 +457,8 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   // reserved -- so a guest reading it with FNSTCW saw a different value from the
   // candidate's and from a real machine's.
   write_register(engine, UC_X86_REG_FPCW, 0x037f);
+  if (const char* mxcsr_log_path = std::getenv("RECOMP_REF_MXCSR_LOG"))
+    state.mxcsr_log = std::fopen(mxcsr_log_path, "w");
   if (const char* store_log_path = std::getenv("RECOMP_REF_STORE_LOG"))
     state.store_log = std::fopen(store_log_path, "w");
   uc_hook write_hook = 0;
@@ -460,6 +474,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.memory_windows = std::move(state.memory_windows);
   run.trace = std::move(trace);
   if (state.store_log != nullptr) std::fclose(state.store_log);
+  if (state.mxcsr_log != nullptr) std::fclose(state.mxcsr_log);
   uc_close(engine);
   guest_output_capture = nullptr;
   guest_exit_handler = nullptr;

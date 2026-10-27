@@ -1380,6 +1380,54 @@ inline void x87_load_environment(GuestContext* context, std::uint64_t address) {
   context->x87_status_word = static_cast<std::uint32_t>(load_guest_memory(context, address + 4, 4));
 }
 
+// FXSAVE/FXRSTOR: the 512-byte SSE and x87 state area.
+//
+// Two modelling limits, both inherited from the context rather than introduced
+// here. The x87 registers are held as doubles, so a value needing more than 53
+// mantissa bits does not survive the round trip through 80-bit extended; and the
+// abridged tag word is written as zero because register tags are not tracked.
+// Both are documented limits of the x87 model, not new ones.
+inline constexpr int kFxsaveAreaBytes = 512;
+
+inline void x87_save_state(GuestContext* context, std::uint64_t address) {
+  if (address + kFxsaveAreaBytes > guest_memory_size) {
+    report_guest_memory_fault(context, address, kFxsaveAreaBytes, 1);
+    return;
+  }
+  std::memset(guest_memory + address, 0, kFxsaveAreaBytes);
+  store_guest_memory(context, address + 0, context->x87_control_word, 2);
+  store_guest_memory(context, address + 2, x87_status_value(context), 2);
+  store_guest_memory(context, address + 4, 0, 2);              // abridged tag word
+  store_guest_memory(context, address + 24, context->mxcsr, 4);
+  store_guest_memory(context, address + 28, 0x0000ffbfu, 4);   // MXCSR_MASK
+  // The x87 data registers are stored in physical order; FSW.TOP says which one
+  // is ST(0), which is why x87_read (TOP-relative) is not used here.
+  for (int index = 0; index < 8; ++index)
+    x87_store_extended80(context, address + 32 + static_cast<std::uint64_t>(index) * 16,
+                         context->x87_registers[index]);
+  for (int index = 0; index < 16; ++index)
+    std::memcpy(guest_memory + address + 160 + static_cast<std::uint64_t>(index) * 16,
+                context->vector_registers[index], 16);
+}
+
+inline void x87_restore_state(GuestContext* context, std::uint64_t address) {
+  if (address + kFxsaveAreaBytes > guest_memory_size) {
+    report_guest_memory_fault(context, address, kFxsaveAreaBytes, 0);
+    return;
+  }
+  context->x87_control_word = static_cast<std::uint32_t>(load_guest_memory(context, address + 0, 2));
+  context->x87_status_word = static_cast<std::uint32_t>(load_guest_memory(context, address + 2, 2));
+  context->x87_top = (context->x87_status_word >> 11) & 7u;
+  context->mxcsr = static_cast<std::uint32_t>(load_guest_memory(context, address + 24, 4));
+  for (int index = 0; index < 8; ++index)
+    context->x87_registers[index] = x87_load_extended80(context, address + 32 + static_cast<std::uint64_t>(index) * 16);
+  for (int index = 0; index < 16; ++index) {
+    std::memcpy(context->vector_registers[index],
+                guest_memory + address + 160 + static_cast<std::uint64_t>(index) * 16, 16);
+    std::memset(context->vector_registers[index] + 16, 0, 16);  // FXSAVE covers 128 bits
+  }
+}
+
 inline void x87_load_control_word(GuestContext* context, std::uint64_t address) {
   context->x87_control_word = static_cast<std::uint32_t>(load_guest_memory(context, address, 2));
 }

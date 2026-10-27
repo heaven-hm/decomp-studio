@@ -151,6 +151,26 @@ All notable changes to Recomp Studio are documented here. This project follows
   `lgs`, which in a flat 32-bit model are ordinary 32-bit loads.
 - ole32 `CoInitialize` and `CoUninitialize`, ported from igi-recomp.
 
+- The memory forms of `bt`/`bts`/`btr`/`btc`. Only the register form was
+  implemented, so `bts [mem], reg` and its siblings were unsupported. The bit
+  offset is a bit-string index and can reach beyond the operand, so the address
+  advances by one element per operand width.
+- `xgetbv`, which reports the extended control register. This model implements
+  SSE and does not implement AVX, so XCR0 advertises the SSE state only and a
+  program that asks takes the SSE path — the honest answer rather than
+  advertising state the recompiler cannot maintain.
+- `fxsave`/`fxrstor`, the 512-byte SSE and x87 state area. Two limits are
+  inherited from the x87 model rather than introduced here and are documented in
+  the runtime: the registers are held as doubles so a value needing more than 53
+  mantissa bits does not survive the round trip through 80-bit extended, and the
+  abridged tag word is written as zero because register tags are not tracked.
+
+  Effect: `Tetris.exe` and `snake-windows-x86_64.exe` now lift completely
+  (4 and 2 unsupported instructions respectively, both to zero), so both
+  translate to a native project.
+
+### Fixed
+
 ### Fixed
 
 - `push <segment register>` emitted an empty operand expression, because segment

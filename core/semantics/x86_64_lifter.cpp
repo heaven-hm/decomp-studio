@@ -996,6 +996,39 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     return;
   }
+  if ((mnemonic == "bt" || mnemonic == "bts" || mnemonic == "btr" || mnemonic == "btc") &&
+      operands.size() == 2 && operands[0].kind == discovery::Operand::Kind::Memory) {
+    const auto width = operand_width(operands[0], 4);
+    const auto bits = std::to_string(width * 8);
+    const auto element_bytes = std::to_string(width);
+    const auto address = effective_address_expression(instruction, operands[0]);
+    const auto index = operand_read_expression(instruction, operands[1], width);
+    std::string body = "{ const std::uint64_t bit_index = " + index +
+                       "; const std::uint64_t element = mask_guest_address(" + address + " + (bit_index / " + bits +
+                       ") * " + element_bytes + "); const std::uint64_t bit = bit_index % " + bits +
+                       "; const std::uint64_t original = load_guest_memory(context, element, " + element_bytes +
+                       "); context->carry_flag = (original >> bit) & 1; ";
+    if (mnemonic != "bt") {
+      const std::string mask = "(1ull << bit)";
+      const auto updated = mnemonic == "bts" ? "(original | " + mask + ")"
+                          : mnemonic == "btr" ? "(original & ~" + mask + ")"
+                                              : "(original ^ " + mask + ")";
+      body += "store_guest_memory(context, element, " + updated + ", " + element_bytes + ");";
+    }
+    body += " }";
+    emit(body);
+    return;
+  }
+
+  // XGETBV reads the extended control register. This model implements SSE and
+  // does not implement AVX, so XCR0 reports the SSE state only and a program
+  // that asks takes the SSE path -- which is the honest answer rather than
+  // advertising state the recompiler cannot maintain.
+  if (mnemonic == "xgetbv") {
+    emit("context->registers[0] = 0x1ull; context->registers[2] = 0;");
+    return;
+  }
+
   if (mnemonic == "ret") {
     std::uint64_t adjustment = 8;
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate)
@@ -1376,6 +1409,14 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       for (int index = 0; index < pops; ++index) emit("(void)x87_pop(context);");
       return;
     }
+  }
+  if ((mnemonic == "fxsave" || mnemonic == "fxsave64") && operands.size() == 1) {
+    emit("x87_save_state(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  if ((mnemonic == "fxrstor" || mnemonic == "fxrstor64") && operands.size() == 1) {
+    emit("x87_restore_state(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
   }
   if (mnemonic == "fprem" || mnemonic == "fprem1") {
     emit(std::string("x87_partial_remainder(context, ") + (mnemonic == "fprem1" ? "1" : "0") + ");");

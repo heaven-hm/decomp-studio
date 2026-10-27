@@ -247,6 +247,35 @@ All notable changes to Recomp Studio are documented here. This project follows
   High Score: 0` -- correct values rather than the addresses of its own string
   literals.
 
+- **One shim implementation, shared by the runtime and the differential
+  reference.** The reference previously modelled four Win32 imports by hand while
+  the runtime implemented more than two hundred, so `verify` compared a
+  translation against a program that had barely run, and an import the reference
+  did not model was reported as a reference limitation rather than as a missing
+  shim. The runtime is now linked into the studio, the reference maps the
+  runtime's own guest address space into the emulator with `uc_mem_map_ptr`, and
+  it dispatches every import through the runtime's table. There is exactly one
+  implementation of each call, so the two sides cannot drift apart.
+- `initialize_guest_state`, the runtime's startup (heap, environment blocks, CRT
+  globals, C++ runtime) as one function that both the candidate and the reference
+  call. They now begin from the same state by construction; previously the
+  reference ran against an uninitialised heap and reported a divergence that said
+  nothing about the translation.
+- A guest output sink and an exit hook. The reference captures what the guest
+  wrote instead of echoing it to the studio's stdout, and a guest `ExitProcess`
+  ends the reference run instead of terminating the studio.
+
+  Effect: the heap fixture, and every fixture, now verifies through the shared
+  implementation. `verify` on `heap.exe` reports a pass where it previously
+  reported that the reference could not model the heap.
+
+### Fixed
+
+- Accurate input-format diagnostics. A macOS `.app`, an ELF binary or a ZIP was
+  rejected with "not a DOS MZ executable", which is true and useless: it does not
+  say what the file is or whether the tool could ever read it. The format is now
+  named, with the architecture for Mach-O.
+
 ### Fixed
 
 - **C++ member functions were called with the wrong arguments.** A member

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 
 // The import calling-convention table. import_argument consults it, so a shim
 // reads its arguments correctly whether it was reached as cdecl, stdcall or a
@@ -54,6 +55,46 @@ struct GuestContext {
   std::uint32_t x87_status_word;
   std::uint32_t mxcsr;
 };
+
+// Allocates the guest address space without running anything, so the differential
+// reference can map the same bytes the runtime uses.
+// The size of the guest address space. Public because the differential reference
+// maps exactly this region into the emulator.
+inline constexpr std::uint64_t kGuestAddressSpaceBytes = 0x200000000ull;
+
+bool map_guest_memory(std::uint64_t bytes);
+
+// Runs one Win32 import through the runtime's own shim table, on behalf of the
+// differential reference. Both sides therefore execute the same implementation
+// of every call rather than two that can drift apart, and an import the runtime
+// does not implement is reported as such instead of being modelled separately.
+// Returns false when the import is not implemented.
+bool invoke_shared_shim(GuestContext* context, const char* library_name, const char* symbol_name);
+
+// Brings the guest address space to the state a program starts in, with the image
+// already loaded. The candidate and the differential reference both call this, so
+// they begin from the same state rather than from two lists that happen to agree.
+void initialize_guest_state(std::uint64_t heap_base, std::uint64_t stack_top);
+
+// When set, everything the guest writes to a standard stream is appended here
+// instead of being sent to the host. The differential reference uses this to
+// capture what the program wrote, so that a shim written once can serve both
+// sides and the two outputs can still be compared.
+extern std::string* guest_output_capture;
+
+// Called instead of terminating the host when the guest asks to exit. A generated
+// executable leaves this null, because exiting the process is exactly right there.
+// The differential reference installs a handler: the guest calling ExitProcess
+// must end the reference run, not the studio that is running it.
+extern void (*guest_exit_handler)(int code);
+
+// The guest has asked to exit: hand it to the handler when one is installed, and
+// terminate the host otherwise.
+void guest_request_exit(int code);
+
+// Sends guest output to the capture buffer when one is installed, and to the host
+// descriptor otherwise.
+void write_guest_output(int descriptor, const char* data, std::size_t size);
 
 extern std::uint8_t* guest_memory;
 extern std::uint64_t guest_memory_size;

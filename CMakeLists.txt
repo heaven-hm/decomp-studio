@@ -27,6 +27,11 @@ set(RECOMP_SOURCES
   core/discovery/function_discovery.cpp
   core/pipeline.cpp
   core/semantics/x86_64_lifter.cpp
+  # The guest runtime is linked into the studio as well as into every generated
+  # project. The differential reference dispatches through the same shim table,
+  # so there is exactly one implementation of each Win32 call rather than two
+  # that can drift apart.
+  runtime/recomp_runtime.cpp
 )
 set(RECOMP_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/runtime ${CAPSTONE_INCLUDE_DIR})
 set(RECOMP_LIBRARIES ${CAPSTONE_LIBRARY})
@@ -47,6 +52,12 @@ if(RECOMP_ENABLE_UNICORN)
     message(WARNING "Unicorn not found; building without the verification backend (brew install unicorn).")
   endif()
 endif()
+
+# The guest runtime is compiled with warnings disabled in every generated project,
+# because it is copied into them verbatim and is not studio code. Compiling it with
+# the studio's -Werror would fail on source that ships perfectly well, so the same
+# flags are used in both places.
+set_source_files_properties(runtime/recomp_runtime.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
 add_executable(recomp-studio ${RECOMP_SOURCES})
 target_compile_features(recomp-studio PRIVATE cxx_std_20)

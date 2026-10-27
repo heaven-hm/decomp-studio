@@ -2,6 +2,7 @@
 
 #include "core/pipeline.hpp"
 
+#include "recomp_runtime.hpp"
 #include "win32_abi.hpp"
 
 #include <algorithm>
@@ -26,8 +27,6 @@ constexpr std::uint64_t kProcessEnvironmentBlockAddress32 = 0x000000007ffd1000ul
 constexpr std::uint64_t kImportThunkBase64 = 0x0000000100000000ull;
 constexpr std::uint64_t kImportThunkBase32 = 0x0000000060000000ull;
 constexpr std::uint64_t kStackSize = 0x00100000ull;
-constexpr std::uint64_t kHeapSize = 0x01000000ull;
-constexpr std::uint64_t kPageSize = 0x1000ull;
 constexpr std::uint64_t kInstructionBudget = 200000000ull;
 
 struct ReferenceState {
@@ -47,6 +46,9 @@ struct ReferenceState {
   // comparison "pass" against a program that never really ran.
   std::string failure_reason;
 };
+
+// The state the exit handler acts on. Only one reference runs at a time.
+ReferenceState* reference_state = nullptr;
 
 std::map<std::string, std::string> read_manifest(const std::filesystem::path& project_directory) {
   std::ifstream input(project_directory / "recomp-manifest.json");
@@ -95,13 +97,6 @@ std::uint64_t parse_hex(const std::map<std::string, std::string>& values, const 
   return std::stoull(iterator->second, nullptr, 0);
 }
 
-void map_region(uc_engine* engine, std::uint64_t address, std::uint64_t size) {
-  auto start = address & ~(kPageSize - 1);
-  auto end = (address + size + kPageSize - 1) & ~(kPageSize - 1);
-  if (end <= start) end = start + kPageSize;
-  if (uc_mem_map(engine, start, end - start, UC_PROT_ALL) != UC_ERR_OK)
-    throw std::runtime_error("unicorn: failed to map region");
-}
 
 std::uint64_t read_register(uc_engine* engine, int register_id) {
   std::uint64_t value = 0;
@@ -124,77 +119,71 @@ bool write_register_checked(uc_engine* engine, int register_id, std::uint64_t va
   return readback == value;
 }
 
+// The reference dispatches through the runtime's own shim table. There is one
+// implementation of each Win32 call, so a comparison cannot pass because two
+// separate implementations happen to agree, and an import the runtime does not
+// implement is reported as unimplemented rather than being quietly modelled here
+// with different behaviour.
+void sync_engine_to_context(uc_engine* engine, GuestContext& context, bool is_64_bit) {
+  static const int registers32[8] = {UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EBX,
+                                     UC_X86_REG_ESP, UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI};
+  static const int registers64[16] = {UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RBX,
+                                      UC_X86_REG_RSP, UC_X86_REG_RBP, UC_X86_REG_RSI, UC_X86_REG_RDI,
+                                      UC_X86_REG_R8,  UC_X86_REG_R9,  UC_X86_REG_R10, UC_X86_REG_R11,
+                                      UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15};
+  if (is_64_bit) {
+    for (int index = 0; index < 16; ++index) context.registers[index] = read_register(engine, registers64[index]);
+  } else {
+    for (int index = 0; index < 8; ++index)
+      context.registers[index] = read_register(engine, registers32[index]) & 0xffffffffull;
+  }
+  set_eflags(&context, read_register(engine, UC_X86_REG_EFLAGS));
+  context.fs_base = read_register(engine, UC_X86_REG_FS_BASE);
+  context.gs_base = read_register(engine, UC_X86_REG_GS_BASE);
+}
+
+void sync_context_to_engine(uc_engine* engine, const GuestContext& context, bool is_64_bit) {
+  static const int registers32[8] = {UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EBX,
+                                     UC_X86_REG_ESP, UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI};
+  static const int registers64[16] = {UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RBX,
+                                      UC_X86_REG_RSP, UC_X86_REG_RBP, UC_X86_REG_RSI, UC_X86_REG_RDI,
+                                      UC_X86_REG_R8,  UC_X86_REG_R9,  UC_X86_REG_R10, UC_X86_REG_R11,
+                                      UC_X86_REG_R12, UC_X86_REG_R13, UC_X86_REG_R14, UC_X86_REG_R15};
+  if (is_64_bit) {
+    for (int index = 0; index < 16; ++index) write_register(engine, registers64[index], context.registers[index]);
+  } else {
+    for (int index = 0; index < 8; ++index) write_register(engine, registers32[index], context.registers[index]);
+  }
+  write_register(engine, UC_X86_REG_EFLAGS, eflags_value(&context));
+}
+
 void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
   const auto index = static_cast<std::size_t>((stub_address - state.thunk_base) / 0x10);
+  const auto& library = index < state.library_names.size() ? state.library_names[index] : std::string{};
   const auto& symbol = index < state.symbol_names.size() ? state.symbol_names[index] : std::string{};
   auto* engine = state.engine;
   const bool is_64_bit = state.pointer_width == 8;
 
-  const auto argument = [&](int which) -> std::uint64_t {
-    if (is_64_bit) {
-      switch (which) {
-        case 0: return read_register(engine, UC_X86_REG_RCX);
-        case 1: return read_register(engine, UC_X86_REG_RDX);
-        case 2: return read_register(engine, UC_X86_REG_R8);
-        default: return read_register(engine, UC_X86_REG_R9);
-      }
-    }
-    const auto stack_pointer = read_register(engine, UC_X86_REG_ESP);
-    std::uint64_t value = 0;
-    uc_mem_read(engine, stack_pointer + 4 + static_cast<std::uint64_t>(which) * 4, &value, 4);
-    return value;
-  };
-  const auto set_result = [&](std::uint64_t value) {
-    write_register(engine, is_64_bit ? UC_X86_REG_RAX : UC_X86_REG_EAX, value);
-  };
-
-  const auto argument0 = argument(0);
-  const auto argument1 = argument(1);
-  const auto argument2 = argument(2);
-  const auto argument3 = argument(3);
-
-  if (symbol == "GetStdHandle") {
-    const auto which = static_cast<std::int32_t>(argument0);
-    set_result(which == -10 ? 10 : which == -12 ? 12 : 11);
-  } else if (symbol == "WriteFile") {
-    std::vector<char> buffer(static_cast<std::size_t>(argument2));
-    if (argument2 != 0) uc_mem_read(engine, argument1, buffer.data(), buffer.size());
-    state.output.append(buffer.data(), buffer.size());
-    if (argument3 != 0) {
-      const std::uint32_t written = static_cast<std::uint32_t>(argument2);
-      uc_mem_write(engine, argument3, &written, 4);
-    }
-    set_result(1);
-  } else if (symbol == "ReadFile") {
-    if (argument3 != 0) {
-      const std::uint32_t read_count = 0;
-      uc_mem_write(engine, argument3, &read_count, 4);
-    }
-    set_result(1);
-  } else if (symbol == "ExitProcess") {
+  GuestContext context{};
+  sync_engine_to_context(engine, context, is_64_bit);
+  if (!invoke_shared_shim(&context, library.c_str(), symbol.c_str())) {
+    state.failure_reason = "the runtime does not implement " + library + "!" + symbol;
     state.finished = true;
     uc_emu_stop(engine);
     return;
-  } else {
-    // Not modelled. Returning 0 here fabricated a result for every import the
-    // reference does not implement — 59 of the runtime's 63 shims — which let
-    // the comparison succeed for programs whose reference run was meaningless.
-    // Stop and report instead, so verification fails closed like everything
-    // else in this project.
-    const auto& library = index < state.library_names.size() ? state.library_names[index] : std::string{};
-    state.failure_reason = "reference does not model " + library + "!" + symbol;
-    uc_emu_stop(engine);
-    return;
   }
+  sync_context_to_engine(engine, context, is_64_bit);
 
+  // The thunk region holds no instructions: the emulator was about to execute at
+  // the thunk address, so the return to the caller has to be performed here, the
+  // same way the shim's own `ret`/`ret n` would have done it. The runtime's shim
+  // only sets the result and never touches the stack.
   const int stack_register = is_64_bit ? UC_X86_REG_RSP : UC_X86_REG_ESP;
   const auto stack_pointer = read_register(engine, stack_register);
   std::uint64_t return_address = 0;
   uc_mem_read(engine, stack_pointer, &return_address, static_cast<std::size_t>(state.pointer_width));
   std::uint64_t cleanup = state.pointer_width;
-  if (!is_64_bit)
-    cleanup = win32_import_stack_cleanup(
-        index < state.library_names.size() ? state.library_names[index].c_str() : nullptr, symbol.c_str());
+  if (!is_64_bit) cleanup = win32_import_stack_cleanup(library.c_str(), symbol.c_str());
   write_register(engine, stack_register, stack_pointer + cleanup);
   write_register(engine, is_64_bit ? UC_X86_REG_RIP : UC_X86_REG_EIP, return_address);
 }
@@ -239,19 +228,47 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
     run.failure_reason = "unicorn: failed to open the x86 engine";
     return run;
   }
-  map_region(engine, executable.image_base, loaded_image.image_bytes.size());
-  uc_mem_write(engine, executable.image_base, loaded_image.image_bytes.data(), loaded_image.image_bytes.size());
-  map_region(engine, stack_top - kStackSize, kStackSize);
-  map_region(engine, heap_base, kHeapSize);
+  // The reference addresses the same bytes the runtime does. Mapping the
+  // runtime's own guest region into the emulator means a shim written once is
+  // executed by both sides and its effects are seen by both, so the two cannot
+  // drift apart -- which is the whole point of comparing them.
+  if (!map_guest_memory(kGuestAddressSpaceBytes)) {
+    run.failure_reason = "could not allocate the guest address space for the reference";
+    uc_close(engine);
+    return run;
+  }
+  guest_pointer_width = pointer_width;
+  if (uc_mem_map_ptr(engine, 0, kGuestAddressSpaceBytes, UC_PROT_ALL, guest_memory) != UC_ERR_OK) {
+    run.failure_reason = "unicorn: could not map the shared guest address space";
+    uc_close(engine);
+    return run;
+  }
+  std::memcpy(guest_memory + executable.image_base, loaded_image.image_bytes.data(),
+              loaded_image.image_bytes.size());
+  // The same startup the candidate performs. Without it the reference would run
+  // against an uninitialised heap and report a divergence that says nothing about
+  // the translation.
+  initialize_guest_state(heap_base, stack_top);
   const std::uint64_t teb_address =
       is_64_bit ? kThreadEnvironmentBlockAddress64 : kThreadEnvironmentBlockAddress32;
   const std::uint64_t peb_address =
       is_64_bit ? kProcessEnvironmentBlockAddress64 : kProcessEnvironmentBlockAddress32;
-  map_region(engine, thunk_base, 0x10000);
-  map_region(engine, teb_address, 0x2000);
+
 
   ReferenceState state;
   state.engine = engine;
+  // The runtime's shims write through this sink, so the reference captures what
+  // the guest wrote rather than echoing it to the studio's own stdout.
+  reference_state = &state;
+  guest_output_capture = &state.output;
+  // The guest calling ExitProcess must end the reference run, not the studio.
+  guest_exit_handler = [](int code) {
+    (void)code;
+    if (reference_state != nullptr) {
+      reference_state->finished = true;
+      uc_emu_stop(reference_state->engine);
+    }
+  };
   state.trace_limit = trace_limit != 0 ? trace_limit : 1;
   state.thunk_base = thunk_base;
   state.pointer_width = pointer_width;
@@ -291,7 +308,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
     std::uint64_t effective_teb = teb_address;
     if (!write_register_checked(engine, UC_X86_REG_FS_BASE, teb_address)) {
       effective_teb = 0;
-      map_region(engine, 0, 0x2000);
+      // Page 0 is already covered by the shared guest mapping.
       state.note =
           "the reference cannot set FS_BASE in 32-bit mode (unicorn 2.1.4 ignores the write); "
           "the TEB was placed at address 0 so fs: accesses resolve";
@@ -321,6 +338,9 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.note = state.note;
   run.trace = std::move(trace);
   uc_close(engine);
+  guest_output_capture = nullptr;
+  guest_exit_handler = nullptr;
+  reference_state = nullptr;
   if (!state.failure_reason.empty()) {
     run.completed = false;
     run.failure_reason = state.failure_reason;

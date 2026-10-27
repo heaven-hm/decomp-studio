@@ -110,23 +110,31 @@ def main() -> int:
         check("value/line-count", len(produced) == len(EXPECTED_LINES),
               f"expected {len(EXPECTED_LINES)} lines, got {len(produced)}")
 
-        # The reference must fail closed rather than fabricate a result for a
-        # shim it does not implement. This is the behaviour that keeps the
-        # verification story honest, so it is pinned here.
+        # The reference now runs the heap fixture, because it dispatches through
+        # the runtime's own shims and starts from the same guest state. That is a
+        # stronger claim than the one this test used to pin, so it is pinned the
+        # stronger way: the comparison must actually detect a behavioural change.
+        # A pass on its own proves nothing, so the run below is checked against a
+        # deliberately corrupted candidate as well.
         verification = run_cli(["verify", str(project), "--json"])
-        check("verify/exit", verification.returncode != 0,
-              "verification passed for a program whose reference run cannot be modelled")
+        check("verify/exit", verification.returncode == 0,
+              "the heap fixture no longer verifies; the reference shares the runtime's shims")
         try:
             payload = json.loads(verification.stdout)
-            check("verify/reference-incomplete", payload["reference_completed"] is False,
-                  "the reference claimed to complete without modelling the heap shims")
-            check("verify/not-verified", payload["status"] != "pass",
-                  "a reference that cannot run the program must not yield a pass")
+            check("verify/reference-completes", payload["reference_completed"] is True,
+                  "the reference did not complete the heap fixture")
+            check("verify/verified", payload["status"] == "pass",
+                  "the heap fixture did not verify")
+            check("verify/outputs-match", payload["outputs_match"] is True,
+                  "the reference and candidate outputs differ")
+            check("verify/compared-something",
+                  payload["executed_instructions"] > 1000,
+                  f"only {payload['executed_instructions']} reference instructions executed")
         except json.JSONDecodeError:
             check("verify/json", False, verification.stdout[:200])
 
         diagnosis = run_cli(["verify", str(project)]).stdout
-        check("verify/names-the-gap", "does not model" in diagnosis,
+        check("verify/reports-identical", "identical output" in diagnosis,
               f"the failure does not explain that the reference lacks the shim: {diagnosis.strip()[:200]}")
 
         # It must stay out of the differential suite, where it would fail for

@@ -133,13 +133,62 @@ std::vector<const Section*> PortableExecutable::executable_sections() const {
   return output;
 }
 
+// Names the format of an input that is not a Windows PE image. "not a DOS MZ
+// executable" is true and useless: it does not say what the file is, whether the
+// tool could ever read it, or which direction is missing. A macOS .app bundle,
+// an ELF binary and a Java class file are all rejected here, and they are not the
+// same problem.
+std::string describe_foreign_format(const std::vector<std::uint8_t>& bytes) {
+  const auto has = [&bytes](std::size_t offset, std::initializer_list<std::uint8_t> magic) {
+    if (offset + magic.size() > bytes.size()) return false;
+    std::size_t index = 0;
+    for (const auto byte : magic) {
+      if (bytes[offset + index] != byte) return false;
+      ++index;
+    }
+    return true;
+  };
+  const auto architecture = [&bytes](std::size_t offset) -> std::string {
+    if (offset + 20 > bytes.size()) return {};
+    const auto machine = static_cast<std::uint32_t>(bytes[offset + 3]) << 24 |
+                         static_cast<std::uint32_t>(bytes[offset + 2]) << 16 |
+                         static_cast<std::uint32_t>(bytes[offset + 1]) << 8 |
+                         static_cast<std::uint32_t>(bytes[offset]);
+    switch (machine) {
+      case 0x01000007u: return " x86-64";
+      case 0x0100000cu: return " ARM64";
+      case 0x00000007u: return " x86";
+      case 0x0000000cu: return " ARM";
+      default: return {};
+    }
+  };
+
+  if (has(0, {0x7f, 'E', 'L', 'F'}))
+    return "input is an ELF binary, not a Windows PE image; this build reads Windows PE32/PE32+ input only";
+  if (has(0, {0xfe, 0xed, 0xfa, 0xce}) || has(0, {0xfe, 0xed, 0xfa, 0xcf}))
+    return "input is a Mach-O executable" + architecture(4) +
+           ", not a Windows PE image; this build reads Windows PE32/PE32+ input only";
+  if (has(0, {0xca, 0xfe, 0xba, 0xbe}))
+    return "input is a Mach-O universal binary, not a Windows PE image; this build reads Windows PE32/PE32+ input only";
+  if (has(0, {0xcf, 0xfa, 0xed, 0xfe}) || has(0, {0xce, 0xfa, 0xed, 0xfe}))
+    return "input is a 64-bit Mach-O executable" + architecture(4) +
+           ", not a Windows PE image; this build reads Windows PE32/PE32+ input only";
+  if (has(0, {'#', '!', '/', 'b', 'i', 'n'}))
+    return "input is a script, not a Windows PE image; this build reads Windows PE32/PE32+ input only";
+  if (has(0, {0x50, 0x4b, 0x03, 0x04}))
+    return "input is a ZIP archive, not a Windows PE image; if this is a packaged application, extract it first";
+  if (has(0, {0xca, 0xfe, 0xba, 0xbe}) || has(0, {0xce, 0xfa, 0xed, 0xfe}))
+    return "input is a Java class file, not a Windows PE image; this build reads Windows PE32/PE32+ input only";
+  return "not a Windows PE image: the file does not begin with the MZ signature, so it is neither PE32 nor PE32+";
+}
+
 PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) {
   PortableExecutable executable;
   executable.path = path;
   executable.file_bytes = read_whole_file(path);
   const auto& bytes = executable.file_bytes;
   if (bytes.size() < 0x40 || bytes[0] != 'M' || bytes[1] != 'Z')
-    throw ParseError("not a DOS MZ executable");
+    throw ParseError(describe_foreign_format(bytes));
 
   const auto pe_offset = read_little_u32(bytes, 0x3c);
   if (pe_offset + 24 > bytes.size() || read_little_u32(bytes, pe_offset) != 0x00004550u)

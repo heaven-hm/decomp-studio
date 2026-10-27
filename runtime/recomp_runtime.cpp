@@ -274,7 +274,8 @@ void win32_write_file(GuestContext* context) {
   const auto descriptor = standard_handle_to_descriptor(handle);
   std::uint64_t written = 0;
   while (written < length) {
-    const auto count = ::write(descriptor, guest_memory + buffer + written, static_cast<std::size_t>(length - written));
+    write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written), static_cast<std::size_t>(length - written));
+    const auto count = static_cast<ssize_t>(length - written);
     if (count <= 0) break;
     written += static_cast<std::uint64_t>(count);
   }
@@ -294,8 +295,7 @@ void win32_read_file(GuestContext* context) {
   set_import_result(context, 1);
 }
 void win32_exit_process(GuestContext* context) {
-  std::fflush(stdout);
-  std::exit(static_cast<int>(static_cast<std::uint32_t>(import_argument(context, 0))));
+  guest_request_exit(static_cast<int>(static_cast<std::uint32_t>(import_argument(context, 0))));
 }
 void win32_terminate_process(GuestContext* context) {
   (void)context;
@@ -464,6 +464,7 @@ void win32_heap_alloc(GuestContext* context) {
 
 // Releases a block and coalesces its free neighbours.
 void heap_release(GuestContext* context, std::uint64_t pointer) {
+  (void)context;  // the heap is host-side; the context is for symmetry with the shims
   if (heap_first_block == 0 || pointer < heap_first_block + kHeapHeaderSize || pointer >= heap_region_end)
     return;
   const auto block = pointer - kHeapHeaderSize;
@@ -823,6 +824,7 @@ void cxx_noop(GuestContext* context) {
 // stream is created by its constructor, which records the descriptor host-side
 // against the object address.
 std::uint64_t cxx_stream_descriptor(GuestContext* context, std::uint64_t object, bool for_output) {
+  (void)context;  // the stream table is host-side
   const auto found = guest_streams.find(object);
   if (found != guest_streams.end()) return static_cast<std::uint64_t>(found->second.descriptor);
   return for_output ? STDOUT_FILENO : STDIN_FILENO;
@@ -830,7 +832,7 @@ std::uint64_t cxx_stream_descriptor(GuestContext* context, std::uint64_t object,
 
 void cxx_ostream_write(GuestContext* context, std::uint64_t object, const std::string& text, bool flush) {
   const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, object, true));
-  if (!text.empty()) (void)::write(descriptor, text.data(), text.size());
+  write_guest_output(descriptor, text.data(), text.size());
   (void)flush;
 }
 
@@ -1081,7 +1083,7 @@ void msvcrt_fwrite(GuestContext* context) {
   const auto index = msvcrt_stream_index(stream);
   const int descriptor = index == 0 ? STDIN_FILENO : index == 1 ? STDOUT_FILENO : STDERR_FILENO;
   if (total != 0 && buffer + total <= guest_memory_size)
-    (void)::write(descriptor, guest_memory + buffer, static_cast<std::size_t>(total));
+    write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer), static_cast<std::size_t>(total));
   set_import_result(context, count);
 }
 
@@ -1209,7 +1211,7 @@ void msvcrt_abort(GuestContext* context) {
   terminate_with_message("abort() called by the guest (ip=0x%" PRIx64 ")", context->instruction_pointer);
 }
 void msvcrt_exit(GuestContext* context) {
-  std::exit(static_cast<int>(import_argument(context, 0)));
+  guest_request_exit(static_cast<int>(import_argument(context, 0)));
 }
 void msvcrt_isctype(GuestContext* context) {
   const auto character = import_argument(context, 1);
@@ -1473,7 +1475,7 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
                                context->instruction_pointer);
     }
   }
-  if (!output.empty()) (void)::write(descriptor, output.data(), output.size());
+  write_guest_output(descriptor, output.data(), output.size());
   return output.size();
 }
 
@@ -1528,7 +1530,7 @@ void msvcrt_memcmp(GuestContext* context) {
   set_import_result(context, 0);
 }
 void msvcrt_exit_process(GuestContext* context) {
-  std::exit(static_cast<int>(import_argument(context, 0)));
+  guest_request_exit(static_cast<int>(import_argument(context, 0)));
 }
 void msvcrt_return_zero(GuestContext* context) {
   for (int index = 0; index < 4; ++index) (void)import_argument(context, index);
@@ -2245,6 +2247,69 @@ void unbound_import_thunk(GuestContext* context) {
 
 }  // namespace
 
+// Allocates the guest address space without running anything. The differential
+// reference uses this so that it and the runtime address the same bytes: it maps
+// this buffer into the emulator rather than keeping a second copy, which is what
+// lets one shim implementation serve both.
+std::string* guest_output_capture = nullptr;
+
+void (*guest_exit_handler)(int code) = nullptr;
+
+void guest_request_exit(int code) {
+  if (guest_exit_handler != nullptr) {
+    guest_exit_handler(code);
+    return;
+  }
+  std::fflush(stdout);
+  std::exit(code);
+}
+
+void write_guest_output(int descriptor, const char* data, std::size_t size) {
+  if (size == 0) return;
+  if (guest_output_capture != nullptr) {
+    guest_output_capture->append(data, size);
+    return;
+  }
+  (void)::write(descriptor, data, size);
+}
+
+// Brings the guest address space to the state a program starts in. The image must
+// already be loaded; everything else the runtime sets up before the entry point
+// runs is done here, so that the candidate and the differential reference begin
+// from the same state by construction rather than from two lists that happen to
+// agree. A shim whose result depends on this state -- the heap allocator above
+// all, whose addresses appear in program output -- would otherwise differ between
+// the two sides for a reason that has nothing to do with the translation.
+void initialize_guest_state(std::uint64_t heap_base, std::uint64_t stack_top) {
+  next_heap_address = heap_base;
+  heap_initialize(heap_base, stack_top);
+  build_environment_blocks();
+  msvcrt_initialize();
+  cxx_initialize();
+}
+
+bool invoke_shared_shim(GuestContext* context, const char* library_name, const char* symbol_name) {
+  const auto* shim = find_win32_shim(library_name, symbol_name);
+  if (shim == nullptr) return false;
+  select_import_convention(library_name, symbol_name);
+  shim->function(context);
+  return true;
+}
+
+bool map_guest_memory(std::uint64_t bytes) {
+  if (guest_memory != nullptr) return true;
+  guest_memory_size = bytes;
+  guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
+                                                 PROT_READ | PROT_WRITE,
+                                                 MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0));
+  if (guest_memory == MAP_FAILED) {
+    guest_memory = nullptr;
+    guest_memory_size = 0;
+    return false;
+  }
+  return true;
+}
+
 int run_recompiled_image(const RecompiledImage* image) {
   if (const char* trace_path = std::getenv("RECOMP_TRACE")) {
     guest_trace_stream = std::fopen(trace_path, "wb");
@@ -2252,11 +2317,12 @@ int run_recompiled_image(const RecompiledImage* image) {
   }
   recompiled_image_base = image->image_base;
   guest_pointer_width = image->pointer_width;
-  guest_memory_size = kGuestMemoryBytes;
-  guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
-                                                 PROT_READ | PROT_WRITE,
-                                                 MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0));
-  if (guest_memory == MAP_FAILED) terminate_with_message("mmap failed: %s", std::strerror(errno));
+  // Reuses an existing mapping when there is one. The differential reference maps
+  // this same buffer into the emulator, so re-allocating here would leave the
+  // emulator pointing at memory the candidate no longer uses -- and the two would
+  // silently stop being comparable.
+  if (!map_guest_memory(kGuestMemoryBytes)) terminate_with_message("mmap failed: %s", std::strerror(errno));
+  std::memset(guest_memory, 0, 0x1000);  // the low page, which a 32-bit guest may use
   if (image->image_blob_size != 0)
     std::memcpy(guest_memory + image->image_base, image->image_blob, image->image_blob_size);
 
@@ -2310,11 +2376,7 @@ int run_recompiled_image(const RecompiledImage* image) {
     store_guest_memory(nullptr, teb_address + 0x30, peb_address, 4);
     store_guest_memory(nullptr, peb_address + 0x08, image->image_base, 4);
   }
-  next_heap_address = image->heap_base;
-  heap_initialize(image->heap_base, image->stack_top);
-  build_environment_blocks();
-  msvcrt_initialize();
-  cxx_initialize();
+  initialize_guest_state(image->heap_base, image->stack_top);
   if (const char* watch = std::getenv("RECOMP_WATCH"))
     watched_guest_address = std::strtoull(watch, nullptr, 0);
 

@@ -15,6 +15,11 @@
 
 namespace recomp {
 
+// Full memory windows are retained only periodically during verification. The
+// digest remains available at every guest checkpoint; sampling bounds diagnostic
+// memory and disk use for programs with long instruction streams.
+inline constexpr std::uint64_t kMemoryWindowSampleStride = 256;
+
 enum ConditionCode {
   ConditionCodeOverflow,
   ConditionCodeNotOverflow,

@@ -2495,7 +2495,9 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
   checkpoint.x87_control_word = context->x87_control_word;
   checkpoint.x87_status_word = x87_status_value(context);
   checkpoint.memory_digest = guest_memory_digest(context);
-  if (guest_memory_windows != nullptr) {
+  const auto checkpoint_number = index / guest_checkpoint_interval;
+  if (guest_memory_windows != nullptr &&
+      checkpoint_number % kMemoryWindowSampleStride == 0) {
     const std::uint64_t header[3] = {index, context->registers[4], recompiled_image_base};
     std::fwrite(header, sizeof(std::uint64_t), 3, guest_memory_windows);
     std::fwrite(guest_memory + context->registers[4], 1, 0x1000, guest_memory_windows);

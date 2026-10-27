@@ -307,7 +307,9 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
       for (int register_index = 0; register_index < 16; ++register_index)
         digest_context.registers[register_index] = checkpoint.registers[register_index];
       checkpoint.memory_digest = guest_memory_digest(&digest_context);
-      if (std::getenv("RECOMP_MEMORY_WINDOWS") != nullptr) {
+      const auto checkpoint_number = index / guest_checkpoint_interval;
+      if (std::getenv("RECOMP_MEMORY_WINDOWS") != nullptr &&
+          checkpoint_number % kMemoryWindowSampleStride == 0) {
         const auto sp = digest_context.registers[4];
         std::vector<std::uint8_t> window;
         window.reserve(0x11000);
@@ -537,9 +539,9 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.unsupported_mnemonics = read_unsupported_mnemonics(project_directory);
 
   guest_checkpoint_interval = kCheckpointInterval;
-  // A byte-level memory comparison is asked for through the environment, because
-  // it costs 68 KiB per checkpoint to carry and the digest answers the common
-  // question. Both sides must be asked, or there is nothing to compare against.
+  // Byte-level memory windows are sampled sparsely because each one is 68 KiB.
+  // The memory digest is still captured at every state checkpoint; the sampled
+  // windows provide byte-level context without growing with every instruction.
   const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
   ::setenv("RECOMP_MEMORY_WINDOWS", memory_windows_path.string().c_str(), 1);
   std::filesystem::remove(memory_windows_path);
@@ -597,7 +599,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // x87 precision limit, and everything else is a divergence.
   if (std::ifstream windows(memory_windows_path, std::ios::binary); windows) {
     constexpr std::size_t kWindowBytes = 0x11000;
-    // The candidate writes a 24-byte header per checkpoint -- the index, the stack
+    // The candidate writes a 24-byte header per sampled checkpoint -- the index, the stack
     // pointer and the image base -- so that a reader can locate the windows. Reading
     // the windows without skipping it compares two ranges 24 bytes apart, which
     // reports a divergence at the very first checkpoint.

@@ -2197,6 +2197,8 @@ void jump_guest_indirect(GuestContext* context, std::uint64_t target) {
   const auto thunk = lookup_import_thunk(target);
   if (thunk >= 0) {
     invoke_import_thunk(context, thunk, 0, false);
+    if (guest_pointer_width >= 8)
+      context->registers[4] = mask_guest_address(context->registers[4] + 8);
     return;
   }
   terminate_with_message("indirect jump to unmapped guest address 0x%" PRIx64 " (ip=0x%" PRIx64 "); %s", target,
@@ -2223,7 +2225,10 @@ void invoke_win32_import_tail(GuestContext* context, const char* library_name, c
   }
   select_import_convention(library_name, symbol_name);
   shim->function(context);
-  if (guest_pointer_width >= 8) return;
+  if (guest_pointer_width >= 8) {
+    context->registers[4] = mask_guest_address(context->registers[4] + 8);
+    return;
+  }
   // The return address is already at [esp], so the shim's `ret`/`ret n` is the
   // only stack adjustment left to emulate.
   context->registers[4] = mask_guest_address(

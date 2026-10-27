@@ -24,6 +24,18 @@ int main() {
       if (returned < static_cast<std::uint64_t>(before) || returned > static_cast<std::uint64_t>(after)) return 3;
       if (pointer && load_guest_memory(&context, pointer, 8) != returned) return 4;
     }
+    GuestContext tail{};
+    tail.registers[4] = 0x700000;
+    push_guest_stack(&tail, 0x12345678);
+    invoke_win32_import_tail(&tail, "msvcrt.dll", "rand");
+    if (tail.registers[4] != 0x700000) return 5;
+    void (*shim)(GuestContext*) = nullptr;
+    if (!lookup_win32_import("msvcrt.dll", "rand", &shim)) return 6;
+    const auto thunk = 0x500000ull + width * 16;
+    if (!register_import_thunk(thunk, shim, "msvcrt.dll", "rand")) return 7;
+    push_guest_stack(&tail, 0x12345678);
+    jump_guest_indirect(&tail, thunk);
+    if (tail.registers[4] != 0x700000) return 8;
   }
   return 0;
 }

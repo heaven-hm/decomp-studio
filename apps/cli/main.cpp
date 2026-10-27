@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.3.0";
+constexpr const char* kVersion = "0.3.1";
 
 #ifndef RECOMP_DEFAULT_RUNTIME_DIR
 #define RECOMP_DEFAULT_RUNTIME_DIR "runtime"

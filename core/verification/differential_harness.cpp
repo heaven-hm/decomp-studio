@@ -205,6 +205,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   (void)ignore_register_warning;
 
   const bool is_64_bit = executable.is_64_bit;
+  const std::uint32_t default_mxcsr = 0x1f80u;
   const int pointer_width = is_64_bit ? 8 : 4;
   const std::uint64_t thunk_base = is_64_bit ? kImportThunkBase64 : kImportThunkBase32;
 
@@ -271,6 +272,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
     uc_mem_write(engine, peb_address + 0x08, &image_base_field, 4);
   }
 
+  write_register(engine, UC_X86_REG_MXCSR, default_mxcsr);
   uc_hook hook = 0;
   uc_hook_add(engine, &hook, UC_HOOK_CODE, reinterpret_cast<void*>(code_hook), &state, 1, 0);
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);

@@ -97,6 +97,10 @@ converge on, and where this tool will grow next:
    dynamic dispatch (igi-recomp, N64Recomp).
 3. **x87 and full SSE/AVX** — the x87 stack is modelled in the context but not
    yet lifted; 80-bit arithmetic must stay exact rather than degrading to doubles.
+   MXCSR is modelled as guest state and `CVTDQ2PS` honours its rounding control,
+   but the precision flag is not asserted in differential tests because the
+   Unicorn reference does not model it for packed conversions, and other SSE
+   arithmetic still uses the default rounding mode.
 4. **High-level emulation and native replacement** — already supported by address;
    the next step is hash-guarded replacement (apply only when the guest bytes
    match a known SHA-256), as igi-recomp does for CRT routines.

@@ -31,6 +31,7 @@ FIXTURES = [
     ("memory", "memory addressing"),
     ("flagprobe", "per-operation flag semantics"),
     ("wide", "64-bit arithmetic and shifts"),
+    ("simd_convert", "packed integer-to-float conversion and MXCSR rounding modes"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -38,6 +39,7 @@ FIXTURES = [
 FIXTURES_PE32 = [
     ("pe32_arith", "32-bit arithmetic, flags and recursion"),
     ("pe32_abi", "32-bit calling conventions, indirect dispatch and address wrapping"),
+    ("pe32_simd_convert", "32-bit packed integer-to-float conversion and MXCSR"),
 ]
 
 EXPECTED_OUTPUT = {
@@ -50,6 +52,10 @@ EXPECTED_OUTPUT = {
     "memory": ["memory:start", "table_checksum=", "memory:done"],
     "flagprobe": ["add ", "imul ", "shln "],
     "wide": ["wide:start", "roll=", "wide:done"],
+    "simd_convert": ["simdconvert:start", "default_mxcsr=", "mode=0", "mode=3", "boundary",
+                     "extremes", "memory ", "roundtrip=", "restored=", "simdconvert:done"],
+    "pe32_simd_convert": ["simdconvert:start", "default_mxcsr=", "mode=0", "mode=3", "boundary",
+                          "extremes", "memory ", "roundtrip=", "restored=", "simdconvert:done"],
     "pe32_arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "pe32_abi": ["pe32:start", "cdecl=", "stdcall=", "fastcall=", "thiscall=", "dispatch=",
                  "wrapped=16", "checksum=", "pe32:done"],

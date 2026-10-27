@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.26)
-project(recomp_studio VERSION 0.3.0 LANGUAGES CXX)
+project(recomp_studio VERSION 0.3.1 LANGUAGES CXX)
 
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

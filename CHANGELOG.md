@@ -3,6 +3,26 @@
 All notable changes to Recomp Studio are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-27
+
+### Added
+
+- `CVTDQ2PS` (packed signed dword → packed single precision) for XMM and 128-bit
+  memory operands, honouring the MXCSR rounding-control mode (nearest-even,
+  toward −∞, toward +∞, toward zero) and setting the precision flag on inexact
+  conversion.
+- MXCSR is now modelled as guest state: `LDMXCSR` loads it from memory and
+  `STMXCSR` stores the real value instead of a constant `0x1f80`.
+- Differential fixtures `simd_convert` (PE32+) and `pe32_simd_convert` (PE32)
+  covering normal, negative, 2^24-boundary and int32-extreme inputs under all
+  four rounding modes, the memory operand form, and MXCSR round-tripping.
+
+### Fixed
+
+- The unspecified rounding of `CVTDQ2PS` was previously unimplemented, blocking
+  any program that uses it; the rounding bracket is computed from both adjacent
+  floats so directed rounding is correct at the precision boundary.
+
 ## [0.3.0] - 2026-10-27
 
 ### Added

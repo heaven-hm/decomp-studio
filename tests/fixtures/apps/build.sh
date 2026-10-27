@@ -18,18 +18,19 @@ CC32="${CC32:-i686-w64-mingw32-gcc}"
 mkdir -p "$out"
 
 # Fixtures that must build and pass for the 64-bit target.
-FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide"
+FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide simd_convert"
 
-# Fixtures that must build and pass for the 32-bit target (source name == output name).
-FIXTURES_X86="pe32_abi"
+# Fixtures that must build and pass for the 32-bit target, as source:output pairs
+# so they never collide with the 64-bit fixture built from the same source.
+FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert"
 
 # Negative fixtures: these must fail explicitly, so they are not in FIXTURES_X64.
 FIXTURES_NEGATIVE="unsupported_instruction unsupported_import"
 COMMON_FLAGS="-O2 -nostdlib -ffreestanding -fno-asynchronous-unwind-tables -fno-stack-protector -fno-tree-vectorize -fno-tree-slp-vectorize -Wl,--no-insert-timestamp"
 
 build_one() {
-  local compiler="$1" source="$2" output="$3"
-  "$compiler" $COMMON_FLAGS -Wl,-e,recomp_entry -Wl,--subsystem,console \
+  local compiler="$1" source="$2" output="$3" extra_flags="${4:-}"
+  "$compiler" $COMMON_FLAGS $extra_flags -Wl,-e,recomp_entry -Wl,--subsystem,console \
       -o "$out/$output.exe" "$here/$source.c" -lkernel32 -lgcc
   echo "built $out/$output.exe"
 }
@@ -46,8 +47,8 @@ done
 # the PE32 regression tests.
 if command -v "$CC32" >/dev/null 2>&1; then
   build_one "$CC32" "arith" "pe32_arith"
-  for name in $FIXTURES_X86; do
-    build_one "$CC32" "$name" "$name"
+  for entry in $FIXTURES_X86; do
+    build_one "$CC32" "${entry%%:*}" "${entry##*:}" "-msse2"
   done
 fi
 

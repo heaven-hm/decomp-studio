@@ -164,8 +164,9 @@ Integer and control flow: `mov`/`movabs`, `movzx`/`movsx`/`movsxd`, `lea`,
 SSE/AVX subset: `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`/`movss`/
 `movsd`/`movd`/`movq`, scalar float and double arithmetic, vector bitwise and
 integer add/sub/compare, `pshufd`, `punpck*`, `vpxor`/`vandps`/`vpor`,
-conversions, `ldmxcsr`/`stmxcsr`, prefetch hints. `lock` and `rep` prefixes are
-handled.
+`cvtdq2ps` (packed dword → float, honouring the MXCSR rounding mode),
+`cvtsi2sd`/`cvttsd2si`/`cvtsd2ss`/`cvtss2sd`, `ldmxcsr`/`stmxcsr` (MXCSR is
+modelled as guest state), prefetch hints. `lock` and `rep` prefixes are handled.
 
 Everything else is reported explicitly and names the offending instruction and
 address.

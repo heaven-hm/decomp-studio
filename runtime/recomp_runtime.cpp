@@ -686,6 +686,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   context.fs_base = teb_address;
   context.gs_base = teb_address;
   context.x87_control_word = 0x027f;
+  context.mxcsr = kMxcsrDefaultValue;
   push_guest_stack(&context, 0);
 
   auto entry = lookup_guest_function(image->image_base + image->entry_point_rva);

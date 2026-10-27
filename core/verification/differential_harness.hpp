@@ -35,6 +35,14 @@ struct DifferentialResult {
   std::size_t checkpoints_compared{};
   bool state_match{};
   std::string state_diagnosis;
+  // Guest memory is digested at every checkpoint and compared, and the result is
+  // reported here rather than folded into the verdict. The first comparison found
+  // a divergence in the stack window at checkpoint 1 that registers, flags and
+  // output all agree on, and it is not yet explained -- so it is reported, not
+  // gated. A gate that fails for a reason nobody has diagnosed either gets
+  // weakened or gets ignored, and both are worse than an honest diagnostic.
+  bool memory_match{true};
+  std::string memory_diagnosis;
   int candidate_exit_code{};
   std::string reference_output;
   std::string candidate_output;

@@ -245,6 +245,12 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
         checkpoint.registers[register_index] = is_64_bit ? value : (value & 0xffffffffull);
       }
       checkpoint.flags = read_register(engine, UC_X86_REG_EFLAGS);
+      // The reference addresses the same bytes the runtime does, so the digest is
+      // computed over the same memory the candidate digests.
+      GuestContext digest_context{};
+      for (int register_index = 0; register_index < 16; ++register_index)
+        digest_context.registers[register_index] = checkpoint.registers[register_index];
+      checkpoint.memory_digest = guest_memory_digest(&digest_context);
       state.checkpoints.push_back(checkpoint);
     }
   }
@@ -297,7 +303,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   // The same startup the candidate performs. Without it the reference would run
   // against an uninitialised heap and report a divergence that says nothing about
   // the translation.
-  initialize_guest_state(heap_base, stack_top);
+  initialize_guest_state(executable.image_base, heap_base, stack_top);
   const std::uint64_t teb_address =
       is_64_bit ? kThreadEnvironmentBlockAddress64 : kThreadEnvironmentBlockAddress32;
   const std::uint64_t peb_address =
@@ -472,7 +478,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
       while (std::getline(input_stream, line)) {
         std::istringstream fields(line);
         GuestCheckpoint checkpoint;
-        fields >> checkpoint.index >> checkpoint.address >> checkpoint.flags;
+        fields >> checkpoint.index >> checkpoint.address >> checkpoint.flags >> checkpoint.memory_digest;
         for (auto& value : checkpoint.registers)
           if (!(fields >> value)) break;
         if (!fields.fail()) candidate_checkpoints.push_back(checkpoint);
@@ -497,6 +503,13 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
             break;
           }
         }
+        if (expected.memory_digest != actual.memory_digest && result.memory_diagnosis.empty()) {
+          result.memory_match = false;
+          result.memory_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                    std::to_string(expected.index) + " (0x" + hex_text(expected.address) +
+                                    "): guest memory digest 0x" + hex_text(actual.memory_digest) +
+                                    ", reference 0x" + hex_text(expected.memory_digest);
+        }
         if (flags_differ || differing_register != 16) {
           result.state_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
                                    std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
@@ -505,7 +518,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
             result.state_diagnosis += std::string(names[differing_register]) + " is 0x" +
                                       hex_text(actual.registers[differing_register]) + ", reference 0x" +
                                       hex_text(expected.registers[differing_register]);
-          } else {
+          } else if (flags_differ) {
             result.state_diagnosis += "flags are 0x" + hex_text(actual.flags) + ", reference 0x" +
                                       hex_text(expected.flags);
           }

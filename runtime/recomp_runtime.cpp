@@ -2273,14 +2273,38 @@ void write_guest_checkpoints_if_requested() {
   std::FILE* file = std::fopen(path, "wb");
   if (file == nullptr) return;
   for (const auto& checkpoint : guest_checkpoints) {
-    std::fprintf(file, "%llu %llu %llu", static_cast<unsigned long long>(checkpoint.index),
+    std::fprintf(file, "%llu %llu %llu %llu", static_cast<unsigned long long>(checkpoint.index),
                  static_cast<unsigned long long>(checkpoint.address),
-                 static_cast<unsigned long long>(checkpoint.flags));
+                 static_cast<unsigned long long>(checkpoint.flags),
+                 static_cast<unsigned long long>(checkpoint.memory_digest));
     for (const auto value : checkpoint.registers)
       std::fprintf(file, " %llu", static_cast<unsigned long long>(value));
     std::fputc('\n', file);
   }
   std::fclose(file);
+}
+
+// FNV-1a over a byte range, which is enough to notice a difference and cheap
+// enough to run every thousand instructions.
+std::uint64_t digest_bytes(std::uint64_t seed, std::uint64_t address, std::uint64_t count) {
+  if (guest_memory == nullptr || address >= guest_memory_size) return seed;
+  if (address + count > guest_memory_size) count = guest_memory_size - address;
+  std::uint64_t hash = seed;
+  for (std::uint64_t offset = 0; offset < count; ++offset) {
+    hash ^= guest_memory[address + offset];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+std::uint64_t guest_memory_digest(const GuestContext* context) {
+  constexpr std::uint64_t kStackWindow = 0x1000;   // the live stack, below the pointer
+  constexpr std::uint64_t kDataWindow = 0x10000;   // the image's writable area
+  std::uint64_t hash = 14695981039346656037ull;
+  const auto stack_pointer = context->registers[4];
+  if (stack_pointer > kStackWindow) hash = digest_bytes(hash, stack_pointer - kStackWindow, kStackWindow);
+  if (recompiled_image_base != 0) hash = digest_bytes(hash, recompiled_image_base, kDataWindow);
+  return hash;
 }
 
 void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
@@ -2292,6 +2316,7 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
   for (int register_index = 0; register_index < 16; ++register_index)
     checkpoint.registers[register_index] = context->registers[register_index];
   checkpoint.flags = eflags_value(context);
+  checkpoint.memory_digest = guest_memory_digest(context);
   guest_checkpoints.push_back(checkpoint);
 }
 
@@ -2327,7 +2352,13 @@ std::ptrdiff_t write_guest_output(int descriptor, const char* data, std::size_t 
 // agree. A shim whose result depends on this state -- the heap allocator above
 // all, whose addresses appear in program output -- would otherwise differ between
 // the two sides for a reason that has nothing to do with the translation.
-void initialize_guest_state(std::uint64_t heap_base, std::uint64_t stack_top) {
+std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_width) {
+  const auto pointer = static_cast<std::uint64_t>(pointer_width);
+  return stack_top - pointer;
+}
+
+void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top) {
+  recompiled_image_base = image_base;
   next_heap_address = heap_base;
   heap_initialize(heap_base, stack_top);
   build_environment_blocks();
@@ -2423,7 +2454,7 @@ int run_recompiled_image(const RecompiledImage* image) {
     store_guest_memory(nullptr, teb_address + 0x30, peb_address, 4);
     store_guest_memory(nullptr, peb_address + 0x08, image->image_base, 4);
   }
-  initialize_guest_state(image->heap_base, image->stack_top);
+  initialize_guest_state(image->image_base, image->heap_base, image->stack_top);
   // The differential comparison asks for guest-state checkpoints at a fixed
   // interval; the reference uses the same one, so the two streams line up.
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))

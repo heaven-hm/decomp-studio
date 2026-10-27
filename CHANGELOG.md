@@ -336,7 +336,38 @@ All notable changes to Recomp Studio are documented here. This project follows
   `translate` all refuse through this one path, so the reason cannot disagree
   between commands.
 
+- Guest memory is digested at every checkpoint and compared. Registers, flags and
+  output could all agree while a store lands in memory the program reads later, or
+  never reads at all; a bounded digest of the stack window and the image's data
+  window catches that. It is reported rather than gated, and the reason is the
+  finding below.
+- The image base is set by the shared startup. It was set only on the candidate
+  path, so the reference digested a different range and reported a divergence that
+  was an artefact of the harness.
+
 ### Fixed
+
+- The candidate and the reference did not agree on where the guest's stack begins,
+  and nothing could see it. The candidate pushed a sentinel with `push_guest_stack`
+  and the reference wrote one at `stack_top - pointer_width`; the two happened to
+  land on the same address, but the definition lived in two places and was one
+  edit away from diverging. It is one function now, used by both.
+
+### Open, reported rather than hidden
+
+The memory digest found a divergence the other three comparisons cannot see: at
+checkpoint 1, after 1000 guest instructions at `0x1400017ab`, the stack window
+differs while the registers, the flags and the program's output all agree. It is
+not diagnosed. Rather than gate the verdict on a comparison that fails for an
+unexplained reason -- which ends with the gate weakened or ignored, and both are
+worse than a diagnostic -- `verify` reports it:
+
+    guest-memory digest agrees: no
+    checkpoint 1 after guest instruction index 1000 (0x1400017ab):
+    guest memory digest 0x6bac5d86a031e69f, reference 0x5db0c91916a61c92
+
+The next step is to bisect that window: digest the stack below the current pointer
+separately from the stack above it, and separately again from the image's data.
 
 - `0xcafebabe` is shared by Mach-O universal binaries and Java class files, and
   the Mach-O detector claimed the magic alone. A Java class file was reported as a

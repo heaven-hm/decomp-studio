@@ -75,7 +75,15 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
 // Brings the guest address space to the state a program starts in, with the image
 // already loaded. The candidate and the differential reference both call this, so
 // they begin from the same state rather than from two lists that happen to agree.
-void initialize_guest_state(std::uint64_t heap_base, std::uint64_t stack_top);
+void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top);
+
+// The stack pointer a guest starts with, and the address a sentinel return is
+// written to. A guest entry point is entered as if called, so a return address is
+// on the stack; placing a zero there means the entry point's `ret` terminates
+// instead of running off the stack. Defined once because the candidate and the
+// reference must agree on it: they did not, and the eight-byte difference shifted
+// every memory checkpoint by eight bytes.
+std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_width);
 
 // When set, everything the guest writes to a standard stream is appended here
 // instead of being sent to the host. The differential reference uses this to
@@ -138,7 +146,18 @@ struct GuestCheckpoint {
   std::uint64_t address{};    // the guest instruction about to execute
   std::uint64_t registers[16]{};
   std::uint64_t flags{};
+  // A digest of the guest's writable state: a window of the stack and a window of
+  // the image's data. Comparing registers and flags alone cannot see a wrong
+  // store that lands in memory the program reads later, or that it never reads at
+  // all. Hashing the whole 8 GiB address space per checkpoint is not possible, and
+  // hashing nothing is what comparing the output already does.
+  std::uint64_t memory_digest{};
 };
+
+// A bounded digest of the guest's writable state, computed the same way on both
+// sides so the two can be compared. Bounded because a checkpoint happens every
+// thousand instructions.
+std::uint64_t guest_memory_digest(const GuestContext* context);
 
 // Zero disables capture. The reference sets the same interval, so the two streams
 // line up index for index.

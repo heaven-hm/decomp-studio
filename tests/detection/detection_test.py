@@ -44,6 +44,43 @@ def inspect(path):
         return None, result
 
 
+def write_two_delay_import_pe(path):
+    """Write a minimal PE32 whose delay directory names two DLLs."""
+    body = bytearray(0x600)
+    body[0:2] = b"MZ"
+    struct.pack_into("<I", body, 0x3C, 0x80)
+    body[0x80:0x84] = b"PE\0\0"
+    coff = 0x84
+    struct.pack_into("<HHIIIHH", body, coff, 0x14C, 1, 0, 0, 0, 0xE0, 0x010F)
+    optional = coff + 20
+    struct.pack_into("<H", body, optional, 0x10B)
+    struct.pack_into("<I", body, optional + 16, 0x1000)
+    struct.pack_into("<I", body, optional + 28, 0x400000)
+    struct.pack_into("<I", body, optional + 32, 0x1000)
+    struct.pack_into("<I", body, optional + 36, 0x200)
+    struct.pack_into("<I", body, optional + 56, 0x2000)
+    struct.pack_into("<I", body, optional + 60, 0x200)
+    struct.pack_into("<H", body, optional + 68, 3)
+    struct.pack_into("<I", body, optional + 92, 16)
+    struct.pack_into("<II", body, optional + 96 + 13 * 8, 0x1000, 96)
+
+    section = optional + 0xE0
+    body[section:section + 8] = b".rdata\0\0"
+    struct.pack_into("<IIII", body, section + 8, 0x400, 0x1000, 0x400, 0x200)
+    struct.pack_into("<I", body, section + 36, 0x40000040)
+
+    # Two 32-byte IMAGE_DELAYLOAD_DESCRIPTOR records followed by a zero record.
+    struct.pack_into("<IIIIIIII", body, 0x200, 1, 0x1080, 0, 0x10C0, 0x10A0, 0, 0, 0)
+    struct.pack_into("<IIIIIIII", body, 0x220, 1, 0x1090, 0, 0x10D0, 0x10B0, 0, 0, 0)
+    body[0x280:0x28A] = b"first.dll\0"
+    body[0x290:0x29B] = b"second.dll\0"
+    struct.pack_into("<II", body, 0x2A0, 0x10E0, 0)
+    struct.pack_into("<II", body, 0x2B0, 0x10F0, 0)
+    body[0x2E0:0x2E8] = b"\0\0First\0"
+    body[0x2F0:0x2F9] = b"\0\0Second\0"
+    path.write_bytes(body)
+
+
 def main():
     with tempfile.TemporaryDirectory() as workspace:
         workspace = pathlib.Path(workspace)
@@ -57,6 +94,16 @@ def main():
                   "a native PE was reported as an unsupported format")
         else:
             check("pe/fixture-present", False, f"{pe} is missing; build the fixtures")
+
+        delay_pe = workspace / "two-delay-imports.exe"
+        write_two_delay_import_pe(delay_pe)
+        payload, result = inspect(delay_pe)
+        delay_names = {entry["name"] for entry in (payload or {}).get("imports", [])
+                       if entry.get("delay")}
+        check("pe/all-delay-descriptors-read",
+              result.returncode == 0 and (payload or {}).get("delay_imports") == 2 and
+              delay_names == {"first.dll!First", "second.dll!Second"},
+              result.stdout[:400] + result.stderr[:160])
 
         # A real .NET assembly, if the corpus is available.
         dotnet = pathlib.Path("/Users/haseeb-mir/Downloads/recomp-apps/TicTacToe/TicTacToe.exe")

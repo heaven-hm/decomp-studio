@@ -385,7 +385,6 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
         }
         executable.imports.push_back(imported);
       }
-      descriptor_rva += 32;
     }
   }
 

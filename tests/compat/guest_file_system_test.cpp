@@ -8,7 +8,10 @@
 #include "guest_file_system.hpp"
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <unistd.h>
 
 using recomp::GuestFileSandbox;
 using recomp::GuestPathStatus;
@@ -84,6 +87,21 @@ int main() {
   // answer must be a refusal with a reason, not a guess.
   GuestFileSandbox unarmed;
   expect_refused(unarmed, "data.bin", GuestPathStatus::OutsideSandbox);
+
+  // A lexical child can still escape through a host symlink. The policy must
+  // inspect the resolved host path before any file-facing shim opens it.
+  const auto workspace = std::filesystem::temp_directory_path() /
+                         ("recomp-sandbox-" + std::to_string(static_cast<long long>(::getpid())));
+  const auto root = workspace / "app";
+  const auto outside = workspace / "outside";
+  std::filesystem::create_directories(root);
+  std::filesystem::create_directories(outside);
+  std::ofstream(outside / "secret.txt") << "outside";
+  std::filesystem::create_directory_symlink(outside, root / "link");
+  GuestFileSandbox symlink_sandbox;
+  symlink_sandbox.set_root(root.string());
+  expect_refused(symlink_sandbox, "link/secret.txt", GuestPathStatus::OutsideSandbox);
+  std::filesystem::remove_all(workspace);
 
   // Round-tripping a host path back into guest form has to produce something the
   // guest can feed into resolve() again and get the same file.

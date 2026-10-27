@@ -18,7 +18,9 @@
 
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace recomp {
@@ -134,18 +136,22 @@ class GuestFileSandbox {
         return resolution;
       }
     }
-    if (components.empty()) {
-      resolution.status = GuestPathStatus::Allowed;
-      resolution.host_path = root_;
+    auto candidate = std::filesystem::path(root_);
+    for (const auto& component : components) candidate /= component;
+
+    // Lexical normalization catches explicit `..`; canonicalization also resolves
+    // existing symlinks. A link inside the app directory must not turn an allowed
+    // guest path into a host path outside the app directory.
+    std::error_code error;
+    const auto canonical = std::filesystem::weakly_canonical(candidate, error);
+    const auto canonical_root = std::filesystem::weakly_canonical(root_, error);
+    if (error || !is_within_root(canonical, canonical_root)) {
+      resolution.status = GuestPathStatus::OutsideSandbox;
+      resolution.reason = "'" + guest_path + "' resolves outside the app directory '" + root_ + "'";
       return resolution;
     }
-    std::string joined;
-    for (const auto& component : components) {
-      joined.push_back('/');
-      joined += component;
-    }
     resolution.status = GuestPathStatus::Allowed;
-    resolution.host_path = root_ + joined;
+    resolution.host_path = candidate.lexically_normal().string();
     return resolution;
   }
 
@@ -172,10 +178,17 @@ class GuestFileSandbox {
     while (path.size() > 1 && (path.back() == '/' || path.back() == '\\')) path.pop_back();
   }
 
-  // Collapses `.`, `..`, empty and repeated separators lexically. Deliberately
-  // not std::filesystem::weakly_canonical: that resolves symlinks against the
-  // host, which would let a link inside the app directory point outside it and
-  // still report as allowed.
+  static bool is_within_root(const std::filesystem::path& candidate,
+                             const std::filesystem::path& root) {
+    const auto relative = candidate.lexically_relative(root);
+    if (relative.empty()) return candidate == root;
+    if (relative.is_absolute()) return false;
+    const auto first = relative.begin();
+    return first == relative.end() || *first != "..";
+  }
+
+  // Collapses `.`, `..`, empty and repeated separators lexically before host
+  // symlink resolution applies the final containment check.
   static std::vector<std::string> normalize(const std::string& path) {
     std::vector<std::string> components;
     std::size_t index = 0;

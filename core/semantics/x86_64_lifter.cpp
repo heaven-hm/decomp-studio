@@ -411,6 +411,16 @@ std::string operand_write(ir::Function& output, const DecodedInstruction& instru
 std::string operand_write_statement(const DecodedInstruction& instruction, const Operand& operand,
                                     const std::string& value, int width_in_bytes) {
   if (operand.kind == Operand::Kind::Register) {
+    // A write to a segment register TRAPS rather than refusing to translate, which is
+    // what `push <segment>` already did. The guest has no descriptor table, so a
+    // selector written here could not be read back correctly and a program using it
+    // would be silently wrong -- but refusing the whole program for one instruction it
+    // may never execute is the worse of the two diagnostics, and it was an
+    // inconsistency: `push es` translated and `pop es` did not. The trap names the
+    // instruction and the address if it is ever reached.
+    if (is_segment_register(operand.register_name)) {
+      return "recomp_trap(context, \"write to segment register " + operand.register_name + "\");";
+    }
     auto statement = register_write_statement(operand.register_name, value);
     if (statement.empty())
       fail_operand(instruction, "write", "'" + operand.register_name + "' (no general register with that name)");
@@ -426,6 +436,15 @@ std::string operand_write(ir::Function& output, const DecodedInstruction& instru
   ir::Statement statement;
   statement.address_of_instruction = instruction.address;
   if (operand.kind == Operand::Kind::Register) {
+    // A segment register is not in the register file, so the lookup below would fail
+    // the whole program on a statement operand_write_statement has ALREADY decided to
+    // turn into a trap -- and the trap text was discarded. Keep it instead.
+    if (is_segment_register(operand.register_name)) {
+      statement.kind = ir::StatementKind::Verbatim;
+      statement.expression = text;
+      output.statements.push_back(statement);
+      return text;
+    }
     const auto iterator = register_descriptors().find(operand.register_name);
     if (iterator == register_descriptors().end())
       fail_operand(instruction, "write", "'" + operand.register_name + "'");

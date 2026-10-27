@@ -54,6 +54,38 @@ this change (unsupported instructions / distinct classes):
 | `plink.exe` | PE32+ | 2,037 / 82 | 1,927 / 81 |
 | `igi.exe` (final target) | PE32 | 540 / 33 | 536 / 31 |
 
+## [0.4.0] - 2026-10-27
+
+### Added
+
+- x87 floating point: the stack, control word and status word are modelled as
+  guest state, with `fld`/`fild`, `fst`/`fstp`/`fist`/`fistp`, the six arithmetic
+  operations and their pop forms, compares (`fcom`/`fcomp`/`fcompp`/`fucom*`/
+  `ftst`), `fsqrt`/`fabs`/`fchs`/`fsin`/`fcos`/`fpatan`/`fyl2x`/`frndint`, the
+  constant loads, `fxch`, `fldcw`/`fnstcw` and `fnstsw`.
+- `comiss`/`comisd`/`ucomiss`/`ucomisd` (scalar FP compare into EFLAGS).
+- `std`/`cld`, `loop`/`loope`/`loopne` and `jecxz`/`jrcxz`.
+- `x87` differential fixture covering the stack, arithmetic, compares,
+  transcendentals, control-word directed rounding, `rep movsb` under DF=1 and
+  counted loops.
+
+### Fixed
+
+- `faddp`/`fmulp`/... wrote the result to ST(0) and then popped, discarding it;
+  the pop forms now write ST(i) before popping.
+- SSE `movsd`/`cmpsd` with a memory destination were decoded as the *string*
+  instruction, corrupting RSI/RDI and writing 4 bytes instead of 8.
+
+### Evidence
+
+- The retail `igi.exe` (1,354,448 bytes, PE32) now translates with zero
+  unsupported instructions across all 971 discovered functions (51,518
+  instructions, 12.7% of the 406,645 decodable), and the generated project
+  builds to a native arm64 binary. It does not run yet: 63/128 imports are
+  implemented and startup stops at `kernel32!GetVersionExA`; user32 (30),
+  avifil32 (10), winmm (9), gdi32 (3), ole32 (3), dinput (2), ddraw (2),
+  dsound (1) and msvfw32 (4) have no shims.
+
 ## [0.3.0] - 2026-10-27
 
 ### Added

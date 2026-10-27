@@ -38,10 +38,10 @@ FULLY_COVERED = [
     ("pe32_abi", "PE32 calling conventions and address wrapping"),
 ]
 
-# Fixture that contains x87, which the lifter does not implement: the census must
-# name it and translation must refuse the image.
+# Fixture that contains an instruction class the lifter does not implement
+# (RDMSR): the census must name it and translation must refuse the image.
 UNSUPPORTED_FIXTURE = "unsupported_instruction"
-EXPECTED_UNSUPPORTED_MNEMONICS = {"fld1", "fstp"}
+EXPECTED_UNSUPPORTED_MNEMONICS = {"rdmsr"}
 
 PASSES = []
 FAILURES = []
@@ -153,7 +153,7 @@ def check_unsupported(executable: Path, root: Path) -> None:
     report, text = outcome
 
     check(f"{name}/has-unsupported", report["unsupported_instructions"] > 0,
-          "the census reported no unsupported instructions for an x87 fixture")
+          "the census reported no unsupported instructions for the unsupported fixture")
     check(f"{name}/below-full", report["coverage_percent"] < 100.0,
           f"expected coverage below 100%, got {report['coverage_percent']}")
     check(f"{name}/classes-nonempty", report["unsupported_class_count"] > 0,
@@ -177,7 +177,7 @@ def check_unsupported(executable: Path, root: Path) -> None:
 
     reported = {entry["mnemonic"] for entry in report["unsupported"]}
     missing = EXPECTED_UNSUPPORTED_MNEMONICS - reported
-    check(f"{name}/names-x87", not missing,
+    check(f"{name}/names-unsupported", not missing,
           f"census did not name {sorted(missing)}; it named {sorted(reported)}")
 
     for entry in report["unsupported"]:

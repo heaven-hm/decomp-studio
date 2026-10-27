@@ -109,6 +109,14 @@ const std::map<std::string, std::string>& vector_bitwise_helpers() {
   return helpers;
 }
 
+int x87_operand_index(const std::string& name) {
+  if (name == "st") return 0;
+  if (name.size() > 4 && name.compare(0, 3, "st(") == 0) {
+    try { return std::stoi(name.substr(3)); } catch (...) { return -1; }
+  }
+  return -1;
+}
+
 int vector_register_index(const std::string& name) {
   if (name.size() > 3 && name.compare(0, 3, "xmm") == 0) {
     try { return std::stoi(name.substr(3)); } catch (...) { return -1; }
@@ -310,8 +318,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
   };
 
-  if (string_operation_sizes().count(mnemonic) != 0 &&
-      !((mnemonic == "movsd" || mnemonic == "cmpsd") && !operands.empty() && is_vector_register(operands[0]))) {
+  // `movsd`/`cmpsd` are both SSE scalar-double instructions and string
+  // operations. The string form has no operands; if any operand is an XMM
+  // register it is the SSE form, including the store-to-memory shape.
+  bool vector_scalar_form = false;
+  if (mnemonic == "movsd" || mnemonic == "cmpsd") {
+    for (const auto& operand : operands) {
+      if (is_vector_register(operand)) { vector_scalar_form = true; break; }
+    }
+  }
+  if (string_operation_sizes().count(mnemonic) != 0 && !vector_scalar_form) {
     const auto byte_count = string_operation_sizes().at(mnemonic);
     const auto helper = mnemonic.substr(0, 4) == "movs" ? "string_move"
                         : mnemonic.substr(0, 4) == "stos" ? "string_store"
@@ -817,6 +833,235 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            operand_write_statement(instruction, operands[0], source, width) +
            " } else { context->registers[0] = original & " + mask + "; } }");
     }
+    return;
+  }
+
+  const auto is_x87_register = [](const discovery::Operand& operand) {
+    return operand.kind == discovery::Operand::Kind::Register &&
+           x87_operand_index(operand.register_name) >= 0;
+  };
+
+  // x87 ---------------------------------------------------------------
+  if (mnemonic == "wait" || mnemonic == "fwait") return;
+
+  if (mnemonic == "fld") {
+    if (operands.size() == 1 && is_x87_register(operands[0])) {
+      emit("x87_push(context, x87_read(context, " + std::to_string(x87_operand_index(operands[0].register_name)) + "));");
+    } else if (operands.size() == 1 && operands[0].kind == discovery::Operand::Kind::Memory) {
+      emit("x87_load_real(context, " + effective_address_expression(instruction, operands[0]) + ", " +
+           std::to_string(operand_width(operands[0], 8)) + ");");
+    } else {
+      record_unsupported(mnemonic, instruction);
+    }
+    return;
+  }
+  if (mnemonic == "fild" && operands.size() == 1) {
+    emit("x87_load_integer(context, " + effective_address_expression(instruction, operands[0]) + ", " +
+         std::to_string(operand_width(operands[0], 4)) + ");");
+    return;
+  }
+  if ((mnemonic == "fst" || mnemonic == "fstp") && operands.size() == 1) {
+    const int pop = mnemonic == "fstp" ? 1 : 0;
+    if (is_x87_register(operands[0])) {
+      emit("x87_write(context, " + std::to_string(x87_operand_index(operands[0].register_name)) +
+           ", x87_read(context, 0));");
+      if (pop) emit("(void)x87_pop(context);");
+    } else {
+      emit("x87_store_real(context, " + effective_address_expression(instruction, operands[0]) + ", " +
+           std::to_string(operand_width(operands[0], 8)) + ", " + std::to_string(pop) + ");");
+    }
+    return;
+  }
+  {
+    static const std::map<std::string, int> arithmetic_ops = {
+        {"fadd", 0}, {"fmul", 1}, {"fsub", 2}, {"fsubr", 3}, {"fdiv", 4}, {"fdivr", 5},
+        {"faddp", 0}, {"fmulp", 1}, {"fsubp", 2}, {"fsubrp", 3}, {"fdivp", 4}, {"fdivrp", 5}};
+    const auto entry = arithmetic_ops.find(mnemonic);
+    if (entry != arithmetic_ops.end()) {
+      const int operation = entry->second;
+      const int pop = mnemonic.back() == 'p' ? 1 : 0;
+      if (operands.size() == 1 && operands[0].kind == discovery::Operand::Kind::Memory) {
+        const auto width = operand_width(operands[0], 8);
+        const auto address = effective_address_expression(instruction, operands[0]);
+        if (width == 4) {
+          emit("{ const std::uint32_t bits = static_cast<std::uint32_t>(load_guest_memory(context, " + address +
+               ", 4)); float operand = 0; std::memcpy(&operand, &bits, 4); x87_arithmetic(context, " +
+               std::to_string(operation) + ", static_cast<double>(operand)); }");
+        } else {
+          emit("{ const std::uint64_t bits = load_guest_memory(context, " + address +
+               ", 8); double operand = 0; std::memcpy(&operand, &bits, 8); x87_arithmetic(context, " +
+               std::to_string(operation) + ", operand); }");
+        }
+      } else {
+        // Resolve the destination and source registers. The pop forms
+        // (`faddp st(i), st(0)`, and the implicit `faddp` = st(1) += st(0))
+        // write the result to ST(i) and only then pop, so writing ST(0) would
+        // discard the result.
+        int destination = 0;
+        int source = 1;
+        if (operands.size() == 2 && is_x87_register(operands[0]) && is_x87_register(operands[1])) {
+          destination = x87_operand_index(operands[0].register_name);
+          source = x87_operand_index(operands[1].register_name);
+        } else if (operands.size() == 1 && is_x87_register(operands[0])) {
+          const auto index = x87_operand_index(operands[0].register_name);
+          if (pop) { destination = index; source = 0; }
+          else { destination = 0; source = index; }
+        } else if (pop) {
+          destination = 1;
+          source = 0;
+        }
+        const char* expression = operation == 0 ? "left + right"
+                                 : operation == 1 ? "left * right"
+                                 : operation == 2 ? "left - right"
+                                 : operation == 3 ? "right - left"
+                                 : operation == 4 ? "left / right"
+                                                  : "right / left";
+        emit("{ const double left = x87_read(context, " + std::to_string(destination) +
+             "); const double right = x87_read(context, " + std::to_string(source) +
+             "); x87_write(context, " + std::to_string(destination) + ", " + expression + "); }");
+      }
+      if (pop) emit("(void)x87_pop(context);");
+      return;
+    }
+  }
+  if ((mnemonic == "comiss" || mnemonic == "comisd" || mnemonic == "ucomiss" || mnemonic == "ucomisd") &&
+      operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = vector_index(operands[0]);
+    const bool is_double = mnemonic == "comisd" || mnemonic == "ucomisd";
+    const std::string left = is_double
+        ? "vector_get_double(context, " + std::to_string(destination) + ")"
+        : "static_cast<double>(vector_get_float(context, " + std::to_string(destination) + "))";
+    if (is_vector_register(operands[1])) {
+      const auto source = vector_index(operands[1]);
+      const std::string right = is_double
+          ? "vector_get_double(context, " + std::to_string(source) + ")"
+          : "static_cast<double>(vector_get_float(context, " + std::to_string(source) + "))";
+      emit("compare_scalar_floats(context, " + left + ", " + right + ");");
+    } else if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      const auto address = effective_address_expression(instruction, operands[1]);
+      const std::string right = is_double ? "load_guest_double(context, " + address + ")"
+                                          : "static_cast<double>(load_guest_float(context, " + address + "))";
+      emit("compare_scalar_floats(context, " + left + ", " + right + ");");
+    } else {
+      record_unsupported(mnemonic, instruction);
+    }
+    return;
+  }
+
+  if (mnemonic == "fist" || mnemonic == "fistp") {
+    const int pop = mnemonic == "fistp" ? 1 : 0;
+    if (operands.size() == 1 && operands[0].kind == discovery::Operand::Kind::Memory) {
+      emit("x87_store_integer(context, " + effective_address_expression(instruction, operands[0]) + ", " +
+           std::to_string(operand_width(operands[0], 4)) + ", " + std::to_string(pop) + ");");
+    } else if (pop) {
+      emit("(void)x87_pop(context);");
+    }
+    return;
+  }
+  {
+    static const std::map<std::string, std::pair<int, int>> compare_ops = {
+        {"fcom", {0, 0}}, {"fcomp", {0, 1}}, {"fcompp", {0, 2}},
+        {"fucom", {0, 0}}, {"fucomp", {0, 1}}, {"fucompp", {0, 2}},
+        {"ftst", {1, 0}}};
+    const auto entry = compare_ops.find(mnemonic);
+    if (entry != compare_ops.end()) {
+      const int pops = entry->second.second;
+      if (entry->second.first == 1) {
+        emit("x87_compare(context, 0.0);");  // ftst compares ST(0) with zero
+      } else if (operands.size() == 1 && operands[0].kind == discovery::Operand::Kind::Memory) {
+        const auto width = operand_width(operands[0], 8);
+        const auto address = effective_address_expression(instruction, operands[0]);
+        if (width == 4) {
+          emit("{ const std::uint32_t bits = static_cast<std::uint32_t>(load_guest_memory(context, " + address +
+               ", 4)); float operand = 0; std::memcpy(&operand, &bits, 4); x87_compare(context, static_cast<double>(operand)); }");
+        } else {
+          emit("{ const std::uint64_t bits = load_guest_memory(context, " + address +
+               ", 8); double operand = 0; std::memcpy(&operand, &bits, 8); x87_compare(context, operand); }");
+        }
+      } else if (operands.size() == 1 && is_x87_register(operands[0])) {
+        emit("x87_compare(context, x87_read(context, " + std::to_string(x87_operand_index(operands[0].register_name)) + "));");
+      } else {
+        emit("x87_compare(context, x87_read(context, 1));");
+      }
+      for (int index = 0; index < pops; ++index) emit("(void)x87_pop(context);");
+      return;
+    }
+  }
+  if (mnemonic == "fsqrt") { emit("x87_write(context, 0, std::sqrt(x87_read(context, 0)));"); return; }
+  if (mnemonic == "fsin") { emit("x87_write(context, 0, std::sin(x87_read(context, 0)));"); return; }
+  if (mnemonic == "fcos") { emit("x87_write(context, 0, std::cos(x87_read(context, 0)));"); return; }
+  if (mnemonic == "frndint") {
+    emit("x87_write(context, 0, static_cast<double>(x87_round_to_integer(context, x87_read(context, 0))));");
+    return;
+  }
+  if (mnemonic == "fldln2") { emit("x87_push(context, 0.69314718055994530942);"); return; }
+  if (mnemonic == "fldl2e") { emit("x87_push(context, 1.44269504088896340736);"); return; }
+  if (mnemonic == "fldl2t") { emit("x87_push(context, 3.32192809488736234787);"); return; }
+  if (mnemonic == "fldlg2") { emit("x87_push(context, 0.30102999566398119521);"); return; }
+
+  if (mnemonic == "fxch") {
+    // The operand may be implicit (ST(1)), one register, or two registers.
+    int other = 1;
+    if (operands.size() == 1 && is_x87_register(operands[0]))
+      other = x87_operand_index(operands[0].register_name);
+    else if (operands.size() == 2 && is_x87_register(operands[1]))
+      other = x87_operand_index(operands[1].register_name);
+    emit("{ const double temporary = x87_read(context, " + std::to_string(other) +
+         "); x87_write(context, " + std::to_string(other) + ", x87_read(context, 0)); x87_write(context, 0, temporary); }");
+    return;
+  }
+  if (mnemonic == "fyl2x") {
+    // ST(1) = ST(1) * log2(ST(0)); then pop.
+    emit("x87_write(context, 1, x87_read(context, 1) * std::log2(x87_read(context, 0)));");
+    emit("(void)x87_pop(context);");
+    return;
+  }
+  if (mnemonic == "fpatan") {
+    // ST(1) = atan2(ST(1), ST(0)); then pop.
+    emit("x87_write(context, 1, std::atan2(x87_read(context, 1), x87_read(context, 0)));");
+    emit("(void)x87_pop(context);");
+    return;
+  }
+  if (mnemonic == "fabs") { emit("x87_write(context, 0, std::fabs(x87_read(context, 0)));"); return; }
+  if (mnemonic == "fchs") { emit("x87_write(context, 0, -x87_read(context, 0));"); return; }
+  if (mnemonic == "fld1") { emit("x87_push(context, 1.0);"); return; }
+  if (mnemonic == "fldz") { emit("x87_push(context, 0.0);"); return; }
+  if (mnemonic == "fldpi") { emit("x87_push(context, 3.14159265358979323846);"); return; }
+  if (mnemonic == "fldcw" && operands.size() == 1) {
+    emit("x87_load_control_word(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  if (mnemonic == "fnstcw" && operands.size() == 1) {
+    emit("x87_store_control_word(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    return;
+  }
+  if ((mnemonic == "fnstsw" || mnemonic == "fstsw") && operands.size() == 1) {
+    if (operands[0].kind == discovery::Operand::Kind::Register) {
+      emit("x87_store_status_word_ax(context);");
+    } else {
+      emit("x87_store_status_word(context, " + effective_address_expression(instruction, operands[0]) + ");");
+    }
+    return;
+  }
+  if (mnemonic == "fclex" || mnemonic == "fnclex" || mnemonic == "fninit") {
+    emit("context->x87_status_word = 0;");
+    return;
+  }
+
+  // Counted loops. CLD/STD are handled earlier, next to the other
+  // direction-flag instruction, so this block only owns the counted jumps.
+  if (mnemonic == "jecxz" || mnemonic == "jrcxz") {
+    const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
+    emit("if (context->registers[1] == 0) goto label_" + std::to_string(target) + ";");
+    return;
+  }
+  if (mnemonic == "loop" || mnemonic == "loope" || mnemonic == "loopne") {
+    const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
+    std::string condition;
+    if (mnemonic == "loope") condition = " && context->zero_flag != 0";
+    else if (mnemonic == "loopne") condition = " && context->zero_flag == 0";
+    emit("context->registers[1] = mask_guest_address(context->registers[1] - 1); if (context->registers[1] != 0" +
+         condition + ") goto label_" + std::to_string(target) + ";");
     return;
   }
 

@@ -73,6 +73,13 @@ class PortableExecutable {
   std::string packing_reason;
   bool is_packed() const { return !packing_reason.empty(); }
 
+  // A managed image (.NET) keeps its code as IL bytecode in the CLR metadata,
+  // not as native machine code. The CLR runtime header is data directory 14, so
+  // a non-zero RVA there is what distinguishes it.
+  std::uint32_t clr_runtime_header_rva{};
+  std::string managed_reason;
+  bool is_managed() const { return !managed_reason.empty(); }
+
   std::string format_name() const { return is_64_bit ? "PE32+" : "PE32"; }
   std::string architecture_name() const { return is_64_bit ? "x86_64" : "x86"; }
 

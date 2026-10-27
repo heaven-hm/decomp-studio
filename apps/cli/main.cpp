@@ -105,6 +105,13 @@ int command_inspect(const std::filesystem::path& input, bool json) {
               << "sha256:      " << digest << "\n"
               << "sections:    " << executable.sections.size() << "\n"
               << "imports:     " << executable.imports.size() << "\n";
+    // A managed image looks like an ordinary PE until the CLR directory is read,
+    // and saying so here is what stops a reader concluding it is recompilable.
+    if (executable.is_managed())
+      std::cout << "managed:     yes — " << executable.managed_reason
+                << "; the code is IL bytecode, so it cannot be recompiled\n";
+    if (executable.is_packed())
+      std::cout << "packed:      yes — " << executable.packing_reason << "\n";
     for (const auto& imported : executable.imports)
       std::cout << "  " << imported.library_name << "!" << imported.symbol_name << "\n";
   }
@@ -113,6 +120,12 @@ int command_inspect(const std::filesystem::path& input, bool json) {
 
 int command_analyze(const std::filesystem::path& input, bool json) {
   const auto executable = recomp::binary::PortableExecutable::parse(input);
+  // A function count for a managed image counts the CLR launcher stub, not the
+  // program, so it is refused for the same reason coverage is.
+  if (executable.is_managed())
+    throw std::runtime_error("input is a " + executable.managed_reason +
+                             "; the native code is only a CLR launcher, so a function count would "
+                             "describe that stub rather than the program. Managed images are not supported.");
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   std::size_t instruction_count = 0;
@@ -140,6 +153,10 @@ int command_coverage(const std::filesystem::path& input, bool json) {
     throw std::runtime_error("input appears to be packed (" + executable.packing_reason +
                              "); instruction coverage would describe padding, not the program. "
                              "Unpack it first.");
+  if (executable.is_managed())
+    throw std::runtime_error("input is a " + executable.managed_reason +
+                             "; the native code is only a CLR launcher, so any coverage figure would "
+                             "describe that stub rather than the program. Managed images are not supported.");
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   recomp::semantics::X86_64Lifter lifter(discovery);

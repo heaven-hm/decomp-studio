@@ -204,6 +204,21 @@ All notable changes to Recomp Studio are documented here. This project follows
   Effect: `igi.exe` lifts completely at 3,370 functions and `igi1ed.exe` at
   14,774, both with no unsupported instructions.
 
+- Managed (.NET) image detection. Data directory 14 is the CLR runtime header,
+  and a non-zero RVA there means the executable code is IL bytecode rather than
+  machine code. `analyze`, `coverage` and `translate` refuse such an input with a
+  diagnostic that names the cause, and `inspect` reports it. Previously
+  `TicTacToe.exe` reported "coverage: complete — every recovered instruction
+  lifts" from two functions and fifteen instructions, describing the CLR
+  launcher stub while the program itself was never read. `inspect` also reports a
+  packed image now, for the same reason.
+
+  Corpus effect: the two .NET applications are recorded as refused rather than as
+  recompilable, and four applications translate (snake, Tetris, and both IGI
+  executables) against three before.
+
+### Fixed
+
 ### Fixed
 
 - Alignment padding was recognised only as two literal `0x90` bytes, so a

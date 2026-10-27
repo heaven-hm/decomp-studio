@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <sstream>
 #include <fstream>
 #include <stdexcept>
 
@@ -205,6 +206,20 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
   const auto directory_rva = [&](std::uint16_t index) -> std::uint32_t {
     return index < directories.size() ? directories[index].first : 0;
   };
+
+  // Directory 14 is the CLR runtime header. A managed image keeps its code as IL
+  // bytecode in the CLR metadata rather than as native machine code, so treating
+  // it as a native binary recovers a handful of stub functions and then reports
+  // complete coverage of a program whose real code it never saw.
+  constexpr std::uint16_t kDirectoryClrRuntimeHeader = 14;
+  if (directory_rva(kDirectoryClrRuntimeHeader) != 0 &&
+      (directories.size() > kDirectoryClrRuntimeHeader && directories[kDirectoryClrRuntimeHeader].second != 0)) {
+    executable.clr_runtime_header_rva = directory_rva(kDirectoryClrRuntimeHeader);
+    std::ostringstream text;
+    text << "managed .NET image (CLR runtime header at rva 0x" << std::hex
+         << executable.clr_runtime_header_rva << ")";
+    executable.managed_reason = text.str();
+  }
 
   // imports
   const auto import_directory_rva = directory_rva(kDirectoryImport);

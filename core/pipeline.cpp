@@ -104,6 +104,13 @@ TranslateReport translate(const std::filesystem::path& input, const std::filesys
     throw std::runtime_error("input appears to be packed (" + executable.packing_reason +
                              "); its machine code is not present in the file, so functions cannot be "
                              "recovered. Unpack it first.");
+  // A managed image is the same kind of failure in a different disguise: the
+  // native code is a small stub that starts the CLR, so recovering functions
+  // from it yields a confident report about a program that was never read.
+  if (executable.is_managed())
+    throw std::runtime_error("input is a " + executable.managed_reason +
+                             "; its code is IL bytecode, not machine code, so there is nothing to "
+                             "recompile. Managed images are not supported.");
   if (configuration.input_format != "auto" && configuration.input_format != "pe")
     throw std::runtime_error("unsupported input format: " + configuration.input_format);
   if (configuration.architecture != "auto" && configuration.architecture != executable.architecture_name())

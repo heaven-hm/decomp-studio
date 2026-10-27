@@ -140,6 +140,37 @@ def main() -> int:
         else:
             check("PE32 fixture present", False, "i686-w64-mingw32-gcc must build pe32_arith.exe")
 
+        # A managed image. The native code in one is a CLR launcher stub, so
+        # recovering functions from it reports complete coverage of a program
+        # that was never read. This is the same class of failure as a packed
+        # input and must be refused the same way, with the cause named.
+        if pe32.exists():
+            data = bytearray(pe32.read_bytes())
+            pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+            optional = pe_offset + 24
+            # Directory 14 (CLR runtime header): the count is a 4-byte field at
+            # optional+92 on PE32, then fifteen 8-byte entries.
+            struct.pack_into("<II", data, optional + 96 + 14 * 8, 0x2000, 0x48)
+            managed = fixture_binaries / "managed_dotnet.exe"
+            managed.write_bytes(bytes(data))
+
+            inspected = run_cli(["inspect", str(managed)])
+            check("managed image is reported by inspect",
+                  inspected.returncode == 0 and "managed:" in inspected.stdout, inspected.stdout)
+
+            for command in ("coverage", "analyze"):
+                result = run_cli([command, str(managed)])
+                combined = result.stdout + result.stderr
+                check(f"managed image is refused by {command}", result.returncode != 0, combined.strip()[:120])
+                check(f"managed refusal names the cause ({command})",
+                      "managed" in combined and "CLR" in combined, combined.strip()[:160])
+
+            translated = run_cli(["translate", str(managed), "--output", str(fixture_binaries / "managed-out")])
+            combined = translated.stdout + translated.stderr
+            check("managed image is refused by translate", translated.returncode != 0, combined.strip()[:120])
+            check("managed translate refusal names the cause",
+                  "managed" in combined and "CLR" in combined, combined.strip()[:160])
+
     for line in PASSES:
         print("PASS " + line)
     for line in FAILURES:

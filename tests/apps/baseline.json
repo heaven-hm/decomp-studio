@@ -2,22 +2,22 @@
   "note": "Recorded state of the real-application corpus. The test fails when an application gets worse: a higher unsupported-instruction count, a stage that used to succeed failing, or a verification that used to pass no longer passing. Improvements are reported, not failed. Regenerate with RECOMP_WRITE_BASELINE=1.",
   "applications": {
     "bat.exe": {
-      "unsupported_instructions": 262,
-      "missing_imports": 251,
+      "unsupported_instructions": 233,
+      "missing_imports": 243,
       "translated": false,
       "built": false,
       "verify": null
     },
     "clipjar.exe": {
-      "unsupported_instructions": 449,
-      "missing_imports": 344,
+      "unsupported_instructions": 385,
+      "missing_imports": 335,
       "translated": false,
       "built": false,
       "verify": null
     },
     "fd.exe": {
-      "unsupported_instructions": 310,
-      "missing_imports": 100,
+      "unsupported_instructions": 284,
+      "missing_imports": 87,
       "translated": false,
       "built": false,
       "verify": null
@@ -30,92 +30,92 @@
       "verify": null
     },
     "legacy-notepad-x64.exe": {
-      "unsupported_instructions": 26,
-      "missing_imports": 173,
+      "unsupported_instructions": 19,
+      "missing_imports": 162,
       "translated": false,
       "built": false,
       "verify": null
     },
     "luhn.exe": {
-      "unsupported_instructions": 30,
-      "missing_imports": 1,
+      "unsupported_instructions": null,
+      "missing_imports": null,
       "translated": false,
       "built": false,
       "verify": null
     },
     "openlierox.exe": {
-      "unsupported_instructions": 2572,
-      "missing_imports": 618,
+      "unsupported_instructions": 2554,
+      "missing_imports": 577,
       "translated": false,
       "built": false,
       "verify": null
     },
     "Pixeltetris.exe": {
-      "unsupported_instructions": 125,
-      "missing_imports": 84,
+      "unsupported_instructions": 109,
+      "missing_imports": 74,
       "translated": false,
       "built": false,
       "verify": null
     },
     "plink.exe": {
-      "unsupported_instructions": 278,
-      "missing_imports": 109,
+      "unsupported_instructions": 251,
+      "missing_imports": 96,
       "translated": false,
       "built": false,
       "verify": null
     },
     "powder-v100.1.400-x86_64-windows-mingw.exe": {
-      "unsupported_instructions": 1829,
-      "missing_imports": 544,
+      "unsupported_instructions": 1809,
+      "missing_imports": 536,
       "translated": false,
       "built": false,
       "verify": null
     },
     "rg.exe": {
-      "unsupported_instructions": 460,
-      "missing_imports": 84,
+      "unsupported_instructions": 433,
+      "missing_imports": 71,
       "translated": false,
       "built": false,
       "verify": null
     },
     "snake-windows-x86_64.exe": {
-      "unsupported_instructions": 4,
+      "unsupported_instructions": 0,
       "missing_imports": 140,
-      "translated": false,
-      "built": false,
-      "verify": null
+      "translated": true,
+      "built": true,
+      "verify": "fail"
     },
     "supertux2.exe": {
-      "unsupported_instructions": 571,
-      "missing_imports": 710,
+      "unsupported_instructions": 561,
+      "missing_imports": 709,
       "translated": false,
       "built": false,
       "verify": null
     },
     "Tetris.exe": {
-      "unsupported_instructions": 5,
-      "missing_imports": 83,
-      "translated": false,
-      "built": false,
-      "verify": null
+      "unsupported_instructions": 0,
+      "missing_imports": 51,
+      "translated": true,
+      "built": true,
+      "verify": "fail"
     },
     "TicTacToe.exe": {
-      "unsupported_instructions": 0,
-      "missing_imports": 1,
-      "translated": true,
+      "unsupported_instructions": null,
+      "missing_imports": null,
+      "translated": false,
       "built": false,
       "verify": null
     },
     "igi.exe": {
       "unsupported_instructions": 0,
-      "missing_imports": 97,
+      "missing_imports": 73,
       "translated": true,
-      "built": false,
-      "verify": null
+      "built": true,
+      "verify": "fail"
     },
     "igi1ed.exe": {
       "unsupported_instructions": 0,
-      "missing_imports": 581,
+      "missing_imports": 578,
       "translated": true,
       "built": false,
       "verify": null

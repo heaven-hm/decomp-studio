@@ -3,6 +3,37 @@
 All notable changes to Recomp Studio are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.5.0
+
+### Added
+
+- Centralised CLI option parsing, validation and capability declarations in
+  `core/cli/`. `--help` is generated from the same option table the parser
+  validates against, so help and parsing cannot disagree; `capabilities` reports
+  the same table as data.
+- Three commands: `capabilities` (every declared value, implemented or planned,
+  with what is missing for a planned one), `detect` (format, runtime,
+  architecture, confidence and the evidence behind each conclusion), and
+  `backends list` (source, target and reference backends).
+- `--explain` on any command, printing the resolved options — unset ones showing
+  their declared default — and the capability behind each choice.
+- `core/detection/`, the plug-in point for input detection: PE including managed,
+  ELF, Mach-O thin and universal, JVM class files, CPython bytecode and scripts.
+  The language frontends are deliberately not implemented; what exists is the
+  interface they will register against.
+
+### Changed
+
+- Version 0.5.0.
+- Three rules are now enforced rather than intended: an undeclared option is an
+  error and never ignored; a value outside its declared set is an error listing
+  what is accepted; and a declared value this build does not implement returns
+  `UNSUPPORTED` naming the option, the value and the missing capability, with exit
+  code 3 distinct from the usage error's exit code 2. There is no silent fallback
+  and no substitution of a different backend.
+- `inspect`, `analyze`, `coverage` and `translate` all refuse an unsupported input
+  through the detection layer, so the reason cannot disagree between commands.
+
 ## [Unreleased]
 
 ### Added

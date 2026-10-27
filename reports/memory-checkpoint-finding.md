@@ -229,6 +229,35 @@ one store the emulator split. The normalisation that avoids the question is to
 compare the logs **per instruction** — the set of ranges each instruction wrote —
 and that is not yet implemented.
 
+## Established since: the reference's store log cannot see shim writes
+
+Comparing the logs per instruction -- grouping by instruction and comparing the set
+of byte ranges each one wrote -- removes the granularity noise and leaves a concrete
+difference. At `0x14000146b`:
+
+```
+reference: [('0x167fffec8', '0x167fffed0')]
+candidate: [('0x167fffec8', '0x167fffed0'), ('0x167ffff70', '0x167ffff74')]
+```
+
+The candidate writes an extra 4 bytes. `0x14000146b` is `call rbx`, an indirect call
+through a register, and the extra store is a **shim write**: the value is the byte
+count a `WriteFile` would report, written to the caller's `lpNumberOfBytesWritten`.
+
+The reference's log cannot contain it. The reference dispatches through the same
+shim as the candidate, and that shim writes to `guest_memory` with a host `memcpy` --
+which Unicorn never observes as a guest memory access, so `UC_HOOK_MEM_WRITE` does
+not fire. **The reference's store log is blind to every write a shim performs.**
+
+That is a limitation of the instrument, not a difference between the two programs:
+both sides perform the write, into their own copy of `guest_memory`, and the memory
+digest sees it on both. It means the store logs are comparable for guest
+instructions and not for shim calls, and the comparison has to say which it is
+looking at.
+
+The per-instruction comparison is kept as `tools/compare_store_logs.py`; it is what
+made this visible.
+
 ## Not established
 
 The three floating-point fixtures still disagree on memory at the same checkpoints

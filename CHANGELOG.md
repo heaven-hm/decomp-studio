@@ -401,6 +401,21 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The store logs are now compared **per instruction** rather than line by line, in
+  `tools/compare_store_logs.py`. The reference reports a 16-byte store as two 8-byte
+  writes, so a line-by-line comparison reported a divergence for every vector store;
+  grouping by instruction and comparing the byte ranges each instruction wrote
+  removes the question of how either side chose to chunk them. It reduced 216
+  reported differences to a concrete one.
+- That comparison established a limitation of the instrument itself: **the
+  reference's store log cannot see writes a shim performs.** The reference dispatches
+  through the same shim as the candidate, and the shim writes to `guest_memory` with
+  a host `memcpy`, which Unicorn never observes as a guest access, so
+  `UC_HOOK_MEM_WRITE` does not fire. A store the candidate logs and the reference
+  does not is therefore not evidence of a difference — both perform it, into their
+  own copy of the guest address space. The store logs are comparable for guest
+  instructions and not for shim calls.
+
 - The store log was missing every SSE store. Vector stores write memory directly
   rather than through `store_guest_memory`, so they never reached the log, and a
   16-byte `movaps` looked like a store the candidate never performed. They are

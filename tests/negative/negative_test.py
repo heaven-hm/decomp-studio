@@ -71,9 +71,29 @@ def malformed_pe_files(directory: Path):
     return [empty, mz_only, bad_pe_offset, missing_signature, unsupported_magic]
 
 
+def build_fixtures(destination: Path) -> None:
+    """Build the fixtures this test needs, instead of reading a stale in-place bin/.
+
+    The in-place tests/fixtures/apps/bin/ is gitignored and was previously read
+    directly, so a fixture that changed meaning (x87 stopped being unsupported
+    once the x87 core landed) left a stale binary behind and failed this test for
+    a reason unrelated to the code under test. Building here removes the trap.
+    """
+    if shutil.which("x86_64-w64-mingw32-gcc") is None:
+        if OPTIONAL_MODE:
+            print("SKIP (RECOMP_OPTIONAL=1): mingw-w64 x86_64 compiler not available")
+            raise SystemExit(0)
+        print("ERROR: mingw-w64 x86_64 compiler is required", file=sys.stderr)
+        raise SystemExit(1)
+    subprocess.run(["sh", str(APPS_DIRECTORY / "build.sh"), str(destination)], check=True,
+                   stdout=subprocess.DEVNULL)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
+        fixture_binaries = root / "fixtures"
+        build_fixtures(fixture_binaries)
 
         for path in malformed_pe_files(root):
             expect_error(f"malformed PE rejected: {path.name}", ["inspect", str(path)])
@@ -83,17 +103,17 @@ def main() -> int:
         # A directory is not an executable.
         expect_error("directory input rejected", ["translate", str(APPS_DIRECTORY), "--output", str(root / "dir-out")])
 
-        # Unsupported instruction class (x87).
-        unsupported = APPS_DIRECTORY / "bin" / "unsupported_instruction.exe"
+        # Unsupported instruction class (RDMSR: a model-specific register read).
+        unsupported = fixture_binaries / "unsupported_instruction.exe"
         if unsupported.exists():
             expect_error("unsupported instruction reported",
                          ["translate", str(unsupported), "--output", str(root / "unsupported-out")],
                          "unsupported instruction")
         else:
-            check("unsupported instruction fixture present", False, "run tests/fixtures/apps/build.sh")
+            check("unsupported instruction fixture present", False, "build.sh did not produce it")
 
         # Unsupported import: translation succeeds, execution must fail explicitly.
-        unsupported_import = APPS_DIRECTORY / "bin" / "unsupported_import.exe"
+        unsupported_import = fixture_binaries / "unsupported_import.exe"
         if unsupported_import.exists():
             project = root / "import-out"
             translated = run_cli(["translate", str(unsupported_import), "--output", str(project)])
@@ -107,10 +127,10 @@ def main() -> int:
             verified = run_cli(["verify", str(project), "--json"])
             check("unsupported import does not verify", verified.returncode != 0, verified.stdout)
         else:
-            check("unsupported import fixture present", False, "run tests/fixtures/apps/build.sh")
+            check("unsupported import fixture present", False, "build.sh did not produce it")
 
         # 32-bit PE32 input: the machine type must be reported as x86, not x86_64.
-        pe32 = APPS_DIRECTORY / "bin" / "pe32_arith.exe"
+        pe32 = fixture_binaries / "pe32_arith.exe"
         if pe32.exists():
             inspected = run_cli(["inspect", str(pe32), "--json"])
             check("PE32 is detected as x86",

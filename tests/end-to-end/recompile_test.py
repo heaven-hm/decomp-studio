@@ -152,6 +152,9 @@ def verify_fixture(name: str, executable: Path, project: Path) -> str:
     guest = project / "recomp-guest"
     if not guest.exists():
         fail(f"{name}: generated executable is missing")
+    bundled_license = project / "igi-recomp-LICENSE"
+    if not bundled_license.exists() or not bundled_license.read_bytes():
+        fail(f"{name}: generated project is missing the igi-recomp license")
 
     if platform.machine().lower() in ("arm64", "aarch64"):
         description = subprocess.run(["file", str(guest)], text=True, capture_output=True, check=True)

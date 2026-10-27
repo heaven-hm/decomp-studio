@@ -401,6 +401,16 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The three floating-point memory divergences are **x87 environment state**, and the
+  `WriteFile` hypothesis is refuted. Dumping the memory at the divergent checkpoint
+  and diffing it localises the difference to four bytes at `ESP+332`: the reference
+  holds `0x00000c00` and the candidate holds `0x027f0e7f` — `0x027f` is the x87
+  control word default and the high half carries TOP=1 in the status word, which is
+  what `fnstenv`/`fnsave` write. The data window matches exactly (0 of 65536 bytes).
+  The store-log comparison could not see this because the write happens inside a
+  shim, which is the blind spot recorded above. `x87.exe`, `simd_convert.exe` and
+  `pe32_simd_convert.exe` are the three fixtures that execute `fnstenv`/`fnsave`.
+
 - Shim writes are marked in the store log. `guest_in_shim` brackets every shim
   invocation so a store a shim performs can be told apart from a guest store, which
   matters because the reference's log is blind to the former by construction — its

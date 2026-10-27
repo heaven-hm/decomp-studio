@@ -293,9 +293,46 @@ That is a hypothesis with a specific test, not a finding. It would be settled by
 logging the *value* a shim stores on the candidate (the log already records it for
 scalar stores) and comparing it against the reference's memory at the same address.
 
+## Resolved: it is x87 environment state
+
+Dumping the memory at checkpoint 3 on both sides and diffing it localises the
+divergence to four bytes at **ESP+332**, in the live stack window:
+
+```
+  reference: 00 00 d8 3f 00 00 00 00 00 0c 00 00 ...
+  candidate: 00 00 d8 3f 00 00 00 00 7f 0e 7f 02 ...
+```
+
+| | value at ESP+332 |
+|---|---|
+| reference | `0x00000c00` |
+| candidate | `0x027f0e7f` |
+
+`0x027f` is the x87 **control word** default, and the high half `0x0e7f` has TOP=1 in
+bits 11-13 — the x87 **status word**. So the candidate has written a control word and
+status word pair, which is what `fnstenv`/`fnsave` do, and the reference holds
+something else in that slot.
+
+The data window matches exactly: 0 differing bytes of 65536. Only this one stack slot
+differs.
+
+**The `WriteFile` hypothesis is refuted.** The difference is x87 state, not a byte
+count, and the store-log comparison could not see it because the write happens inside
+a shim — which is exactly the blind spot recorded above.
+
+That is consistent with the documented x87 limitation (registers held as doubles, no
+register tags, no full environment model), and it is now specific: `x87.exe`,
+`simd_convert.exe` and `pe32_simd_convert.exe` are the three fixtures that execute
+`fnstenv`/`fnsave`, and the divergence is in the environment those instructions
+write.
+
 ## Not established
 
-The three floating-point fixtures still disagree on memory at the same checkpoints
+Whether the candidate or the reference is right about the x87 environment, and
+whether closing it means modelling the x87 tag word and the 80-bit register file.
+The next step is to log the x87 state at that instruction on both sides -- the
+control word, the status word and the tag word -- rather than the memory they were
+written to, since the memory is only a symptom. at the same checkpoints
 after the `rep` fix, so that divergence is **separate** from the `rep` counting and
 is not explained by it:
 

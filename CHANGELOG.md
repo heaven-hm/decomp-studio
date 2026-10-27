@@ -95,6 +95,17 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- Variable-count shifts used the wrong count. The SDM takes ONE count — the low
+  64 bits of the source operand — and applies it to every element; the helpers
+  were shifting each element by its corresponding source element, so a source
+  whose low 64 bits were 2 shifted element 0 by 2, element 1 by 0, element 3 by
+  3. Found by independent audit verified against real x86 silicon under
+  Rosetta 2 (1192 mismatches on random vectors, 1120 of them `psraw`/`psrad`).
+  The register and memory forms now read the count once and delegate to the
+  immediate helpers.
+- `psubsb`/`psubsw` and `paddsb`/`paddsw` had saturation holes at `a == 0`:
+  `0x00 - 0x80` wrapped to `0x80` instead of clamping to `0x7f`. They now clamp
+  on the exact integer difference rather than on sign guards.
 - `pmuludq` produced 32-bit results. It is not a uniform element-wise multiply:
   it multiplies the low dwords of elements 0 and 2 and writes two 64-bit
   results. Routing it through the generic element-wise helper truncated the

@@ -630,18 +630,34 @@ RECOMP_PACKED_BINARY(vector_bitwise_and_not, std::uint8_t, static_cast<std::uint
 
 // Saturating arithmetic, signed and unsigned.
 RECOMP_PACKED_BINARY(vector_add_saturated_signed_bytes, std::int8_t,
-                     a > 0 && b > 127 - a ? 127 : (a < 0 && b < -128 - a ? -128 : a + b))
+                     static_cast<int>(a) + static_cast<int>(b) > 127
+                         ? 127
+                         : (static_cast<int>(a) + static_cast<int>(b) < -128
+                                ? -128
+                                : static_cast<int>(a) + static_cast<int>(b)))
 RECOMP_PACKED_BINARY(vector_add_saturated_unsigned_bytes, std::uint8_t,
                      static_cast<int>(a) + static_cast<int>(b) > 255 ? 255 : a + b)
 RECOMP_PACKED_BINARY(vector_subtract_saturated_signed_bytes, std::int8_t,
-                     a < 0 && b > 127 + a ? -128 : (a > 0 && b < -128 + a ? 127 : a - b))
+                     static_cast<int>(a) - static_cast<int>(b) > 127
+                         ? 127
+                         : (static_cast<int>(a) - static_cast<int>(b) < -128
+                                ? -128
+                                : static_cast<int>(a) - static_cast<int>(b)))
 RECOMP_PACKED_BINARY(vector_subtract_saturated_unsigned_bytes, std::uint8_t, a < b ? 0 : a - b)
 RECOMP_PACKED_BINARY(vector_add_saturated_signed_words, std::int16_t,
-                     a > 0 && b > 32767 - a ? 32767 : (a < 0 && b < -32768 - a ? -32768 : a + b))
+                     static_cast<int>(a) + static_cast<int>(b) > 32767
+                         ? 32767
+                         : (static_cast<int>(a) + static_cast<int>(b) < -32768
+                                ? -32768
+                                : static_cast<int>(a) + static_cast<int>(b)))
 RECOMP_PACKED_BINARY(vector_add_saturated_unsigned_words, std::uint16_t,
                      static_cast<int>(a) + static_cast<int>(b) > 65535 ? 65535 : a + b)
 RECOMP_PACKED_BINARY(vector_subtract_saturated_signed_words, std::int16_t,
-                     a < 0 && b > 32767 + a ? -32768 : (a > 0 && b < -32768 + a ? 32767 : a - b))
+                     static_cast<int>(a) - static_cast<int>(b) > 32767
+                         ? 32767
+                         : (static_cast<int>(a) - static_cast<int>(b) < -32768
+                                ? -32768
+                                : static_cast<int>(a) - static_cast<int>(b)))
 RECOMP_PACKED_BINARY(vector_subtract_saturated_unsigned_words, std::uint16_t, a < b ? 0 : a - b)
 
 // Comparisons produce an all-ones or all-zero element, as the instruction does.
@@ -693,6 +709,51 @@ RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_arithmetic_words_immediate, std
                               b > 15 ? (a < 0 ? -1 : 0) : static_cast<std::int16_t>(a >> b))
 RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_arithmetic_dwords_immediate, std::int32_t,
                               b > 31 ? (a < 0 ? -1 : 0) : static_cast<std::int32_t>(a >> b))
+
+
+// Variable-count shifts take ONE count: the low 64 bits of the source operand,
+// applied to every element. They are not an element-wise shift by the
+// corresponding source element, which is what an element-wise helper computes.
+inline std::uint64_t vector_shift_count(const GuestContext* context, int source) {
+  std::uint64_t count = 0;
+  std::memcpy(&count, context->vector_registers[source], 8);
+  return count;
+}
+
+inline std::uint64_t vector_shift_count_memory(GuestContext* context, std::uint64_t address) {
+  if (address + 8 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 8, 0);
+    return 0;
+  }
+  std::uint64_t count = 0;
+  std::memcpy(&count, guest_memory + address, 8);
+  return count;
+}
+
+#define RECOMP_PACKED_SHIFT_BY_SOURCE(name, immediate_helper)                       \
+  inline void name(GuestContext* context, int destination, int source) {            \
+    immediate_helper(context, destination, vector_shift_count(context, source));    \
+  }                                                                                \
+  inline void name##_memory(GuestContext* context, int destination,                 \
+                            std::uint64_t address) {                                \
+    immediate_helper(context, destination, vector_shift_count_memory(context, address)); \
+  }
+
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_left_words_by_source, vector_shift_left_words_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_left_dwords_by_source, vector_shift_left_dwords_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_left_qwords_by_source, vector_shift_left_qwords_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_right_logical_words_by_source,
+                              vector_shift_right_logical_words_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_right_logical_dwords_by_source,
+                              vector_shift_right_logical_dwords_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_right_logical_qwords_by_source,
+                              vector_shift_right_logical_qwords_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_right_arithmetic_words_by_source,
+                              vector_shift_right_arithmetic_words_immediate)
+RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_right_arithmetic_dwords_by_source,
+                              vector_shift_right_arithmetic_dwords_immediate)
+
+#undef RECOMP_PACKED_SHIFT_BY_SOURCE
 
 #undef RECOMP_PACKED_SHIFT_IMMEDIATE
 

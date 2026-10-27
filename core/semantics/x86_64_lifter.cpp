@@ -197,14 +197,17 @@ const std::map<std::string, std::string>& packed_integer_helpers() {
       {"pandn", "vector_bitwise_and_not"},
       {"pmaddwd", "vector_multiply_add_words"},
       {"psadbw", "vector_sum_absolute_differences"},
-      {"psllw", "vector_shift_left_words"},
-      {"pslld", "vector_shift_left_dwords"},
-      {"psllq", "vector_shift_left_qwords"},
-      {"psrlw", "vector_shift_right_logical_words"},
-      {"psrld", "vector_shift_right_logical_dwords"},
-      {"psrlq", "vector_shift_right_logical_qwords"},
-      {"psraw", "vector_shift_right_arithmetic_words"},
-      {"psrad", "vector_shift_right_arithmetic_dwords"},
+      // The register/memory form takes one count from the source operand's low
+      // 64 bits, so it uses the by-source wrappers rather than an element-wise
+      // shift.
+      {"psllw", "vector_shift_left_words_by_source"},
+      {"pslld", "vector_shift_left_dwords_by_source"},
+      {"psllq", "vector_shift_left_qwords_by_source"},
+      {"psrlw", "vector_shift_right_logical_words_by_source"},
+      {"psrld", "vector_shift_right_logical_dwords_by_source"},
+      {"psrlq", "vector_shift_right_logical_qwords_by_source"},
+      {"psraw", "vector_shift_right_arithmetic_words_by_source"},
+      {"psrad", "vector_shift_right_arithmetic_dwords_by_source"},
   };
   return helpers;
 }

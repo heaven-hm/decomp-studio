@@ -96,6 +96,32 @@ int app_main(void) {
   IMMOP("psraw", 3); out("psraw3="); outi((i64)fold(result)); crlf();
   IMMOP("psrad", 5); out("psrad5="); outi((i64)fold(result)); crlf();
 
+  /* Variable-count shifts: the count is the low 64 bits of the source operand
+     and applies to EVERY element. Reading each element's own source element as
+     its count gives a different answer, so this case pins that. */
+  for (int index = 0; index < LANES; index++) {
+    left[index] = 0xff;
+    right[index] = 0;
+  }
+  right[0] = 2;                                  /* count = 2 for all elements */
+  BINOP("psllw"); out("psllw_var="); outi((i64)fold(result)); crlf();
+  BINOP("psrlw"); out("psrlw_var="); outi((i64)fold(result)); crlf();
+  BINOP("psraw"); out("psraw_var="); outi((i64)fold(result)); crlf();
+  BINOP("pslld"); out("pslld_var="); outi((i64)fold(result)); crlf();
+  BINOP("psrad"); out("psrad_var="); outi((i64)fold(result)); crlf();
+
+  /* Saturation edge: 0 - (-128) must clamp to +127, not wrap to -128. */
+  for (int index = 0; index < LANES; index++) {
+    left[index] = 0x00;
+    right[index] = 0x80;
+  }
+  BINOP("psubsb"); out("psubsb_edge="); outi((i64)fold(result)); crlf();
+  for (int index = 0; index < LANES; index += 2) {
+    left[index] = 0x00; left[index + 1] = 0x00;
+    right[index] = 0x00; right[index + 1] = 0x80;   /* word 0x8000 = -32768 */
+  }
+  BINOP("psubsw"); out("psubsw_edge="); outi((i64)fold(result)); crlf();
+
   /* Whole-register byte shifts. */
   IMMOP("psrldq", 4); out("psrldq4="); outi((i64)fold(result)); crlf();
   IMMOP("pslldq", 4); out("pslldq4="); outi((i64)fold(result)); crlf();

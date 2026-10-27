@@ -117,7 +117,11 @@ void invoke_import_thunk(GuestContext* context, long index, std::uint64_t return
   if (push_return)
     push_guest_stack(context, return_address);
   current_thunk_index = static_cast<std::size_t>(index);
+  // The thunk table calls the shim directly, so the shim marker has to be set
+  // here as well as around invoke_win32_import.
+  guest_in_shim = true;
   import_thunk_functions[static_cast<std::size_t>(index)](context);
+  guest_in_shim = false;
   if (guest_pointer_width < 8) {
     context->registers[4] = mask_guest_address(
         context->registers[4] +
@@ -2222,7 +2226,9 @@ void invoke_win32_import_tail(GuestContext* context, const char* library_name, c
                            context->instruction_pointer);
   }
   select_import_convention(library_name, symbol_name);
+  guest_in_shim = true;
   shim->function(context);
+  guest_in_shim = false;
   if (guest_pointer_width >= 8) return;
   // The return address is already at [esp], so the shim's `ret`/`ret n` is the
   // only stack adjustment left to emulate.
@@ -2239,7 +2245,9 @@ void invoke_win32_import(GuestContext* context, const char* library_name, const 
   }
   select_import_convention(library_name, symbol_name);
   if (guest_pointer_width >= 8) {
+    guest_in_shim = true;
     shim->function(context);
+    guest_in_shim = false;
     return;
   }
   // 32-bit x86: emulate the `call` and the matching `ret`/`ret n` so the guest
@@ -2247,7 +2255,9 @@ void invoke_win32_import(GuestContext* context, const char* library_name, const 
   // arguments for the caller to pop; stdcall pops them in the callee.
   context->registers[4] = mask_guest_address(context->registers[4] - 4);
   store_guest_memory(context, context->registers[4], return_address, 4);
+  guest_in_shim = true;
   shim->function(context);
+  guest_in_shim = false;
   context->registers[4] = mask_guest_address(
       context->registers[4] + win32_import_stack_cleanup(library_name, symbol_name));
 }
@@ -2309,9 +2319,16 @@ std::uint64_t digest_bytes(std::uint64_t seed, std::uint64_t address, std::uint6
 bool guest_store_logging = false;
 static std::FILE* guest_store_log = nullptr;
 
+bool guest_in_shim = false;
+
 void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width) {
   if (guest_store_log == nullptr) return;
-  std::fprintf(guest_store_log, "%llx %llx %llx %d\n", static_cast<unsigned long long>(instruction_address),
+  // A leading 's' marks a store a shim performed. The reference cannot log those --
+  // its shim writes to guest_memory with a host memcpy, which the emulator never
+  // observes -- so the comparison has to tell them apart rather than reading their
+  // absence as a divergence.
+  std::fprintf(guest_store_log, "%s%llx %llx %llx %d\n", guest_in_shim ? "s" : "",
+               static_cast<unsigned long long>(instruction_address),
                static_cast<unsigned long long>(address), static_cast<unsigned long long>(value), width);
 }
 
@@ -2414,7 +2431,9 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
   const auto* shim = find_win32_shim(library_name, symbol_name);
   if (shim == nullptr) return false;
   select_import_convention(library_name, symbol_name);
+  guest_in_shim = true;
   shim->function(context);
+  guest_in_shim = false;
   return true;
 }
 

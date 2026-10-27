@@ -401,6 +401,18 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- Shim writes are marked in the store log. `guest_in_shim` brackets every shim
+  invocation so a store a shim performs can be told apart from a guest store, which
+  matters because the reference's log is blind to the former by construction — its
+  shim writes to `guest_memory` with a host `memcpy` that the emulator never
+  observes. The thunk table's direct call bypassed the marker at first, leaving 335
+  shim stores indistinguishable from guest stores.
+
+  With them marked, the per-instruction comparison reports **zero** instructions
+  whose written ranges differ: every guest store agrees, and the 216 differences
+  reported before were all shim stores. That narrows the remaining memory divergence
+  to a write a shim performs — the only class the comparison cannot see.
+
 - The store logs are now compared **per instruction** rather than line by line, in
   `tools/compare_store_logs.py`. The reference reports a 16-byte store as two 8-byte
   writes, so a line-by-line comparison reported a divergence for every vector store;

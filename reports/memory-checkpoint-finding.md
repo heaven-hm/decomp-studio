@@ -258,6 +258,41 @@ looking at.
 The per-instruction comparison is kept as `tools/compare_store_logs.py`; it is what
 made this visible.
 
+## Established since: every guest store agrees
+
+Shim writes are now marked at the source rather than inferred. `guest_in_shim` is set
+around every shim invocation -- including the thunk table's direct call, which
+bypassed it at first and left 335 shim stores indistinguishable from guest stores.
+
+With them marked and filtered, the per-instruction comparison reports:
+
+```
+reference: 1985 instructions that store
+candidate: 1979 instructions that store
+instructions whose written ranges differ: 0
+```
+
+**Every guest store agrees.** The differences the comparison had been reporting were
+all shim stores, and the earlier "216 instructions whose written ranges differ" was
+entirely that.
+
+That is a strong narrowing, and it points somewhere specific: the remaining memory
+divergence is **not a guest store**. It must be a write a shim performs, because
+that is the only class of write the comparison cannot see -- the reference's log is
+blind to shim writes by construction, so a shim that stores a *different value* on
+each side is invisible to the store comparison while still showing up in the memory
+digest.
+
+The prime candidate is `WriteFile`, which writes the byte count to the caller's
+`lpNumberOfBytesWritten`: the reference captures output into a string and accepts
+the whole buffer, while the candidate writes to a real descriptor and accepts
+whatever the host took. If those differ, the two sides store different counts -- and
+`arith.exe` is a program whose entire output goes through `WriteFile`.
+
+That is a hypothesis with a specific test, not a finding. It would be settled by
+logging the *value* a shim stores on the candidate (the log already records it for
+scalar stores) and comparing it against the reference's memory at the same address.
+
 ## Not established
 
 The three floating-point fixtures still disagree on memory at the same checkpoints

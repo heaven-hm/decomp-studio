@@ -205,6 +205,12 @@ inline std::uint64_t load_guest_memory(GuestContext* context, std::uint64_t addr
 // difference, and a log says which store it was rather than which byte ended up
 // wrong.
 extern bool guest_store_logging;
+// True while a shim is executing. The reference's store log cannot see shim writes
+// -- the shim writes to guest_memory with a host memcpy, which the emulator never
+// observes as a guest access -- so a store the candidate logs and the reference
+// does not is not evidence of a difference unless the comparison knows which
+// stores came from a shim. This marks them.
+extern bool guest_in_shim;
 void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width);
 // A vector store writes a whole register; the log records it as one entry per
 // register rather than as the bytes it happens to be made of, so that a 16-byte

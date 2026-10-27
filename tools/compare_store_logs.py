@@ -25,6 +25,12 @@ def load(path):
         parts = line.split()
         if not parts:
             continue
+        # A leading 's' marks a store a shim performed. The reference cannot log
+        # those -- its shim writes to guest_memory with a host memcpy, which the
+        # emulator never observes -- so they are skipped rather than reported as
+        # stores the reference failed to make.
+        if parts[0].startswith("s"):
+            continue
         instruction = parts[0]
         address, width = int(parts[1], 16), int(parts[3])
         if current is None or current[0] != instruction:

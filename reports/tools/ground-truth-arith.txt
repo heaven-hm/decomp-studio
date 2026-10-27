@@ -1,0 +1,61 @@
+image:                tests/fixtures/apps/bin/arith.exe
+architecture:         x86_64 (machine=0x8664)
+image_base:           0x140000000
+entry_point_rva:      0x1bc0
+executable sections:  .text
+imports parsed:       3
+exports parsed:       0
+base relocations:     0
+tls callbacks:        0
+entry sources:        {'entry_point': 1}
+functions recovered:  5
+instructions:         688 (unique addresses 688)
+distinct mnemonics:   30
+unsupported instrs:   0
+unsupported mnemonics:0
+lifter revision:      core/semantics/x86_64_lifter.cpp sha256 3561e1ff3fb0796f05cb625c68fe3a53e0cde925f0b71d1f238d5fac4c200e28
+lifter model pinned:  3561e1ff3fb0796f05cb625c68fe3a53e0cde925f0b71d1f238d5fac4c200e28  (MATCH)
+prefixed unsupported: none  (would be keyed differently by census vs abort path)
+
+=== TOP UNSUPPORTED MNEMONICS BY COUNT ===
+
+=== FULL UNSUPPORTED MNEMONIC SET (count desc) ===
+
+=== REJECTION REASONS ===
+
+=== FULL MNEMONIC HISTOGRAM (count desc) ===
+mov                      294
+lea                      73
+call                     55
+add                      43
+cmp                      41
+xor                      35
+jne                      30
+sub                      28
+jmp                      14
+je                       12
+and                      11
+nop                      9
+push                     8
+pop                      8
+ret                      4
+test                     3
+imul                     3
+shr                      2
+ja                       2
+cdqe                     2
+neg                      2
+js                       1
+movabs                   1
+mul                      1
+movzx                    1
+jb                       1
+div                      1
+cdq                      1
+idiv                     1
+cmovs                    1
+
+=== FIRST REJECTED INSTRUCTION ===
+none (fully covered)
+
+JSON written to reports/tools/ground-truth-arith.json

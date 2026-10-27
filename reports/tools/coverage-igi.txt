@@ -1,0 +1,41 @@
+architecture:   x86
+functions:      971
+instructions:   51518
+lifted:         50978 (98.95%)
+unsupported:    540
+classes:        33 distinct unsupported instruction classes
+
+occurrences  mnemonic                    first site
+154          fld                         0x0000449db1 in 0x0000449d30
+107          fmul                        0x0000449d58 in 0x0000449d30
+95           fstp                        0x0000449d69 in 0x0000449d30
+54           faddp                       0x00004b33d2 in 0x00004b33a0
+18           fnstsw                      0x00004a840a in 0x00004a8372
+12           wait                        0x0000498460 in 0x0000498460
+11           fcomp                       0x00004a83fe in 0x00004a8372
+9            fchs                        0x00004a840f in 0x00004a8372
+8            fadd                        0x00004976d1 in 0x0000497680
+8            fild                        0x0000449d87 in 0x0000449d30
+7            fsub                        0x0000449d63 in 0x0000449d30
+6            fcos                        0x00004b3b85 in 0x00004b3b60
+6            fldcw                       0x0000498470 in 0x0000498460
+5            fsin                        0x00004b3b64 in 0x00004b3b60
+5            fst                         0x00004b27dd in 0x00004b27d0
+4            fxch                        0x0000495330 in 0x00004952f0
+3            fistp                       0x000048f7f9 in 0x000048f530
+3            fld1                        0x00004a8861 in 0x00004a881f
+3            fldz                        0x00004a84ee in 0x00004a8372
+3            fmulp                       0x0000516920 in 0x00005168fd
+3            fnstcw                      0x0000498461 in 0x0000498460
+2            cld                         0x00004aa966 in 0x00004aa7b0
+2            fcom                        0x00004b27d7 in 0x00004b27d0
+2            fsqrt                       0x0000516922 in 0x00005168fd
+2            std                         0x00004aa963 in 0x00004aa7b0
+1            fdivr                       0x00005128af in 0x0000518260
+1            fdivrp                      0x00004a8863 in 0x00004a881f
+1            fldln2                      0x000049532e in 0x00004952f0
+1            fldpi                       0x00004a886d in 0x00004a881f
+1            fnclex                      0x00004a87f4 in 0x00004a87ed
+1            fpatan                      0x0000516924 in 0x00005168fd
+1            fyl2x                       0x0000495332 in 0x00004952f0
+1            jecxz                       0x00004aad19 in 0x00004aad10

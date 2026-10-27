@@ -1,0 +1,34 @@
+image: tests/fixtures/apps/bin/arith.exe
+
+CHECK A machine            mine=34404                pefile=34404                OK
+CHECK A image_base         mine=5368709120           pefile=5368709120           OK
+CHECK A entry_point_rva    mine=7104                 pefile=7104                 OK
+CHECK A size_of_headers    mine=1024                 pefile=1024                 OK
+CHECK A section_count      mine=3                    pefile=3                    OK
+CHECK A (pefile structural comparison): PASS
+
+CHECK B sample size: 200 instructions
+CHECK B mnemonic agreement: 200/200
+CHECK B full-text agreement: 189/200
+CHECK B length mismatches:   0/200
+CHECK B not in llvm-objdump map: 0
+CHECK B text-only differences (same mnemonic/length, printer style):
+CHECK B   mine='and eax, 4294967294'
+CHECK B   llvm='and eax, -2'  x4
+CHECK B   mine='and ecx, 4294967294'
+CHECK B   llvm='and ecx, -2'  x1
+CHECK B   mine='and r10d, 4294967294'
+CHECK B   llvm='and r10d, -2'  x1
+CHECK B   mine='mov rbx, qword ptr [rip + 6868]'
+CHECK B   llvm='mov rbx, qword ptr [rip + 6868] # 5368721488'  x1
+CHECK B   mine='call qword ptr [rip + 6488]'
+CHECK B   llvm='call qword ptr [rip + 6488] # 5368721488'  x1
+CHECK B   mine='call qword ptr [rip + 6462]'
+CHECK B   llvm='call qword ptr [rip + 6462] # 5368721496'  x1
+CHECK B   mine='lea rbp, [rip + 2069]'
+CHECK B   llvm='lea rbp, [rip + 2069] # 5368717336'  x1
+CHECK B   mine='shr eax, 1'
+CHECK B   llvm='shr eax'  x1
+CHECK B (llvm-objdump mnemonic agreement 100.0000%, text 94.5000%): PASS
+
+OVERALL: PASS

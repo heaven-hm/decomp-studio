@@ -1,0 +1,167 @@
+image:                /Users/haseeb-mir/Downloads/IGI/igi.exe
+architecture:         x86 (machine=0x014c)
+image_base:           0x400000
+entry_point_rva:      0xa50f5
+executable sections:  .text
+imports parsed:       128
+exports parsed:       0
+base relocations:     0
+tls callbacks:        0
+entry sources:        {'entry_point': 1}
+functions recovered:  971
+instructions:         51518 (unique addresses 51382)
+distinct mnemonics:   87
+unsupported instrs:   540
+unsupported mnemonics:33
+lifter revision:      core/semantics/x86_64_lifter.cpp sha256 3561e1ff3fb0796f05cb625c68fe3a53e0cde925f0b71d1f238d5fac4c200e28
+lifter model pinned:  3561e1ff3fb0796f05cb625c68fe3a53e0cde925f0b71d1f238d5fac4c200e28  (MATCH)
+prefixed unsupported: none  (would be keyed differently by census vs abort path)
+
+=== TOP UNSUPPORTED MNEMONICS BY COUNT ===
+ 1. fld                  154
+ 2. fmul                 107
+ 3. fstp                  95
+ 4. faddp                 54
+ 5. fnstsw                18
+ 6. wait                  12
+ 7. fcomp                 11
+ 8. fchs                   9
+ 9. fild                   8
+10. fadd                   8
+11. fsub                   7
+12. fldcw                  6
+13. fcos                   6
+14. fst                    5
+15. fsin                   5
+
+=== FULL UNSUPPORTED MNEMONIC SET (count desc) ===
+fld                      154
+fmul                     107
+fstp                     95
+faddp                    54
+fnstsw                   18
+wait                     12
+fcomp                    11
+fchs                     9
+fild                     8
+fadd                     8
+fsub                     7
+fldcw                    6
+fcos                     6
+fst                      5
+fsin                     5
+fxch                     4
+fistp                    3
+fnstcw                   3
+fldz                     3
+fld1                     3
+fmulp                    3
+std                      2
+cld                      2
+fcom                     2
+fsqrt                    2
+fldln2                   1
+fyl2x                    1
+fnclex                   1
+fdivrp                   1
+fldpi                    1
+jecxz                    1
+fpatan                   1
+fdivr                    1
+
+=== REJECTION REASONS ===
+    540  mnemonic not dispatched by the lifter
+
+=== FULL MNEMONIC HISTOGRAM (count desc) ===
+push                     18029
+mov                      9092
+call                     8253
+add                      3577
+lea                      2498
+pop                      1199
+ret                      1128
+cmp                      1063
+je                       868
+test                     810
+jne                      651
+xor                      513
+jmp                      509
+and                      397
+inc                      359
+sub                      338
+or                       251
+jl                       157
+fld                      154
+dec                      151
+shl                      120
+fmul                     107
+fstp                     95
+shr                      88
+not                      70
+stosd                    57
+jb                       56
+jae                      56
+jle                      55
+sbb                      55
+faddp                    54
+movsd                    50
+movzx                    49
+jge                      48
+leave                    48
+scasb                    47
+movsx                    36
+sar                      36
+jbe                      35
+ja                       33
+jg                       31
+nop                      30
+neg                      28
+movsb                    26
+fnstsw                   18
+imul                     14
+wait                     12
+fcomp                    11
+sete                     10
+cdq                      10
+stosb                    10
+fchs                     9
+fild                     8
+fadd                     8
+sahf                     8
+idiv                     8
+fsub                     7
+setne                    6
+fldcw                    6
+fcos                     6
+js                       5
+fst                      5
+fsin                     5
+fxch                     4
+div                      4
+fistp                    3
+fnstcw                   3
+fldz                     3
+fld1                     3
+fmulp                    3
+std                      2
+cld                      2
+setge                    2
+fcom                     2
+fsqrt                    2
+stosw                    1
+fldln2                   1
+fyl2x                    1
+xchg                     1
+fnclex                   1
+fdivrp                   1
+fldpi                    1
+jecxz                    1
+cmpsb                    1
+jns                      1
+fpatan                   1
+fdivr                    1
+
+=== FIRST REJECTED INSTRUCTION (project translation order) ===
+function entry 0x449d30  instruction 0x449d58  fmul dword ptr [0x5338c0]
+
+JSON written to reports/tools/ground-truth-igi.json

@@ -1,0 +1,21 @@
+coverage json : reports/tools/coverage-igi.json
+ground truth  : reports/tools/ground-truth-igi.json
+
+OK   total_instructions         coverage=51518     independent=51518
+OK   unsupported_instructions   coverage=540       independent=540
+OK   unsupported_class_count    coverage=33        independent=33
+OK   function_count             coverage=971       independent=971
+OK   lifted_instructions        coverage=50978     independent=50978
+
+classes only in coverage (over-reporting): 0
+classes only in independent model (under-reporting): 0
+
+per-class occurrence-count differences: 0
+
+first unsupported site (independent, project translation order):
+    address=0x449d58  mnemonic=fmul
+    function=0x449d30
+    coverage reports the same first site for class 'fmul'
+    earliest first-site across all classes: fmul @ 0x0000449d58
+
+RESULT: AGREE EXACTLY

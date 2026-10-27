@@ -1,0 +1,331 @@
+image:                /tmp/recomp-real/plink.exe
+architecture:         x86_64 (machine=0x8664)
+image_base:           0x140000000
+entry_point_rva:      0x861ac
+executable sections:  .text
+imports parsed:       153
+exports parsed:       0
+base relocations:     4114
+tls callbacks:        0
+entry sources:        {'entry_point': 1, 'base_relocation': 1502}
+functions recovered:  2208
+instructions:         164668 (unique addresses 160695)
+distinct mnemonics:   199
+unsupported instrs:   2037
+unsupported mnemonics:82
+lifter revision:      core/semantics/x86_64_lifter.cpp sha256 3561e1ff3fb0796f05cb625c68fe3a53e0cde925f0b71d1f238d5fac4c200e28
+lifter model pinned:  3561e1ff3fb0796f05cb625c68fe3a53e0cde925f0b71d1f238d5fac4c200e28  (MATCH)
+prefixed unsupported: none  (would be keyed differently by census vs abort path)
+
+=== TOP UNSUPPORTED MNEMONICS BY COUNT ===
+ 1. pmuludq              234
+ 2. psrad                160
+ 3. aesenc               132
+ 4. paddq                124
+ 5. bswap                110
+ 6. psllq                102
+ 7. packssdw              97
+ 8. punpcklwd             93
+ 9. pslld                 80
+10. psrld                 68
+11. psrlq                 68
+12. pmullw                58
+13. punpckhwd             53
+14. pcmpeqb               51
+15. paddw                 49
+
+=== FULL UNSUPPORTED MNEMONIC SET (count desc) ===
+pmuludq                  234
+psrad                    160
+aesenc                   132
+paddq                    124
+bswap                    110
+psllq                    102
+packssdw                 97
+punpcklwd                93
+pslld                    80
+psrld                    68
+psrlq                    68
+pmullw                   58
+punpckhwd                53
+pcmpeqb                  51
+paddw                    49
+pshuflw                  45
+pmaddwd                  45
+psrlw                    37
+pmovmskb                 37
+aesdec                   33
+pmulhuw                  26
+vmovdqa                  21
+punpcklbw                19
+pshufb                   18
+vmovdqu                  18
+pshufhw                  17
+vmovntdq                 16
+vmulsd                   15
+psraw                    12
+aesenclast               12
+bts                      12
+pandn                    11
+packuswb                 10
+pclmulqdq                10
+vaddsd                   9
+shufps                   8
+btr                      8
+vmovsd                   8
+vpand                    7
+vsubsd                   6
+pslldq                   5
+int                      5
+pcmpistri                5
+vfmadd213sd              5
+psrldq                   4
+pcmpeqw                  4
+comisd                   4
+vcomisd                  4
+pextrd                   3
+aesimc                   3
+aesdeclast               3
+pcmpeqq                  3
+pinsrd                   3
+pblendw                  3
+vpmovmskb                3
+vzeroupper               3
+vfmadd231sd              3
+pshufd                   2
+punpckhdq                2
+punpckldq                2
+aeskeygenassist          2
+xgetbv                   2
+vpcmpeqw                 2
+cvtdq2pd                 2
+vpsrlq                   2
+vmovq                    2
+vcvtdq2pd                2
+ucomisd                  1
+cwd                      1
+psubw                    1
+vinsertf128              1
+pinsrb                   1
+vpcmpeqb                 1
+psubq                    1
+psubd                    1
+vpsubq                   1
+vpsllq                   1
+vpaddq                   1
+vfmsub213sd              1
+vdivsd                   1
+vmovapd                  1
+vpsubd                   1
+
+=== REJECTION REASONS ===
+   2010  mnemonic not dispatched by the lifter
+     20  bit test with non-register destination
+      5  packed integer op requires two xmm registers
+      2  pshufd requires 3 operands with two xmm registers
+
+=== FULL MNEMONIC HISTOGRAM (count desc) ===
+mov                      57601
+call                     14151
+lea                      10052
+cmp                      7574
+xor                      7062
+je                       6865
+add                      6326
+test                     5996
+pop                      5894
+push                     5486
+jmp                      4971
+jne                      3859
+sub                      2979
+and                      2324
+ret                      2027
+shr                      1657
+movups                   1515
+movzx                    1457
+or                       1254
+nop                      1103
+shl                      960
+movdqa                   896
+movaps                   737
+movsxd                   585
+ja                       550
+inc                      534
+jb                       489
+jae                      486
+movdqu                   481
+imul                     412
+jbe                      402
+movabs                   345
+pshufd                   310
+cmove                    285
+pmuludq                  234
+jle                      218
+neg                      203
+pxor                     201
+paddd                    192
+cmovne                   190
+not                      185
+xorps                    181
+sbb                      172
+psrad                    160
+rol                      157
+sar                      153
+jg                       146
+movsx                    142
+dec                      141
+punpckldq                140
+jl                       133
+aesenc                   132
+js                       131
+movd                     128
+setb                     125
+paddq                    124
+pand                     122
+sete                     121
+cmovb                    110
+bswap                    110
+int3                     108
+setne                    108
+psllq                    102
+packssdw                 97
+movq                     96
+punpcklwd                93
+psubd                    92
+adc                      85
+div                      83
+pslld                    80
+movsd                    73
+bt                       69
+psrld                    68
+psrlq                    68
+jge                      67
+cmova                    64
+cmovae                   64
+punpckhdq                59
+pmullw                   58
+jns                      56
+punpckhwd                53
+pcmpeqb                  51
+paddw                    49
+cdq                      48
+idiv                     46
+pshuflw                  45
+pmaddwd                  45
+setae                    42
+bts                      41
+mul                      37
+psrlw                    37
+pmovmskb                 37
+por                      35
+punpcklqdq               34
+ror                      33
+aesdec                   33
+pcmpeqd                  29
+cmovs                    28
+pmulhuw                  26
+xchg                     24
+mulsd                    24
+cmovge                   23
+vmovdqa                  21
+cmovns                   20
+cdqe                     19
+punpcklbw                19
+movapd                   19
+pshufb                   18
+vmovdqu                  18
+addsd                    18
+pshufhw                  17
+vmovntdq                 16
+bsr                      16
+vmulsd                   15
+seta                     13
+punpckhqdq               13
+cmovl                    12
+shrd                     12
+psraw                    12
+aesenclast               12
+bsf                      12
+xadd                     12
+btr                      12
+pandn                    11
+cmovg                    10
+packuswb                 10
+pclmulqdq                10
+vaddsd                   9
+cpuid                    8
+shufps                   8
+vmovsd                   8
+cmovbe                   7
+shld                     7
+subsd                    7
+vpand                    7
+stmxcsr                  6
+vsubsd                   6
+pslldq                   5
+int                      5
+pcmpistri                5
+ldmxcsr                  5
+vfmadd213sd              5
+movupd                   4
+psrldq                   4
+vpxor                    4
+pcmpeqw                  4
+comisd                   4
+vcomisd                  4
+setg                     3
+xorpd                    3
+pextrd                   3
+aesimc                   3
+aesdeclast               3
+pcmpeqq                  3
+pinsrd                   3
+pblendw                  3
+setbe                    3
+vpmovmskb                3
+vzeroupper               3
+vpor                     3
+vfmadd231sd              3
+sets                     2
+jo                       2
+setns                    2
+setge                    2
+movss                    2
+aeskeygenassist          2
+cmpxchg                  2
+xgetbv                   2
+stosq                    2
+vpcmpeqw                 2
+stosw                    2
+andpd                    2
+cvtdq2pd                 2
+vpsrlq                   2
+vmovq                    2
+vcvtdq2pd                2
+ucomisd                  1
+cwd                      1
+psubw                    1
+movsb                    1
+stosb                    1
+vinsertf128              1
+pinsrb                   1
+jno                      1
+cvtsi2sd                 1
+vpcmpeqb                 1
+prefetchw                1
+cmovle                   1
+cvttsd2si                1
+psubq                    1
+divsd                    1
+vpsubq                   1
+vpsllq                   1
+vpaddq                   1
+vfmsub213sd              1
+vdivsd                   1
+vmovapd                  1
+vpsubd                   1
+
+=== FIRST REJECTED INSTRUCTION (project translation order) ===
+function entry 0x140014570  instruction 0x140014590  punpcklbw xmm0, xmm0
+
+JSON written to reports/tools/ground-truth-plink.json

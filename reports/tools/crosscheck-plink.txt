@@ -1,0 +1,42 @@
+image: /tmp/recomp-real/plink.exe
+
+CHECK A machine            mine=34404                pefile=34404                OK
+CHECK A image_base         mine=5368709120           pefile=5368709120           OK
+CHECK A entry_point_rva    mine=549292               pefile=549292               OK
+CHECK A size_of_headers    mine=1024                 pefile=1024                 OK
+CHECK A section_count      mine=9                    pefile=9                    OK
+CHECK A (pefile structural comparison): PASS
+
+CHECK B sample size: 500 instructions
+CHECK B mnemonic agreement: 500/500
+CHECK B full-text agreement: 466/500
+CHECK B length mismatches:   0/500
+CHECK B not in llvm-objdump map: 0
+CHECK B text-only differences (same mnemonic/length, printer style):
+CHECK B   mine='lea rcx, [rip + 739041]'
+CHECK B   llvm='lea rcx, [rip + 739041] # 5369456024'  x1
+CHECK B   mine='mov rax, qword ptr [rip + 920754]'
+CHECK B   llvm='mov rax, qword ptr [rip + 920754] # 5369667632'  x1
+CHECK B   mine='lea rdx, [rip + 785076]'
+CHECK B   llvm='lea rdx, [rip + 785076] # 5369560090'  x1
+CHECK B   mine='mov qword ptr [rip + 895054], 0'
+CHECK B   llvm='mov qword ptr [rip + 895054], 0 # 5369672096'  x1
+CHECK B   mine='mov rax, qword ptr [rip + 888608]'
+CHECK B   llvm='mov rax, qword ptr [rip + 888608] # 5369667632'  x1
+CHECK B   mine='mov rcx, qword ptr [rip + 890059]'
+CHECK B   llvm='mov rcx, qword ptr [rip + 890059] # 5369672096'  x1
+CHECK B   mine='lea rcx, [rip + 830547]'
+CHECK B   llvm='lea rcx, [rip + 830547] # 5369622044'  x1
+CHECK B   mine='mov rcx, qword ptr [rip + 870223]'
+CHECK B   llvm='mov rcx, qword ptr [rip + 870223] # 5369673912'  x1
+CHECK B   mine='lea rcx, [rip + 812369]'
+CHECK B   llvm='lea rcx, [rip + 812369] # 5369625492'  x1
+CHECK B   mine='and rdi, 18446744073709551612'
+CHECK B   llvm='and rdi, -4'  x1
+CHECK B   mine='mov rcx, qword ptr [rip + 839107]'
+CHECK B   llvm='mov rcx, qword ptr [rip + 839107] # 5369667632'  x1
+CHECK B   mine='lea rax, [rip + 744470]'
+CHECK B   llvm='lea rax, [rip + 744470] # 5369581784'  x1
+CHECK B (llvm-objdump mnemonic agreement 100.0000%, text 93.2000%): PASS
+
+OVERALL: PASS

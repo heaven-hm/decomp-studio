@@ -269,6 +269,35 @@ All notable changes to Recomp Studio are documented here. This project follows
   implementation. `verify` on `heap.exe` reports a pass where it previously
   reported that the reference could not model the heap.
 
+- An architecture-neutral semantic representation in `core/ir/`, with the C++
+  generator as its first backend. The lifter now builds statements — assign,
+  store, call, branch, trap, return — and a backend decides how they are written,
+  instead of the lifter writing C++ text inline. Statements that have not been
+  given a structured form yet travel as `Verbatim` and are emitted unchanged, so
+  the migration is incremental and cannot alter the generated code.
+- A golden test, `tests/golden`, that pins the generated `guest.cpp` for all 22
+  fixtures by digest. It was captured before the refactor began and the C++ output
+  is byte-identical through it, which is what makes a compiler refactor
+  trustworthy rather than hopeful. `coverage` also reports the migration fraction
+  as a measured number (`ir statements: 1461 (71 structured, 4.86%)`).
+- Segment registers read as zero, which is what the guest model has: it has no
+  descriptor table. That is measured, not assumed — the reference reports `ds`,
+  `es`, `ss` and `cs` all as `0x0000` in 32-bit mode for the same reason, so a
+  candidate that invented the real Windows selector `0x23` would diverge on every
+  instruction that stored one.
+
+### Fixed
+
+- **Operand reads and writes failed silently and produced code that could not
+  compile.** `mov word ptr [edi], ds` stores a segment register, and
+  `operand_read_expression` returned an empty string for it, so the generated line
+  was `store_guest_memory(context, addr, , 2);` — a C++ syntax error reported
+  against generated code, with no mention of the instruction that caused it. This
+  is the same root cause as the earlier `push cs` bug, which had been fixed
+  narrowly for `push` only. Both entry points now fail closed with a diagnostic
+  naming the instruction, the operand and the address, and segment registers are
+  handled properly rather than being the exception. Found on `guess.exe`.
+
 ### Fixed
 
 - Accurate input-format diagnostics. A macOS `.app`, an ELF binary or a ZIP was

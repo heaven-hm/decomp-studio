@@ -66,17 +66,57 @@ int fail(const std::string& message, bool json, int code = 1) {
   return code;
 }
 
+// Whether a command exists on PATH. Used to report the state of the optional
+// upstream components without pretending they are present.
+bool command_available(const std::string& name) {
+  const auto* path = std::getenv("PATH");
+  if (path == nullptr) return false;
+  std::string directories{path};
+  std::size_t start = 0;
+  while (start <= directories.size()) {
+    const auto end = directories.find(':', start);
+    const auto directory = directories.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (!directory.empty() && std::filesystem::exists(std::filesystem::path(directory) / name)) return true;
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return false;
+}
+
 int command_doctor(bool json) {
   const auto runtime_directory = RECOMP_DEFAULT_RUNTIME_DIR;
   const bool runtime_present = std::filesystem::exists(std::filesystem::path(runtime_directory) / "recomp_runtime.hpp");
+  // The optional upstream components the integration plan names. Reporting them
+  // here is what makes the dependency explicit and checkable rather than
+  // discovered halfway through a build: each is Apache-2.0 or MIT and can be
+  // adopted, but each also has to be present first.
+  // Presence is established from the artifact each component actually installs,
+  // never from a command name. `xed` is a case in point: macOS ships a program
+  // called xed in /usr/bin, and it is a text editor, so probing for that name
+  // reports Intel XED as present when it is not.
+  const bool llvm_present = command_available("llvm-config");
+  const bool xed_present = std::filesystem::exists("/opt/homebrew/include/xed/xed-interface.h") ||
+                           std::filesystem::exists("/usr/local/include/xed/xed-interface.h") ||
+                           std::filesystem::exists("/usr/include/xed/xed-interface.h");
+  const bool remill_present = std::filesystem::exists("/opt/homebrew/include/remill/Arch/Arch.h") ||
+                              std::filesystem::exists("/usr/local/include/remill/Arch/Arch.h");
   if (json) {
     std::cout << "{\"status\":\"ok\",\"host\":\"macos\",\"target\":\"macos-arm64\",\"format\":\"pe\","
-              << "\"architecture\":\"x86_64\",\"runtime_present\":" << (runtime_present ? "true" : "false") << "}\n";
+              << "\"architecture\":\"x86_64\",\"runtime_present\":" << (runtime_present ? "true" : "false")
+              << ",\"llvm\":" << (llvm_present ? "true" : "false")
+              << ",\"xed\":" << (xed_present ? "true" : "false")
+              << ",\"remill\":" << (remill_present ? "true" : "false") << "}\n";
   } else {
     std::cout << "host:    macos\n"
               << "target:  macos-arm64 (native)\n"
               << "input:   PE32+ x86_64\n"
-              << "runtime: " << (runtime_present ? "present" : "missing") << " (" << runtime_directory << ")\n";
+              << "runtime: " << (runtime_present ? "present" : "missing") << " (" << runtime_directory << ")\n"
+              << "llvm:    " << (llvm_present ? "present" : "missing")
+              << "  (optional; required by the LLVM IR backend and by Remill)\n"
+              << "xed:     " << (xed_present ? "present" : "missing")
+              << "  (optional; Remill keys its x86 semantics on XED instruction names)\n"
+              << "remill:  " << (remill_present ? "present" : "missing")
+              << "  (optional; Apache-2.0 semantic library, not yet integrated)\n";
   }
   return 0;
 }
@@ -161,6 +201,12 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   discovery.discover();
   recomp::semantics::X86_64Lifter lifter(discovery);
   const auto census = lifter.census();
+  // How much of the recovered program the architecture-neutral IR describes as
+  // statements rather than passing through as text.
+  const auto statements = lifter.statement_census();
+
+  std::ostringstream statement_percent;
+  statement_percent << std::fixed << std::setprecision(2) << statements.structured_percent();
 
   std::ostringstream percent;
   percent << std::fixed << std::setprecision(2) << census.coverage_percent();
@@ -192,7 +238,13 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             << "functions:      " << discovery.functions().size() << "\n"
             << "instructions:   " << census.total_instructions << "\n"
             << "lifted:         " << census.lifted_instructions << " (" << percent.str() << "%)\n"
-            << "unsupported:    " << census.unsupported_instructions << "\n";
+            << "unsupported:    " << census.unsupported_instructions << "\n"
+            // How much of the recovered program the architecture-neutral IR
+            // describes as statements rather than passing through as text. The
+            // rest is the migration still to do, and it is a measured fraction
+            // rather than an impression.
+            << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
+            << statement_percent.str() << "%)\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;

@@ -139,6 +139,32 @@ bool has_segment_prefix(const DecodedInstruction& instruction, std::uint8_t pref
   return false;
 }
 
+// Capstone prefixes a mnemonic with `lock `/`rep `/`repe `/`repne `. The lifter
+// matches on the bare mnemonic and its diagnostics name the bare mnemonic, so
+// classification has to use the same string: otherwise an unsupported
+// `lock bts` would be reported under a class name the lifter's own reason calls
+// `bts`, and the two would disagree for the same instruction.
+struct ParsedMnemonic {
+  std::string mnemonic;
+  bool has_repeat_prefix{};
+};
+
+ParsedMnemonic parse_mnemonic(const std::string& raw) {
+  ParsedMnemonic parsed{raw, false};
+  if (parsed.mnemonic.compare(0, 4, "rep ") == 0) {
+    parsed.mnemonic = parsed.mnemonic.substr(4);
+    parsed.has_repeat_prefix = true;
+  } else if (parsed.mnemonic.compare(0, 5, "repe ") == 0) {
+    parsed.mnemonic = parsed.mnemonic.substr(5);
+    parsed.has_repeat_prefix = true;
+  } else if (parsed.mnemonic.compare(0, 6, "repne ") == 0) {
+    parsed.mnemonic = parsed.mnemonic.substr(6);
+    parsed.has_repeat_prefix = true;
+  }
+  if (parsed.mnemonic.compare(0, 5, "lock ") == 0) parsed.mnemonic = parsed.mnemonic.substr(5);
+  return parsed;
+}
+
 }  // namespace
 
 std::string X86_64Lifter::guest_function_name(std::uint64_t address) const {
@@ -251,12 +277,9 @@ void X86_64Lifter::record_unsupported(const std::string& mnemonic, const Decoded
 
 void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const RecoveredFunction& function,
                                     std::string& output) const {
-  std::string mnemonic = instruction.mnemonic;
-  int repeat_prefix = 0;
-  if (mnemonic.compare(0, 4, "rep ") == 0) { mnemonic = mnemonic.substr(4); repeat_prefix = 1; }
-  else if (mnemonic.compare(0, 5, "repe ") == 0) { mnemonic = mnemonic.substr(5); repeat_prefix = 1; }
-  else if (mnemonic.compare(0, 6, "repne ") == 0) { mnemonic = mnemonic.substr(6); repeat_prefix = 1; }
-  if (mnemonic.compare(0, 5, "lock ") == 0) mnemonic = mnemonic.substr(5);
+  const auto parsed_mnemonic = parse_mnemonic(instruction.mnemonic);
+  const std::string& mnemonic = parsed_mnemonic.mnemonic;
+  const int repeat_prefix = parsed_mnemonic.has_repeat_prefix ? 1 : 0;
   const auto& operands = instruction.operands;
   const auto emit = [&output](const std::string& line) { output += "  " + line + "\n"; };
 
@@ -827,9 +850,12 @@ CoverageCensus X86_64Lifter::census() const {
         // Classify this instruction and keep going: the point of the census is
         // the whole program, not the first failure.
         ++result.unsupported_instructions;
-        auto& entry = by_mnemonic[instruction.mnemonic];
+        // Key on the same bare mnemonic the lift diagnostic names, so the class
+        // name and its reason never disagree for an unsupported `lock`/`rep` form.
+        const auto classification = parse_mnemonic(instruction.mnemonic).mnemonic;
+        auto& entry = by_mnemonic[classification];
         if (entry.occurrences == 0) {
-          entry.mnemonic = instruction.mnemonic;
+          entry.mnemonic = classification;
           entry.first_address = address;
           entry.first_function_entry = function_entry;
           entry.reason = error.what();

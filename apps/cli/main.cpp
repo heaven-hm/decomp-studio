@@ -4,6 +4,7 @@
 #include "core/common/sha256.hpp"
 #include "core/discovery/function_discovery.hpp"
 #include "core/pipeline.hpp"
+#include "core/semantics/x86_64_lifter.hpp"
 #ifdef RECOMP_HAS_UNICORN
 #include "core/harness/repair_harness.hpp"
 #include "core/verification/differential_harness.hpp"
@@ -37,6 +38,7 @@ void print_help() {
             << "  doctor                       Report host and toolchain capability\n"
             << "  inspect <image>              Inspect a PE32/PE32+ executable\n"
             << "  analyze <image>              Recover functions and instructions\n"
+            << "  coverage <image>             Instruction coverage and unsupported classes\n"
             << "  functions <image>            List recovered function candidates\n"
             << "  cfg <image> --address <hex>  Export a function CFG as Graphviz DOT\n"
             << "  translate <image> --target <t> --output <dir>   Recompile to a host project\n"
@@ -116,6 +118,61 @@ int command_analyze(const std::filesystem::path& input, bool json) {
     std::cout << "architecture: " << executable.architecture_name() << "\n"
               << "functions:    " << discovery.functions().size() << "\n"
               << "instructions: " << instruction_count << "\n";
+  }
+  return 0;
+}
+
+int command_coverage(const std::filesystem::path& input, bool json) {
+  const auto executable = recomp::binary::PortableExecutable::parse(input);
+  recomp::discovery::FunctionDiscovery discovery(executable);
+  discovery.discover();
+  recomp::semantics::X86_64Lifter lifter(discovery);
+  const auto census = lifter.census();
+
+  std::ostringstream percent;
+  percent << std::fixed << std::setprecision(2) << census.coverage_percent();
+
+  if (json) {
+    std::cout << "{\"status\":\"ok\",\"architecture\":\"" << executable.architecture_name()
+              << "\",\"format\":\"" << executable.format_name()
+              << "\",\"function_count\":" << discovery.functions().size()
+              << ",\"total_instructions\":" << census.total_instructions
+              << ",\"lifted_instructions\":" << census.lifted_instructions
+              << ",\"unsupported_instructions\":" << census.unsupported_instructions
+              << ",\"coverage_percent\":" << percent.str()
+              << ",\"unsupported_class_count\":" << census.unsupported.size()
+              << ",\"unsupported\":[";
+    for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
+      const auto& entry = census.unsupported[index];
+      if (index != 0) std::cout << ",";
+      std::cout << "{\"mnemonic\":" << recomp::common::quote_json(entry.mnemonic)
+                << ",\"occurrences\":" << entry.occurrences
+                << ",\"first_address\":" << recomp::common::quote_json(format_hex(entry.first_address, 10))
+                << ",\"first_function\":" << recomp::common::quote_json(format_hex(entry.first_function_entry, 10))
+                << ",\"reason\":" << recomp::common::quote_json(entry.reason) << "}";
+    }
+    std::cout << "]}\n";
+    return 0;
+  }
+
+  std::cout << "architecture:   " << executable.architecture_name() << "\n"
+            << "functions:      " << discovery.functions().size() << "\n"
+            << "instructions:   " << census.total_instructions << "\n"
+            << "lifted:         " << census.lifted_instructions << " (" << percent.str() << "%)\n"
+            << "unsupported:    " << census.unsupported_instructions << "\n";
+  if (census.unsupported.empty()) {
+    std::cout << "coverage:       complete — every recovered instruction lifts\n";
+    return 0;
+  }
+  std::cout << "classes:        " << census.unsupported.size()
+            << " distinct unsupported instruction classes\n"
+            << "\n"
+            << "occurrences  mnemonic                    first site\n";
+  for (const auto& entry : census.unsupported) {
+    std::ostringstream line;
+    line << std::setw(11) << std::left << entry.occurrences << "  " << std::setw(26) << std::left << entry.mnemonic
+         << "  " << format_hex(entry.first_address, 10) << " in " << format_hex(entry.first_function_entry, 10);
+    std::cout << line.str() << "\n";
   }
   return 0;
 }
@@ -333,6 +390,10 @@ int main(int argc, char** argv) {
     if (command == "analyze") {
       if (argc < 3) return fail("analyze requires an image path", json);
       return command_analyze(argv[2], json);
+    }
+    if (command == "coverage") {
+      if (argc < 3) return fail("coverage requires an image path", json);
+      return command_coverage(argv[2], json);
     }
     if (command == "functions") {
       if (argc < 3) return fail("functions requires an image path", json);

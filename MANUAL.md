@@ -174,7 +174,82 @@ functions:    4
 instructions: 552
 ```
 
-### 4.4 `functions`
+### 4.4 `coverage`
+
+Classify every recovered instruction and report the classes the lifter does not
+implement. `translate` stops at the *first* unsupported instruction, so for a
+real application this is the command that tells you the true size of the gap
+instead of one line of it.
+
+```sh
+build/recomp-studio coverage tests/fixtures/apps/bin/arith.exe
+```
+
+```
+architecture:   x86_64
+functions:      5
+instructions:   688
+lifted:         688 (100.00%)
+unsupported:    0
+coverage:       complete — every recovered instruction lifts
+```
+
+A program the lifter cannot translate reports every unsupported class, most
+frequent first, with the first site and the function it belongs to:
+
+```sh
+build/recomp-studio coverage tests/fixtures/apps/bin/unsupported_instruction.exe
+```
+
+```
+architecture:   x86_64
+functions:      2
+instructions:   206
+lifted:         204 (99.03%)
+unsupported:    2
+classes:        2 distinct unsupported instruction classes
+
+occurrences  mnemonic                    first site
+1            fld1                        0x01400010ce in 0x0140001000
+1            fstp                        0x01400010d0 in 0x0140001000
+```
+
+On a real Windows binary the same command produces the work list directly. Here
+is a 1 MB PE32+ console program (`plink.exe`, SHA-256 `969f3687…`):
+
+```sh
+build/recomp-studio coverage plink.exe
+```
+
+```
+architecture:   x86_64
+functions:      2208
+instructions:   164668
+lifted:         162631 (98.76%)
+unsupported:    2037
+classes:        82 distinct unsupported instruction classes
+
+occurrences  mnemonic                    first site
+234          pmuludq                     0x0140072408 in 0x01400721e0
+160          psrad                       0x0140072433 in 0x01400721e0
+132          aesenc                      0x014007d290 in 0x014007d260
+...
+```
+
+`--json` emits the same facts for automation: `total_instructions`,
+`lifted_instructions`, `unsupported_instructions`, `coverage_percent`,
+`unsupported_class_count`, and an `unsupported` array whose entries carry
+`mnemonic`, `occurrences`, `first_address`, `first_function` and the lifter's
+`reason`.
+
+The census never decides whether a translation is accepted — `translate` still
+fails closed on the first unsupported instruction. The regression suite
+cross-checks the two against each other: translation must succeed exactly when
+the census reports 100% coverage, so a census that over-reported would
+contradict a successful translation and one that under-reported would contradict
+a failed one.
+
+### 4.5 `functions`
 
 List recovered function candidates with their size.
 
@@ -188,7 +263,7 @@ build/recomp-studio functions tests/fixtures/apps/bin/arith.exe
 ...
 ```
 
-### 4.5 `cfg`
+### 4.6 `cfg`
 
 Export one function's control-flow graph as Graphviz DOT.
 
@@ -204,7 +279,7 @@ build/recomp-studio cfg tests/fixtures/apps/bin/arith.exe --address 0x140001080 
   | dot -Tpng -o cfg.png
 ```
 
-### 4.6 `translate`
+### 4.7 `translate`
 
 Generate a host project from the guest executable. This is the core step.
 
@@ -226,7 +301,7 @@ source:   sha256=36853847e207afef...
 The project contains `guest.cpp`, `recomp_runtime.hpp/.cpp`,
 `recomp-config.toml` and `recomp-manifest.json`.
 
-### 4.7 `build`
+### 4.8 `build`
 
 Compile the generated project into a native executable.
 
@@ -238,7 +313,7 @@ build/recomp-studio build out/arith
 built out/arith/recomp-guest
 ```
 
-### 4.8 `run`
+### 4.9 `run`
 
 Execute the generated binary.
 
@@ -246,7 +321,7 @@ Execute the generated binary.
 build/recomp-studio run out/arith
 ```
 
-### 4.9 `verify`
+### 4.10 `verify`
 
 Compare the generated binary against the original x86-64 code (Unicorn
 reference): output bytes and instruction trace.
@@ -265,7 +340,7 @@ VERIFY: PASS (identical output)
 
 Exit code is `0` on PASS, `1` on FAIL.
 
-### 4.10 `repair`
+### 4.11 `repair`
 
 The autonomous loop: translate, build, verify, localise the first divergence and
 write a per-iteration report.
@@ -294,7 +369,7 @@ mnemonics it saw, e.g.:
       first control-flow divergence at step 0 ...; unsupported mnemonics: addsd, bts, vpxor, ...
 ```
 
-### 4.11 `report`
+### 4.12 `report`
 
 Print the generated project manifest.
 
@@ -302,7 +377,7 @@ Print the generated project manifest.
 build/recomp-studio report out/arith
 ```
 
-### 4.12 `examples`
+### 4.13 `examples`
 
 ```sh
 build/recomp-studio examples list

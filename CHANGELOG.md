@@ -3,6 +3,27 @@
 All notable changes to Recomp Studio are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `coverage` command: a non-aborting census of every recovered instruction. It
+  reports total, lifted and unsupported instruction counts plus a histogram of
+  unsupported instruction classes (occurrences, first site, owning function and
+  the lifter's diagnostic), most frequent first. Translation stops at the first
+  unsupported instruction, so a genuine application previously produced a single
+  line of diagnostic; the census reports the whole gap. On a 1 MB PE32+ console
+  binary it classifies 164,668 instructions in one pass (162,631 lifted, 98.76%,
+  2,037 unsupported across 82 classes).
+- `tests/coverage/coverage_test.py`: cross-checks the census against `analyze`
+  (same recovered instruction set) and against `translate` (translation must
+  succeed exactly when the census reports 100% coverage).
+
+### Fixed
+
+- README instruction-coverage list overstated the SSE unpack support as
+  `punpck*`; only `punpckldq`/`punpckhdq`/`punpcklqdq`/`punpckhqdq` are lifted.
+
 ## [0.3.0] - 2026-10-27
 
 ### Added

@@ -78,5 +78,11 @@ add_test(NAME negative_inputs
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 
+add_test(NAME coverage_census
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/coverage_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
 set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)
+set_tests_properties(coverage_census PROPERTIES TIMEOUT 900)

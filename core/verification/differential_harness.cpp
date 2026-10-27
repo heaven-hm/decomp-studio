@@ -309,7 +309,7 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
       checkpoint.memory_digest = guest_memory_digest(&digest_context);
       const auto checkpoint_number = index / guest_checkpoint_interval;
       if (std::getenv("RECOMP_MEMORY_WINDOWS") != nullptr &&
-          checkpoint_number % kMemoryWindowSampleStride == 0) {
+          checkpoint_number < kMemoryWindowSampleLimit) {
         const auto sp = digest_context.registers[4];
         std::vector<std::uint8_t> window;
         window.reserve(0x11000);
@@ -597,6 +597,11 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // classified rather than simply failed: a byte inside an aligned 8-byte slot whose
   // two values are within one unit in the last place of each other is the documented
   // x87 precision limit, and everything else is a divergence.
+  struct MemoryWindowClassification {
+    bool has_differences{};
+    bool only_x87_precision{};
+  };
+  std::map<std::uint64_t, MemoryWindowClassification> memory_window_classifications;
   if (std::ifstream windows(memory_windows_path, std::ios::binary); windows) {
     constexpr std::size_t kWindowBytes = 0x11000;
     // The candidate writes a 24-byte header per sampled checkpoint -- the index, the stack
@@ -613,9 +618,14 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
            windows.read(reinterpret_cast<char*>(candidate_window.data()), kWindowBytes) &&
            checkpoint < reference.memory_windows.size()) {
       const auto& expected = reference.memory_windows[checkpoint];
+      std::uint64_t checkpoint_index = 0;
+      std::memcpy(&checkpoint_index, header.data(), sizeof(checkpoint_index));
+      MemoryWindowClassification classification;
+      classification.only_x87_precision = true;
       if (expected.size() == kWindowBytes) {
         for (std::size_t offset = 0; offset < kWindowBytes; ++offset) {
           if (expected[offset] == candidate_window[offset]) continue;
+          classification.has_differences = true;
           // Which aligned 8-byte slot holds it, and are the two doubles within one ULP?
           const auto slot = offset & ~static_cast<std::size_t>(7);
           const bool is_x87_class = slot + 8 <= kWindowBytes &&
@@ -624,6 +634,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
           if (is_x87_class) {
             ++result.x87_precision_differences;
           } else {
+            classification.only_x87_precision = false;
             ++unclassified;
             if (first_unclassified.empty()) {
               // The whole 8-byte slot, not the single byte: a byte on its own says
@@ -638,7 +649,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
               std::memcpy(&expected_double, expected.data() + slot, 8);
               std::memcpy(&candidate_double, candidate_window.data() + slot, 8);
               std::ostringstream text;
-              text << "checkpoint " << checkpoint << ", window offset 0x" << std::hex << offset
+              text << "checkpoint " << checkpoint_index << ", window offset 0x" << std::hex << offset
                    << " (8-byte slot at 0x" << slot << "): candidate 0x" << candidate_slot
                    << " reference 0x" << expected_slot << std::dec << " (as doubles "
                    << candidate_double << " against " << expected_double << ")";
@@ -647,6 +658,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
           }
         }
       }
+      memory_window_classifications[checkpoint_index] = classification;
       ++checkpoint;
     }
     if (unclassified != 0) {
@@ -695,12 +707,20 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
             break;
           }
         }
-        if (expected.memory_digest != actual.memory_digest && result.memory_diagnosis.empty()) {
-          result.memory_match = false;
-          result.memory_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
-                                    std::to_string(expected.index) + " (0x" + hex_text(expected.address) +
-                                    "): guest memory digest 0x" + hex_text(actual.memory_digest) +
-                                    ", reference 0x" + hex_text(expected.memory_digest);
+        if (expected.memory_digest != actual.memory_digest) {
+          const auto window = memory_window_classifications.find(expected.index);
+          const bool explained_by_x87 = window != memory_window_classifications.end() &&
+                                        window->second.has_differences &&
+                                        window->second.only_x87_precision;
+          if (!explained_by_x87) {
+            result.memory_match = false;
+            if (result.memory_diagnosis.empty())
+              result.memory_diagnosis = "checkpoint " + std::to_string(index) +
+                                        " after guest instruction index " + std::to_string(expected.index) +
+                                        " (0x" + hex_text(expected.address) + "): guest memory digest 0x" +
+                                        hex_text(actual.memory_digest) + ", reference 0x" +
+                                        hex_text(expected.memory_digest);
+          }
         }
         const bool mxcsr_differs = expected.mxcsr != actual.mxcsr;
         const bool x87_control_differs = expected.x87_control_word != actual.x87_control_word;

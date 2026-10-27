@@ -46,6 +46,9 @@ for name in $FIXTURES_X64; do
   build_one "$CC" "$name" "$name"
 done
 
+"$CC" $COMMON_FLAGS -Wl,-e,recomp_entry -Wl,--subsystem,console \
+    -o "$out/tail_import.exe" "$here/tail_import.c" -lkernel32 -lmsvcrt -lgcc
+
 for name in $FIXTURES_AVX; do
   if ! command -v "$CC" >/dev/null 2>&1; then
     echo "error: $CC not found; cannot build required fixture $name" >&2

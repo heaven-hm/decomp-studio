@@ -882,3 +882,43 @@ makes the two sides' output differ for every program that registers one, and the
 verification would report a divergence that is really a difference in the harness. So
 neither runs them, and the runtime says so. `tests/verification/atexit_test.py`
 requires the reporting, and will change to require the output when execution lands.
+
+
+## Attempting to execute the handlers: what was learned, and why it is not landed
+
+The next step after registering the handlers is to run them. Two designs were tried and
+both were withdrawn. The record is worth keeping, because the second one very nearly
+worked and the reason it does not is specific.
+
+**Design 1: a nested emulation per handler.** After the main emulation stops at
+`exit()`, run each handler with `uc_emu_start(engine, handler, stop_address, 0, count)`.
+
+- With `count = 0` the loop is unbounded and **consumed the whole run's instruction
+  budget**; the run then failed with *"instruction budget exhausted before ExitProcess"*,
+  which reads as the program never reaching exit rather than as a handler that never
+  returned.
+- With a bound, and with the stop address raised above the mapped range, **it still did
+  not terminate**. A 10,000-instruction bound was not respected either, so the hang is
+  not the bound and not the stop address.
+
+**Design 2: chain the handlers through the main emulation.** Map a page holding a single
+`hlt`, use it as each handler's return address, and have the code hook recognise it,
+advance to the next handler, and stop after the last. This keeps the run's own
+instruction budget and hooks in force, and it **worked in the reference**: the reference
+produced 48 bytes where it had produced 31 — the handlers ran.
+
+It failed on the **candidate** side, and that is the blocker. The compiled candidate
+printed both of its own handlers and then **hung on one of the two handlers the C
+runtime registers for itself**, at `0x140001010` or `0x1400049a8`. A re-entry guard did
+not help, so it is not a handler calling `exit()` again: the handler simply does not
+return.
+
+So the state is: the reference can run them, the candidate cannot yet, and running them
+on one side only makes the two sides' output differ — which the verification would
+report as a translation divergence when it is really a harness difference. Neither side
+runs them, and the runtime names every handler it did not run.
+
+**What the next attempt should start from.** Find out why that one handler does not
+return, rather than working around it: it is reachable and recompiled, and a routine
+that is recompiled and does not return is worth understanding on its own terms. Running
+it under the trace log and looking at where it stops would answer it in one run.

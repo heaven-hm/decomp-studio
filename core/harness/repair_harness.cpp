@@ -1,6 +1,7 @@
 #include "core/harness/repair_harness.hpp"
 
 #include "core/binary/pe.hpp"
+#include "core/common/diagnostic.hpp"
 #include "core/pipeline.hpp"
 #include "core/verification/differential_harness.hpp"
 
@@ -45,16 +46,16 @@ void write_iteration_report(const std::filesystem::path& directory, const Iterat
   output << "  \"built\": " << (record.built ? "true" : "false") << ",\n";
   output << "  \"verified\": " << (record.verified ? "true" : "false") << ",\n";
   output << "  \"diverged\": " << (record.diverged ? "true" : "false") << ",\n";
-  output << "  \"divergence\": {\"reference\": \"" << format_hex(record.divergence_reference_address)
-         << "\", \"candidate\": \"" << format_hex(record.divergence_candidate_address)
-         << "\", \"instruction\": \"" << record.divergence_instruction << "\"},\n";
+  output << "  \"divergence\": {\"reference\": " << common::quote_json(format_hex(record.divergence_reference_address))
+         << ", \"candidate\": " << common::quote_json(format_hex(record.divergence_candidate_address))
+         << ", \"instruction\": " << common::quote_json(record.divergence_instruction) << "},\n";
   output << "  \"unsupported_mnemonics\": [";
   for (std::size_t index = 0; index < record.unsupported_mnemonics.size(); ++index) {
     if (index != 0) output << ", ";
-    output << "\"" << record.unsupported_mnemonics[index] << "\"";
+    output << common::quote_json(record.unsupported_mnemonics[index]);
   }
   output << "],\n";
-  output << "  \"diagnosis\": \"" << record.diagnosis << "\"\n";
+  output << "  \"diagnosis\": " << common::quote_json(record.diagnosis) << "\n";
   output << "}\n";
 }
 
@@ -105,14 +106,26 @@ RepairReport run_repair(const std::filesystem::path& input, const std::filesyste
     record.diverged = traces.diverged;
     record.divergence_reference_address = traces.reference_address;
     record.divergence_candidate_address = traces.candidate_address;
-    const auto executable = binary::PortableExecutable::parse(input);
-    record.divergence_instruction = decode_instruction(executable, traces.reference_address);
-
     std::ostringstream diagnosis;
-    diagnosis << "first control-flow divergence at step " << traces.first_divergence_index
-              << ": reference executed " << format_hex(traces.reference_address) << " ("
-              << record.divergence_instruction << ") while the candidate executed "
-              << format_hex(traces.candidate_address);
+    if (!verification.diagnosis.empty()) diagnosis << verification.diagnosis;
+    if (!verification.state_match && !verification.state_diagnosis.empty())
+      diagnosis << (diagnosis.tellp() > 0 ? "; " : "") << verification.state_diagnosis;
+    if (!verification.memory_match && !verification.memory_diagnosis.empty())
+      diagnosis << (diagnosis.tellp() > 0 ? "; " : "") << verification.memory_diagnosis;
+    if (!verification.control_registers_match && !verification.control_diagnosis.empty())
+      diagnosis << (diagnosis.tellp() > 0 ? "; " : "") << verification.control_diagnosis;
+    if (traces.available && traces.diverged) {
+      if (traces.reference_address != 0) {
+        const auto executable = binary::PortableExecutable::parse(input);
+        record.divergence_instruction = decode_instruction(executable, traces.reference_address);
+      }
+      diagnosis << (diagnosis.tellp() > 0 ? "; " : "")
+                << "first control-flow divergence at step " << traces.first_divergence_index
+                << ": reference executed " << format_hex(traces.reference_address) << " ("
+                << record.divergence_instruction << ") while the candidate executed "
+                << format_hex(traces.candidate_address);
+    }
+    if (diagnosis.tellp() == 0) diagnosis << "verification did not pass; no divergence was identified";
     if (!record.unsupported_mnemonics.empty()) {
       diagnosis << "; unsupported mnemonics: ";
       for (std::size_t index = 0; index < record.unsupported_mnemonics.size(); ++index) {

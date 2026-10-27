@@ -594,6 +594,35 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // family additionally accepts an immediate count.
   if (operands.size() == 2 && is_vector_register(operands[0])) {
     const auto destination = std::to_string(vector_index(operands[0]));
+    if (mnemonic == "unpcklps" || mnemonic == "unpckhps" || mnemonic == "unpcklpd" || mnemonic == "unpckhpd") {
+      const int element_size = mnemonic.find("pd") != std::string::npos ? 8 : 4;
+      const bool high = mnemonic.find('h') != std::string::npos;
+      if (is_vector_register(operands[1])) {
+        const auto helper = element_size == 8 ? "vector_unpack_qwords" : "vector_unpack_dwords";
+        emit(std::string(helper) + "(context, " + destination + ", " +
+             std::to_string(vector_index(operands[1])) + ", " + (high ? "1" : "0") + ");");
+        return;
+      }
+      if (operands[1].kind == discovery::Operand::Kind::Memory) {
+        emit("vector_unpack_memory(context, " + destination + ", " +
+             effective_address_expression(instruction, operands[1]) + ", " + std::to_string(element_size) +
+             ", " + (high ? "1" : "0") + ");");
+        return;
+      }
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory &&
+        (mnemonic == "punpcklbw" || mnemonic == "punpckhbw" || mnemonic == "punpcklwd" ||
+         mnemonic == "punpckhwd" || mnemonic == "punpckldq" || mnemonic == "punpckhdq" ||
+         mnemonic == "punpcklqdq" || mnemonic == "punpckhqdq")) {
+      const int element_size = mnemonic.find("qdq") != std::string::npos ? 8
+                               : mnemonic.find("dq") != std::string::npos ? 4
+                               : mnemonic.find("wd") != std::string::npos ? 2 : 1;
+      const bool high = mnemonic.find('h') != std::string::npos;
+      emit("vector_unpack_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + std::to_string(element_size) +
+           ", " + (high ? "1" : "0") + ");");
+      return;
+    }
     const auto& packed = packed_integer_helpers();
     const auto helper = packed.find(mnemonic);
     if (helper != packed.end()) {
@@ -718,6 +747,18 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit_vector_move(operands[0], operands[1], mnemonic == "movss" ? 4 : 8);
     return;
   }
+  // Adapted from Remill's MOVLHPS/MOVHLPS semantics (Apache-2.0): preserve
+  // one half of the destination and copy the indicated half of the source.
+  if ((mnemonic == "movlhps" || mnemonic == "movhlps") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      !is_wide_vector_register(operands[0].register_name) && !is_wide_vector_register(operands[1].register_name)) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto source = std::to_string(vector_index(operands[1]));
+    emit("std::memcpy(context->vector_registers[" + destination + "] + " +
+         (mnemonic == "movlhps" ? "8" : "0") + ", context->vector_registers[" + source + "] + " +
+         (mnemonic == "movlhps" ? "0" : "8") + ", 8);");
+    return;
+  }
   if ((mnemonic == "movd" || mnemonic == "movq") && operands.size() == 2 &&
       (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
     const int byte_count = mnemonic == "movd" ? 4 : 8;
@@ -762,11 +803,34 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
   if (mnemonic == "pshufd" && operands.size() == 3 && is_vector_register(operands[0]) &&
-      is_vector_register(operands[1])) {
-    emit("vector_shuffle_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
-         std::to_string(vector_index(operands[1])) + ", " +
-         std::to_string(operands[2].immediate_value & 0xff) + ");");
-    return;
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_shuffle_dwords(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + control + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_shuffle_dwords_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + control + ");");
+      return;
+    }
+  }
+  if (mnemonic == "shufps" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_shuffle_single(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + control + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_shuffle_single_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + control + ");");
+      return;
+    }
   }
   if ((mnemonic == "punpckldq" || mnemonic == "punpckhdq" || mnemonic == "punpcklqdq" ||
        mnemonic == "punpckhqdq") && operands.size() == 2 && is_vector_register(operands[0]) &&
@@ -883,7 +947,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
 
   if (arithmetic_helpers().count(mnemonic) != 0 && operands.size() == 2) {
     const auto width = operand_width(operands[1], 8);
-    operand_write(output, 
+    operand_write(output,
         instruction, operands[0],
         arithmetic_helpers().at(mnemonic) + "(context, " + operand_read_expression(instruction, operands[0], width) +
             ", " + operand_read_expression(instruction, operands[1], width) + ", " + std::to_string(width) + ")",
@@ -1601,6 +1665,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("context->registers[4] = mask_guest_address(context->registers[4] - " + std::to_string(frame) + ");");
     return;
   }
+  // Adapted from Remill's AAS semantics, lib/Arch/X86/Semantics/DECIMAL.cpp
+  // (Apache-2.0). OF, ZF and PF are undefined; leave them unchanged.
+  if (mnemonic == "aas") {
+    emit("{ std::uint16_t ax = static_cast<std::uint16_t>(context->registers[0]); "
+         "if ((ax & 0xfu) > 9 || context->auxiliary_flag == 1) { "
+         "ax = static_cast<std::uint16_t>(ax - 6); "
+         "ax = static_cast<std::uint16_t>(ax - 0x100); "
+         "context->carry_flag = 1; context->auxiliary_flag = 1; } else { "
+         "context->carry_flag = 0; context->auxiliary_flag = 0; } "
+         "ax = static_cast<std::uint16_t>((ax & 0xff00u) | (ax & 0x0fu)); "
+         "context->registers[0] = (context->registers[0] & ~0xffffull) | ax; }");
+    return;
+  }
   // AAA: ASCII adjust AL after addition, in the BCD sense the manual defines.
   if (mnemonic == "aaa") {
     emit("{ const std::uint32_t low = static_cast<std::uint32_t>(context->registers[0] & 0x0fu); "
@@ -1734,6 +1811,15 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
   ir::Function lifted;
   lifted.address = function.entry;
   lifted.name = guest_function_name(function.entry);
+  // Adapted from igi-recomp tools/recomp/gen.py emit_copy (MIT): recovered
+  // backward blocks can sort before the function's actual entry.
+  if (!function.instructions.empty() && function.instructions.begin()->first != function.entry) {
+    ir::Statement jump;
+    jump.kind = ir::StatementKind::Jump;
+    jump.label = "label_" + std::to_string(function.entry);
+    jump.address_of_instruction = function.entry;
+    lifted.statements.push_back(std::move(jump));
+  }
   for (const auto& [address, instruction] : function.instructions) {
     if (function.block_starts.count(address) != 0) {
       ir::Statement label;

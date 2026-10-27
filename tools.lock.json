@@ -73,7 +73,7 @@
       "name": "igi-recomp",
       "url": "https://github.com/HenryKun55/igi-recomp",
       "license": "MIT",
-      "use": "architecture research only; no source copied"
+      "use": "architecture reference and selected MIT-licensed Win32 shim adaptations; see THIRD_PARTY_NOTICES.md"
     },
     {
       "name": "N64Recomp",

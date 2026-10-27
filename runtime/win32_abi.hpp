@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace recomp {
 
@@ -124,6 +126,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "_initterm_e", 2, false},
     {"msvcrt.dll", "__acrt_iob_func", 1, false},
     {"msvcrt.dll", "__stdio_common_vfprintf", 5, false},
+    {"msvcrt.dll", "__stdio_common_vfscanf", 6, false},
     {"msvcrt.dll", "memcmp", 3, false},
     {"msvcrt.dll", "fflush", 1, false},
     {"msvcrt.dll", "setvbuf", 4, false},
@@ -138,6 +141,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "__p___argc", 0, false},
     {"msvcrt.dll", "__p___argv", 0, false},
     {"msvcrt.dll", "__p__commode", 0, false},
+    {"msvcrt.dll", "__p__acmdln", 0, false},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Register", 1, false},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Unregister", 1, false},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Resume", 1, false},
@@ -149,6 +153,8 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"libstdc++-6.dll", "_ZdlPvj", 2, false},
     {"msvcrt.dll", "system", 1, false},
     {"msvcrt.dll", "time", 1, false},
+    {"msvcrt.dll", "_time64", 1, false},
+    {"msvcrt.dll", "putchar", 1, false},
     {"msvcrt.dll", "signal", 2, false},
     {"msvcrt.dll", "strcoll", 2, false},
     {"msvcrt.dll", "_stricoll", 2, false},
@@ -240,6 +246,8 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "lstrlenW", 1, true},
     {"kernel32.dll", "lstrcpyA", 2, true},
     {"kernel32.dll", "GetACP", 0, true},
+    {"kernel32.dll", "GetLocalTime", 1, true},
+    {"kernel32.dll", "IsDBCSLeadByte", 1, true},
     {"kernel32.dll", "GetOEMCP", 0, true},
     {"kernel32.dll", "GetConsoleOutputCP", 0, true},
     {"kernel32.dll", "SetConsoleOutputCP", 1, true},
@@ -260,6 +268,23 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "LoadLibraryW", 1, true},
     {"kernel32.dll", "FreeLibrary", 1, true},
 };
+
+// The distinct library names the table knows, in declaration order.
+//
+// Used when a guest asks for a symbol without naming a module -- GetProcAddress
+// with a NULL handle, which means "search what the process already has". The
+// table's own order is the only search order that cannot drift: a separate list
+// would silently stop including the next library somebody implements.
+inline std::vector<const char*> win32_known_libraries() {
+  std::vector<const char*> libraries;
+  for (const auto& entry : kWin32ImportAbiTable) {
+    bool seen = false;
+    for (const auto* known : libraries)
+      if (std::strcmp(known, entry.library_name) == 0) { seen = true; break; }
+    if (!seen) libraries.push_back(entry.library_name);
+  }
+  return libraries;
+}
 
 // The Universal CRT is shipped as API sets, one per area, but the symbols are the
 // standard C library functions under their usual names. A program built against

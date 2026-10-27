@@ -908,6 +908,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     operand_write(output, instruction, operands[0], operand_read_expression(instruction, operands[1], width), width);
     return;
   }
+  // `movnti m32/m64, r32/r64` stores a general register to memory with a
+  // NON-TEMPORAL HINT. The hint is about cache behaviour, not about the value, so the
+  // store itself is an ordinary one and the semantics are exactly `mov`. It appears in
+  // real applications (t64.exe and w64.exe each had 24, the only unsupported class in
+  // either) and is emitted by `_mm_stream_si32`/`_mm_stream_si64`.
+  if (mnemonic == "movnti") {
+    const auto width = operand_width(operands[0], 4);
+    operand_write(output, instruction, operands[0], operand_read_expression(instruction, operands[1], width), width);
+    return;
+  }
   if (mnemonic == "movzx") {
     const auto destination_width = operand_width(operands[0], 8);
     const auto source_width = operand_width(operands[1], 1);

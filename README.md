@@ -48,6 +48,7 @@ produces exactly the same 117 bytes of output.
 | PE32/PE32+ parsing (sections, imports, exports, relocations, TLS) | Implemented |
 | Recursive-descent function recovery and CFG | Implemented |
 | Instruction coverage census for unsupported programs | Implemented |
+| Import compatibility report (implemented vs missing shims) | Implemented |
 | x86-64 (PE32+) → C++ lifter with exact EFLAGS semantics | Implemented, verified |
 | x86 (PE32) → C++ lifter, 32-bit address wrapping | Implemented, verified |
 | 32-bit calling conventions for imports (stdcall stack cleanup) | Implemented, verified |
@@ -104,6 +105,7 @@ recomp-studio doctor                              Host and toolchain capability
 recomp-studio inspect   <image>                   PE structure, imports, hashes
 recomp-studio analyze   <image>                   Functions and instruction counts
 recomp-studio coverage  <image>                   Instruction coverage and unsupported classes
+recomp-studio imports   <image>                   Import compatibility and missing shims
 recomp-studio functions <image>                   Recovered function candidates
 recomp-studio cfg       <image> --address <hex>   Function CFG as Graphviz DOT
 recomp-studio translate <image> --output <dir>    Recompile to a host project

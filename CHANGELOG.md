@@ -27,6 +27,19 @@ All notable changes to Recomp Studio are documented here. This project follows
   (same recovered instruction set) and against `translate` (translation must
   succeed exactly when the census reports 100% coverage).
 
+- `imports` command: reports the program's operating-system surface — which
+  imported functions have a shim and which are missing — grouped by library,
+  worst first, with every missing symbol listed. Instruction coverage says
+  whether the code can be lifted; this says whether the calls it makes exist. On
+  `igi.exe` it reports 128 imports, 31 implemented (24.22%), 97 missing, with
+  the gap concentrated in `kernel32` (33), `user32` (30), `avifil32` (10) and
+  `winmm` (9).
+- `tests/compat/imports_test.py`: pins the report against `inspect` for the
+  import count, and parses both `runtime/win32_abi.hpp` and
+  `runtime/recomp_runtime.cpp` to require the declared shim set and the
+  implemented shim set to agree exactly, so the "implemented" count cannot claim
+  an import works when the runtime would terminate on it.
+
 ### Fixed
 
 - `btr` was silently wrong: it emitted `original & mask` instead of

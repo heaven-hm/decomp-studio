@@ -5,11 +5,13 @@
 #include "core/discovery/function_discovery.hpp"
 #include "core/pipeline.hpp"
 #include "core/semantics/x86_64_lifter.hpp"
+#include "win32_abi.hpp"
 #ifdef RECOMP_HAS_UNICORN
 #include "core/harness/repair_harness.hpp"
 #include "core/verification/differential_harness.hpp"
 #endif
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -39,6 +41,7 @@ void print_help() {
             << "  inspect <image>              Inspect a PE32/PE32+ executable\n"
             << "  analyze <image>              Recover functions and instructions\n"
             << "  coverage <image>             Instruction coverage and unsupported classes\n"
+            << "  imports <image>              Import compatibility and missing shims\n"
             << "  functions <image>            List recovered function candidates\n"
             << "  cfg <image> --address <hex>  Export a function CFG as Graphviz DOT\n"
             << "  translate <image> --target <t> --output <dir>   Recompile to a host project\n"
@@ -174,6 +177,101 @@ int command_coverage(const std::filesystem::path& input, bool json) {
          << "  " << format_hex(entry.first_address, 10) << " in " << format_hex(entry.first_function_entry, 10);
     std::cout << line.str() << "\n";
   }
+  return 0;
+}
+
+bool is_shimmed_import(const std::string& library, const std::string& symbol) {
+  for (const auto& shim : recomp::kWin32ImportAbiTable) {
+    if (library == shim.library_name && symbol == shim.symbol_name) return true;
+  }
+  return false;
+}
+
+// Dependency and compatibility report. Instruction coverage says whether the
+// code can be lifted; this says whether the program's operating-system surface
+// exists. A binary can be at 100% instruction coverage and still stop on its
+// first call into an unimplemented DLL, which is the case for every real
+// application in the mission set.
+int command_imports(const std::filesystem::path& input, bool json) {
+  const auto executable = recomp::binary::PortableExecutable::parse(input);
+
+  struct LibraryTally {
+    std::size_t imports{};
+    std::size_t implemented{};
+  };
+  std::map<std::string, LibraryTally> by_library;
+  std::vector<std::pair<std::string, std::string>> missing;
+  std::size_t implemented = 0;
+  for (const auto& imported : executable.imports) {
+    const bool shimmed = is_shimmed_import(imported.library_name, imported.symbol_name);
+    auto& tally = by_library[imported.library_name];
+    ++tally.imports;
+    if (shimmed) {
+      ++tally.implemented;
+      ++implemented;
+    } else {
+      missing.emplace_back(imported.library_name, imported.symbol_name);
+    }
+  }
+  const auto total = executable.imports.size();
+
+  std::ostringstream percent;
+  percent << std::fixed << std::setprecision(2)
+          << (total == 0 ? 100.0 : 100.0 * static_cast<double>(implemented) / static_cast<double>(total));
+
+  std::vector<std::pair<std::string, LibraryTally>> libraries(by_library.begin(), by_library.end());
+  std::sort(libraries.begin(), libraries.end(),
+            [](const auto& left, const auto& right) {
+              const auto left_missing = left.second.imports - left.second.implemented;
+              const auto right_missing = right.second.imports - right.second.implemented;
+              if (left_missing != right_missing) return left_missing > right_missing;
+              return left.first < right.first;
+            });
+
+  if (json) {
+    std::cout << "{\"status\":\"ok\",\"architecture\":\"" << executable.architecture_name()
+              << "\",\"library_count\":" << libraries.size()
+              << ",\"import_count\":" << total
+              << ",\"implemented_count\":" << implemented
+              << ",\"missing_count\":" << missing.size()
+              << ",\"implemented_percent\":" << percent.str()
+              << ",\"libraries\":[";
+    for (std::size_t index = 0; index < libraries.size(); ++index) {
+      if (index != 0) std::cout << ",";
+      std::cout << "{\"name\":" << recomp::common::quote_json(libraries[index].first)
+                << ",\"imports\":" << libraries[index].second.imports
+                << ",\"implemented\":" << libraries[index].second.implemented
+                << ",\"missing\":" << (libraries[index].second.imports - libraries[index].second.implemented) << "}";
+    }
+    std::cout << "],\"missing\":[";
+    for (std::size_t index = 0; index < missing.size(); ++index) {
+      if (index != 0) std::cout << ",";
+      std::cout << "{\"library\":" << recomp::common::quote_json(missing[index].first)
+                << ",\"symbol\":" << recomp::common::quote_json(missing[index].second) << "}";
+    }
+    std::cout << "]}\n";
+    return 0;
+  }
+
+  std::cout << "architecture:   " << executable.architecture_name() << "\n"
+            << "libraries:      " << libraries.size() << "\n"
+            << "imports:        " << total << "\n"
+            << "implemented:    " << implemented << " (" << percent.str() << "%)\n"
+            << "missing:        " << missing.size() << "\n";
+  if (missing.empty()) {
+    std::cout << "compatibility:  complete — every import has a shim\n";
+    return 0;
+  }
+  std::cout << "\n"
+            << "library                          imports  implemented  missing\n";
+  for (const auto& [name, tally] : libraries) {
+    std::ostringstream line;
+    line << std::setw(32) << std::left << name << std::setw(9) << std::right << tally.imports
+         << std::setw(13) << tally.implemented << std::setw(9) << (tally.imports - tally.implemented);
+    std::cout << line.str() << "\n";
+  }
+  std::cout << "\nmissing imports:\n";
+  for (const auto& [library, symbol] : missing) std::cout << "  " << library << "!" << symbol << "\n";
   return 0;
 }
 
@@ -394,6 +492,10 @@ int main(int argc, char** argv) {
     if (command == "coverage") {
       if (argc < 3) return fail("coverage requires an image path", json);
       return command_coverage(argv[2], json);
+    }
+    if (command == "imports") {
+      if (argc < 3) return fail("imports requires an image path", json);
+      return command_imports(argv[2], json);
     }
     if (command == "functions") {
       if (argc < 3) return fail("functions requires an image path", json);

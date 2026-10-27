@@ -249,7 +249,70 @@ the census reports 100% coverage, so a census that over-reported would
 contradict a successful translation and one that under-reported would contradict
 a failed one.
 
-### 4.5 `functions`
+### 4.5 `imports`
+
+Report the program's operating-system surface: which imported functions already
+have a shim, and which are missing. Instruction coverage says whether the code
+can be lifted; this says whether the calls it makes exist. A binary can be at
+100% instruction coverage and still stop on its first call into an unimplemented
+DLL, which is the case for every real application in the mission set.
+
+```sh
+build/recomp-studio imports tests/fixtures/apps/bin/arith.exe
+```
+
+```
+architecture:   x86_64
+libraries:      1
+imports:        3
+implemented:    3 (100.00%)
+missing:        0
+compatibility:  complete — every import has a shim
+```
+
+A real target reports the gap per library, worst first, then every missing
+symbol. Here is `igi.exe` (Project I.G.I., PE32, 1.3 MB):
+
+```sh
+build/recomp-studio imports igi.exe
+```
+
+```
+architecture:   x86
+libraries:      10
+imports:        128
+implemented:    31 (24.22%)
+missing:        97
+
+library                          imports  implemented  missing
+kernel32.dll                           64           31       33
+user32.dll                             30            0       30
+avifil32.dll                           10            0       10
+winmm.dll                               9            0        9
+msvfw32.dll                             4            0        4
+gdi32.dll                               3            0        3
+ole32.dll                               3            0        3
+ddraw.dll                               2            0        2
+dinput.dll                              2            0        2
+dsound.dll                              1            0        1
+
+missing imports:
+  kernel32.dll!FreeEnvironmentStringsW
+  kernel32.dll!GetEnvironmentStringsW
+  ...
+```
+
+`--json` emits `library_count`, `import_count`, `implemented_count`,
+`missing_count`, `implemented_percent`, a `libraries` array with per-library
+`imports`/`implemented`/`missing`, and a `missing` array of `library`/`symbol`
+pairs.
+
+The `implemented` set is the shim table in `runtime/win32_abi.hpp`. The runtime
+dispatches through its own table in `runtime/recomp_runtime.cpp`, and the
+regression suite parses both and requires them to agree exactly, so the report
+cannot claim an import works when the runtime would terminate on it.
+
+### 4.6 `functions`
 
 List recovered function candidates with their size.
 
@@ -263,7 +326,7 @@ build/recomp-studio functions tests/fixtures/apps/bin/arith.exe
 ...
 ```
 
-### 4.6 `cfg`
+### 4.7 `cfg`
 
 Export one function's control-flow graph as Graphviz DOT.
 
@@ -279,7 +342,7 @@ build/recomp-studio cfg tests/fixtures/apps/bin/arith.exe --address 0x140001080 
   | dot -Tpng -o cfg.png
 ```
 
-### 4.7 `translate`
+### 4.8 `translate`
 
 Generate a host project from the guest executable. This is the core step.
 
@@ -301,7 +364,7 @@ source:   sha256=36853847e207afef...
 The project contains `guest.cpp`, `recomp_runtime.hpp/.cpp`,
 `recomp-config.toml` and `recomp-manifest.json`.
 
-### 4.8 `build`
+### 4.9 `build`
 
 Compile the generated project into a native executable.
 
@@ -313,7 +376,7 @@ build/recomp-studio build out/arith
 built out/arith/recomp-guest
 ```
 
-### 4.9 `run`
+### 4.10 `run`
 
 Execute the generated binary.
 
@@ -321,7 +384,7 @@ Execute the generated binary.
 build/recomp-studio run out/arith
 ```
 
-### 4.10 `verify`
+### 4.11 `verify`
 
 Compare the generated binary against the original x86-64 code (Unicorn
 reference): output bytes and instruction trace.
@@ -340,7 +403,7 @@ VERIFY: PASS (identical output)
 
 Exit code is `0` on PASS, `1` on FAIL.
 
-### 4.11 `repair`
+### 4.12 `repair`
 
 The autonomous loop: translate, build, verify, localise the first divergence and
 write a per-iteration report.
@@ -369,7 +432,7 @@ mnemonics it saw, e.g.:
       first control-flow divergence at step 0 ...; unsupported mnemonics: addsd, bts, vpxor, ...
 ```
 
-### 4.12 `report`
+### 4.13 `report`
 
 Print the generated project manifest.
 
@@ -377,7 +440,7 @@ Print the generated project manifest.
 build/recomp-studio report out/arith
 ```
 
-### 4.13 `examples`
+### 4.14 `examples`
 
 ```sh
 build/recomp-studio examples list

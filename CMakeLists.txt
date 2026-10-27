@@ -83,6 +83,13 @@ add_test(NAME coverage_census
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 
+add_test(NAME import_compatibility
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/imports_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps
+          ${CMAKE_CURRENT_SOURCE_DIR})
+
 set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)
 set_tests_properties(coverage_census PROPERTIES TIMEOUT 900)
+set_tests_properties(import_compatibility PROPERTIES TIMEOUT 900)

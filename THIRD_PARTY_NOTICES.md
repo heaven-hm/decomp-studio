@@ -15,7 +15,7 @@ HenryKun55. The `GetLocalTime` adaptation comes from commit
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit
 `9acf085770db2a7319cdb2d7498e855d5edba9ab`, copyright 2021 Sampo Hippeläinen.
-Its MIT license is reproduced in [third_party/hisahi-scanf-LICENSE](third_party/hisahi-scanf-LICENSE).
+Its MIT license is reproduced in [runtime/hisahi-scanf-LICENSE](runtime/hisahi-scanf-LICENSE).
 
 ## Build and runtime dependencies
 

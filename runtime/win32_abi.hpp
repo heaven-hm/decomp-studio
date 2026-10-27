@@ -124,6 +124,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "_initterm_e", 2, false},
     {"msvcrt.dll", "__acrt_iob_func", 1, false},
     {"msvcrt.dll", "__stdio_common_vfprintf", 5, false},
+    {"msvcrt.dll", "__stdio_common_vfscanf", 6, false},
     {"msvcrt.dll", "memcmp", 3, false},
     {"msvcrt.dll", "fflush", 1, false},
     {"msvcrt.dll", "setvbuf", 4, false},

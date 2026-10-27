@@ -1104,17 +1104,6 @@ void msvcrt_rand(GuestContext* context) {
   set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
 }
 
-// puts writes the string and a newline. Compilers emit it for any printf whose
-// entire format is a literal ending in a newline, so a program can reach it without
-// ever naming it.
-void msvcrt_puts(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
-  const std::string line = text + "\n";
-  const auto written = write_guest_output(STDOUT_FILENO, line.data(), line.size());
-  // Non-negative on success, EOF on failure.
-  set_import_result(context, written < 0 ? static_cast<std::uint64_t>(-1) : 0);
-}
-
 void msvcrt_fwrite(GuestContext* context) {
   const auto buffer = import_argument(context, 0);
   const auto size = import_argument(context, 1);

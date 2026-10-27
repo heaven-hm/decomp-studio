@@ -2292,10 +2292,11 @@ void write_guest_checkpoints_if_requested() {
   std::FILE* file = std::fopen(path, "wb");
   if (file == nullptr) return;
   for (const auto& checkpoint : guest_checkpoints) {
-    std::fprintf(file, "%llu %llu %llu %llu", static_cast<unsigned long long>(checkpoint.index),
+    std::fprintf(file, "%llu %llu %llu %llu %u %u %u", static_cast<unsigned long long>(checkpoint.index),
                  static_cast<unsigned long long>(checkpoint.address),
                  static_cast<unsigned long long>(checkpoint.flags),
-                 static_cast<unsigned long long>(checkpoint.memory_digest));
+                 static_cast<unsigned long long>(checkpoint.memory_digest),
+                 checkpoint.mxcsr, checkpoint.x87_control_word, checkpoint.x87_status_word);
     for (const auto value : checkpoint.registers)
       std::fprintf(file, " %llu", static_cast<unsigned long long>(value));
     std::fputc('\n', file);
@@ -2384,6 +2385,9 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
   for (int register_index = 0; register_index < 16; ++register_index)
     checkpoint.registers[register_index] = context->registers[register_index];
   checkpoint.flags = eflags_value(context);
+  checkpoint.mxcsr = context->mxcsr;
+  checkpoint.x87_control_word = context->x87_control_word;
+  checkpoint.x87_status_word = x87_status_value(context);
   checkpoint.memory_digest = guest_memory_digest(context);
   if (guest_memory_windows != nullptr) {
     const std::uint64_t header[3] = {index, context->registers[4], recompiled_image_base};

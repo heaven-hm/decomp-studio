@@ -154,6 +154,15 @@ struct GuestCheckpoint {
   // all. Hashing the whole 8 GiB address space per checkpoint is not possible, and
   // hashing nothing is what comparing the output already does.
   std::uint64_t memory_digest{};
+  // Control registers, compared directly rather than inferred from the memory a
+  // guest eventually stores them to. Two of the last three divergences found were
+  // control registers -- the x87 control word, and MXCSR's FTZ bit -- and both were
+  // read by a guest and disagreed between the two sides. Comparing them here names
+  // the checkpoint at which they part instead of leaving it to be localised from
+  // memory afterwards.
+  std::uint32_t mxcsr{};
+  std::uint32_t x87_control_word{};
+  std::uint32_t x87_status_word{};
 };
 
 // A bounded digest of the guest's writable state, computed the same way on both

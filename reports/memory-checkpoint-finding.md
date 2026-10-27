@@ -513,9 +513,40 @@ the kind of divergence the memory gate exists to catch. It is also the same shap
 the x87 control word found two rounds earlier — a control register read by a guest
 that disagreed between the two sides.
 
+## Control registers as checkpoint fields: the divergence is at index 4000
+
+Two of the last three divergences found were **control registers** that a guest read
+and that disagreed between the two sides — the x87 control word, then MXCSR's FTZ
+bit. Both had to be localised from the memory a guest eventually stored them to,
+which is indirect. So MXCSR and the x87 control and status words are now compared at
+every checkpoint as first-class fields.
+
+It localised this one immediately:
+
+```
+checkpoint 4 after guest instruction index 4000 (0x14000106c):
+  mxcsr is 0x1fa0, reference 0x1f80
+```
+
+**Index 4000**, not the index 7000 the memory digest had pointed at — a 3000
+instruction difference, and a window of 1000 instead of the whole run.
+
+Unicorn's `ldmxcsr` was checked first, in case the reference was ignoring it as it
+ignored `UC_X86_REG_FS_BASE` writes earlier in the project. It is not: a standalone
+probe executes `ldmxcsr 0x1fa0` and reads back `0x1fa0`, and `stmxcsr` stores it. So
+the reference honours the instruction and the divergence is elsewhere.
+
+The comparison is **reported, not gated**, for the same reason the memory digest is:
+the divergence is not yet explained, and a gate that fails for a reason nobody has
+diagnosed gets weakened or ignored. It is recorded with its checkpoint so it cannot
+be lost, and it appears in `verify --json` as `control_registers_match` and
+`control_diagnosis`.
+
 ## Not established
 
-Which `ldmxcsr` or `fxrstor` set the FTZ bit on the candidate, and whether the
+Which instruction between index 3000 and 4000 sets the FTZ bit on the candidate. The
+window is now 1000 instructions and the instruction that reads MXCSR is known, so the
+next step is to log every write to MXCSR in that window on both sides and diff them., and whether the
 candidate or the reference is right about it.: whether they are the same precision limit at a
 greater distance -- a float-to-double conversion amplifies a one-bit difference -- or
 something else. Logging the *instruction* that wrote the differing byte, rather than

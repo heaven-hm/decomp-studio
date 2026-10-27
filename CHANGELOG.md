@@ -401,6 +401,22 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **MXCSR and the x87 control and status words are compared at every checkpoint**, as
+  first-class fields rather than inferred from the memory a guest eventually stores
+  them to. Two of the last three divergences found were control registers a guest read
+  that disagreed between the two sides, so they are worth comparing directly. It
+  localised the MXCSR one immediately: `checkpoint 4 after guest instruction index
+  4000: mxcsr is 0x1fa0, reference 0x1f80` — **index 4000**, not the index 7000 the
+  memory digest had pointed at, a 3000-instruction difference and a 1000-instruction
+  window instead of the whole run. The comparison is reported, not gated, for the same
+  reason the memory digest is: the divergence is not yet explained, and a gate that
+  fails for an undiagnosed reason gets weakened or ignored. It appears in
+  `verify --json` as `control_registers_match` and `control_diagnosis`.
+- Unicorn's `ldmxcsr` was checked before assuming the reference was ignoring it, as it
+  ignored `UC_X86_REG_FS_BASE` writes earlier in the project. It is not ignored: a
+  standalone probe executes `ldmxcsr 0x1fa0`, reads back `0x1fa0`, and `stmxcsr`
+  stores it. The reference honours the instruction, so the divergence is elsewhere.
+
 - The two `simd_convert` memory differences are **the FTZ bit of MXCSR**, and the
   diagnosis now reports the whole 8-byte slot rather than one byte — a byte alone says
   nothing about whether the difference is a float, a double, an address or an integer,

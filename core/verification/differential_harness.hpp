@@ -50,6 +50,13 @@ struct DifferentialResult {
   // to be loosened until it catches nothing, and both are worse than naming the
   // class.
   std::size_t x87_precision_differences{};
+  // Control registers -- MXCSR and the x87 control and status words -- compared at
+  // every checkpoint and reported, not gated. Two of the last three divergences
+  // found were control registers that a guest read and that disagreed between the
+  // two sides, so they are worth comparing directly; the one found this way is not
+  // yet explained, so it is a diagnostic rather than a verdict.
+  bool control_registers_match{true};
+  std::string control_diagnosis;
   int candidate_exit_code{};
   std::string reference_output;
   std::string candidate_output;

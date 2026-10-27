@@ -285,6 +285,9 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
         checkpoint.registers[register_index] = is_64_bit ? value : (value & 0xffffffffull);
       }
       checkpoint.flags = read_register(engine, UC_X86_REG_EFLAGS);
+      checkpoint.mxcsr = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_MXCSR));
+      checkpoint.x87_control_word = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_FPCW));
+      checkpoint.x87_status_word = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_FPSW));
       // The reference addresses the same bytes the runtime does, so the digest is
       // computed over the same memory the candidate digests.
       GuestContext digest_context{};
@@ -641,7 +644,8 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
       while (std::getline(input_stream, line)) {
         std::istringstream fields(line);
         GuestCheckpoint checkpoint;
-        fields >> checkpoint.index >> checkpoint.address >> checkpoint.flags >> checkpoint.memory_digest;
+        fields >> checkpoint.index >> checkpoint.address >> checkpoint.flags >> checkpoint.memory_digest >>
+            checkpoint.mxcsr >> checkpoint.x87_control_word >> checkpoint.x87_status_word;
         for (auto& value : checkpoint.registers)
           if (!(fields >> value)) break;
         if (!fields.fail()) candidate_checkpoints.push_back(checkpoint);
@@ -672,6 +676,28 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
                                     std::to_string(expected.index) + " (0x" + hex_text(expected.address) +
                                     "): guest memory digest 0x" + hex_text(actual.memory_digest) +
                                     ", reference 0x" + hex_text(expected.memory_digest);
+        }
+        const bool mxcsr_differs = expected.mxcsr != actual.mxcsr;
+        const bool x87_control_differs = expected.x87_control_word != actual.x87_control_word;
+        const bool x87_status_differs = expected.x87_status_word != actual.x87_status_word;
+        // A control register that disagrees is reported, not gated, for the same
+        // reason the memory digest is: the divergence is not yet explained, and a
+        // gate that fails for a reason nobody has diagnosed gets weakened or
+        // ignored. It is recorded with its checkpoint so it cannot be lost.
+        if (result.control_diagnosis.empty() &&
+            (mxcsr_differs || x87_control_differs || x87_status_differs)) {
+          result.control_registers_match = false;
+          result.control_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                     std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
+          if (mxcsr_differs)
+            result.control_diagnosis += "mxcsr is 0x" + hex_text(actual.mxcsr) + ", reference 0x" +
+                                        hex_text(expected.mxcsr);
+          else if (x87_control_differs)
+            result.control_diagnosis += "the x87 control word is 0x" + hex_text(actual.x87_control_word) +
+                                        ", reference 0x" + hex_text(expected.x87_control_word);
+          else
+            result.control_diagnosis += "the x87 status word is 0x" + hex_text(actual.x87_status_word) +
+                                        ", reference 0x" + hex_text(expected.x87_status_word);
         }
         if (flags_differ || differing_register != 16) {
           result.state_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +

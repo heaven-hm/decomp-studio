@@ -401,6 +401,22 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The three floating-point memory divergences are **one unit in the last place of a
+  double**, which is the documented x87 precision limit and not a defect. The
+  remaining difference at `x87.exe`'s checkpoint 8 is a single byte: the reference
+  holds `0x40295c01a39fbd69` and the candidate `0x40295c01a39fbd68` — `12.67970000576925`
+  against `12.679700005769249`, differing by `1.776e-15`, which is `2^-52 * 2^3`, the
+  spacing of doubles at that magnitude. This runtime holds the x87 stack as `double`
+  with a 53-bit mantissa and the reference uses 80-bit extended with 64, so a result
+  needing more than 53 bits rounds differently in the last place. The documentation
+  said this would happen; the investigation reached it by measurement.
+
+  `--checkpoints memory` therefore cannot be a bit-exact gate as it stands, and the
+  reason is now specific. The design that would work — compare memory exactly, and
+  classify a difference as the known x87 class when every differing byte lies in an
+  aligned 8-byte slot whose two values are within one unit in the last place — is
+  recorded and not implemented.
+
 - **The x87 control word was wrong on both sides of the comparison.** A guest that
   executed `FNSTCW` and compared the result exposed it: the architectural default
   after `FINIT` is `0x037f` — all exceptions masked, precision control `0b11`

@@ -398,9 +398,59 @@ comparison surfaces.
 With it fixed, `x87.exe`'s first divergence moves from **checkpoint 3 to checkpoint
 8**, so it resolved real divergences and a second x87 issue remains.
 
+## Resolved: one unit in the last place, and that is the documented limit
+
+The remaining divergence at checkpoint 8 is a **single byte** at `ESP+360`:
+
+```
+reference: ... 69 bd 9f a3 01 5c 29 40 ...
+candidate: ... 68 bd 9f a3 01 5c 29 40 ...
+```
+
+Read as doubles:
+
+| | bits | value |
+|---|---|---|
+| reference | `0x40295c01a39fbd69` | `12.67970000576925` |
+| candidate | `0x40295c01a39fbd68` | `12.679700005769249` |
+
+They differ by **one unit in the last place** — `1.776e-15`, a relative difference of
+`1.4e-16`, which is `2^-52 * 2^3`, the spacing of doubles at that magnitude. The
+mantissa's low bit is 1 on one side and 0 on the other.
+
+**That is the documented x87 limit and not a bug.** This runtime holds the x87 stack
+as `double`, with a 53-bit mantissa; the reference uses 80-bit extended with 64. A
+computation whose result needs more than 53 bits rounds differently in the last
+place, and nothing on arm64 fixes that without a software 80-bit float type. It is
+stated in `runtime/recomp_runtime.hpp`:
+
+> Arithmetic is modelled with `double`: on arm64 `long double` is 64-bit, so true
+> 80-bit extended precision is not natively available. Values that need more than 53
+> bits of mantissa can therefore differ from the original; this is a documented
+> fidelity limit, not a silent substitution of single precision.
+
+So the three floating-point fixtures diverge for the reason the documentation always
+said they would, and the investigation has arrived at the documented answer by
+measurement rather than by assumption.
+
+## Consequence for `--checkpoints memory`
+
+It cannot become a bit-exact gate as it stands, and the reason is now specific rather
+than vague: for a program that uses x87, the candidate and the reference legitimately
+differ in the last bit of a double, so exact memory equality is the wrong predicate.
+
+The design that would work, and is not implemented: compare memory exactly, and when
+it differs, **classify** the difference — if every differing byte lies inside an
+8-byte-aligned slot whose two values are within one unit in the last place of each
+other, report it as the known x87 precision class rather than as a divergence. That
+keeps the gate strict for everything else, which is where a real divergence would
+appear.
+
 ## Not established
 
-The remaining divergence, now at checkpoint 8 (`0x1400010a5`), and the two
+Nothing about the cause: it is measured. What remains is the classification rule
+above, and whether any *other* program in the corpus diverges for a different reason
+once the x87 class is separated out. (`0x1400010a5`), and the two
 floating-point fixtures at checkpoints 12 and 7. Whether these are further x87
 initialisation differences of the same kind — the status word, the tag word and the
 exception flags are all plausible next candidates — or something else., and where

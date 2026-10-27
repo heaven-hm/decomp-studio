@@ -24,6 +24,7 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 | --- | ---: | ---: | ---: | --- |
 | `win32/*.exe` | 74 | 1 | 73 | Requested shared-output loop. `fillingsolver.exe` reported verification with zero output bytes; this does not demonstrate interactive use. The binary was rebuilt during the loop, so results span revisions. |
 | `win64/*.exe` | 52 | 0 | 52 | Sweep used per-app output directories; builds changed during the run, so this is a mixed-revision observation, not a single-version benchmark. |
+| `win64/*.exe` rerun | 52 | 0 | 52 | Per-app output sweep after `5fe2627`; all returned nonzero before the later `ac4a69c` change. |
 
 The feature branch's architecture-neutral IR updates were merged at `53f773e`;
 observations made before that merge need to be rerun on the integrated revision.
@@ -38,6 +39,15 @@ Radare2 6.2.0's `aaa; agfj @ 0x140002d50` identifies a 55-entry switch at
 `0x140002daf` and six distinct code references, including the `q` destination
 `0x140002e10`. This is an independent recovery lead, not a fix: the current
 recompiler does not yet consume those references.
+
+As a diagnostic only, LIEF 1.0.0 added six synthetic exports for those Radare2
+targets to a temporary copy of the game. The original SHA-256 is
+`6882192760f4b47c2d79b3739ad9a4cf40bef59c00e383c47160156ca84d81eb`;
+the modified copy is `af647ebdda026917180b05677e0757ede4030c64289b8037a3f16a394181445c`.
+Before `ac4a69c`, the modified copy's `w` command incorrectly returned to input
+without rendering another board. After that commit, `w`, `a`, `s`, `d`, `q`
+produced five boards and exited 0. This is a native-run observation on a
+modified input, not differential proof or a fix for the original executable.
 
 For scanf support, Wine's LGPL implementation in
 [`dlls/msvcrt/scanf.c`](https://github.com/wine-mirror/wine/blob/f343ca6085bfac807c33e9c1a8a43105071f1416/dlls/msvcrt/scanf.c)
@@ -72,6 +82,7 @@ and must not be counted as running on the basis of their presence.
 | Implement CRT `puts` and `putchar` | `runtime_time` checks output and returns on both guest widths. `game2048` now displays a 347-byte initial board and reaches the unimplemented `__stdio_common_vfscanf`; it is not yet verified. | `e4a533f` |
 | Port `GetLocalTime` from MIT-licensed igi-recomp | `runtime_time` checks the eight SYSTEMTIME fields on both guest widths. The source revision and MIT license are recorded in `THIRD_PARTY_NOTICES.md`; no app is yet claimed as fixed by this port. | `c9be7d5` |
 | Bridge single-character UCRT scanf to the copied MIT scanner | The upstream scanner passes 104 upstream tests; `runtime_time` tests guest input, pushback, and EOF on both pointer widths. `game2048` matches 347 reference bytes on EOF but fails the `q` input due to an unresolved jump. | `12953ff`, `5fe2627` |
+| Enter functions at their real entry when backward blocks sort earlier | An x64 PE fixture produced `entry_zero=7` before the port, instead of the reference's `42`; after it both branches match 32 reference bytes. The temporary LIEF/Radare2 experiment above exercises the resulting game input paths. | `ac4a69c` |
 
 The observed input SHA-256 values are `7773fa08db2ab5a620a4ef4391a5f0fbd1af73474589128c6d0ef46f1c0b2d6e`
 for `win32/blackbox.exe` and `47b443772e36be8a8cf8c45fe80951a466264f370fa28a4851ea57b5c1f17d95`

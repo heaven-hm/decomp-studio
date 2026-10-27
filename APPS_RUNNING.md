@@ -48,6 +48,7 @@ and must not be counted as running on the basis of their presence.
 | Implement CRT `_time64` | `runtime_time` checks null and non-null pointers, 64-bit stores and guest returns on both widths. `game2048` progressed to a divide error. | `bc6e538` |
 | Restore the x64 stack after import tail calls | The `tail_import` PE fixture reports `tail_stack_ok=1` and matches 39 reference bytes; `game2048` no longer hits the divide error and reaches missing `puts`. | `0a82d05` |
 | Implement CRT `puts` and `putchar` | `runtime_time` checks output and returns on both guest widths. `game2048` now displays a 347-byte initial board and reaches the unimplemented `__stdio_common_vfscanf`; it is not yet verified. | `e4a533f` |
+| Port `GetLocalTime` from MIT-licensed igi-recomp | `runtime_time` checks the eight SYSTEMTIME fields on both guest widths. The source revision and MIT license are recorded in `THIRD_PARTY_NOTICES.md`; no app is yet claimed as fixed by this port. | `c9be7d5` |
 
 The observed input SHA-256 values are `7773fa08db2ab5a620a4ef4391a5f0fbd1af73474589128c6d0ef46f1c0b2d6e`
 for `win32/blackbox.exe` and `47b443772e36be8a8cf8c45fe80951a466264f370fa28a4851ea57b5c1f17d95`

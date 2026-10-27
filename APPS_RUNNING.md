@@ -11,7 +11,7 @@ not a claim about every copy of a binary in the corpus.
 | blackbox | `win32/blackbox.exe` | Passed | Exit 3 | Failed | Baseline `c14ef07`; at `4e9d7dc` it reaches missing `InitCommonControls` |
 | fifteensolver | `win32/fifteensolver.exe` | Passed | Exit 1, no stdout | Failed; reference completed, candidate did not | `autorecomp` with `--autorepair --buildrun`, baseline at `c14ef07` |
 | plink | `win64/plink.exe` | Not reached | Not reached | Not reached | Before `374664f`, translation stopped on memory-source `pshufd`; after `3c90f4d`, it stops on `aeskeygenassist` |
-| game2048 | `windows/x64/games/game2048.exe` | Passed | EOF: exit 0 and 347 bytes; `q`: exit 3 | EOF comparison passed; repair unresolved; interactive path not verified | At `0be6c42`, EOF output matched, but the repair pass did not verify and three registered exit handlers did not run. Earlier `q` input reached an unresolved indirect jump at `0x140002daf`. The game is not counted as fixed. |
+| game2048 | `windows/x64/games/game2048.exe` | Passed | EOF: exit 0 and 347 bytes; `q`: exit 3 | EOF comparison and repair passed once; interactive path not verified | At `cf3fb74`, EOF output matched and repair passed, but three registered exit handlers did not run. `q` input still reaches an unresolved indirect jump at `0x140002daf`. The game is not counted as fixed. |
 | arith-calc | `windows/x64/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `bb67ed0c581a1a00cfce9fd324c4003a970d4869829bb472e5f91b4ee476be3c` |
 | arith-calc | `windows/x86/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6` |
 
@@ -97,6 +97,7 @@ and must not be counted as running on the basis of their presence.
 | Port `GetLocalTime` from MIT-licensed igi-recomp | `runtime_time` checks the eight SYSTEMTIME fields on both guest widths. The source revision and MIT license are recorded in `THIRD_PARTY_NOTICES.md`; no app is yet claimed as fixed by this port. | `c9be7d5` |
 | Bridge single-character UCRT scanf to the copied MIT scanner | The upstream scanner passes 104 upstream tests; `runtime_time` tests guest input, pushback, and EOF on both pointer widths. `game2048` matches 347 reference bytes on EOF but fails the `q` input due to an unresolved jump. | `12953ff`, `5fe2627` |
 | Enter functions at their real entry when backward blocks sort earlier | An x64 PE fixture produced `entry_zero=7` before the port, instead of the reference's `42`; after it both branches match 32 reference bytes. The temporary LIEF/Radare2 experiment above exercises the resulting game input paths. | `ac4a69c` |
+| Report the real repair failure | An unimplemented-import fixture previously reported a fabricated divergence at `0x0`; `autorecomp_pipeline` now checks that the missing `user32.dll!MessageBoxA` is reported and the absent divergence is not invented. | `cf3fb74` |
 
 The observed input SHA-256 values are `7773fa08db2ab5a620a4ef4391a5f0fbd1af73474589128c6d0ef46f1c0b2d6e`
 for `win32/blackbox.exe` and `47b443772e36be8a8cf8c45fe80951a466264f370fa28a4851ea57b5c1f17d95`

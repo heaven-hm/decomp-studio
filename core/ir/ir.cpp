@@ -2,21 +2,35 @@
 
 namespace recomp::ir {
 
-std::vector<Operation> lift(const discovery::Analysis& analysis) {
-  std::vector<Operation> operations;
-  const unsigned pointer_width = analysis.architecture == "x64" ? 64U : 32U;
-  for (const auto& instruction : analysis.instructions) {
-    std::string opcode;
-    if (instruction.mnemonic == "mov") opcode = "write_register";
-    else if (instruction.mnemonic == "add" || instruction.mnemonic == "sub") opcode = "arithmetic_with_eflags";
-    else if (instruction.mnemonic == "cmp") opcode = "compare_with_eflags";
-    else if (instruction.mnemonic == "call") opcode = "direct_call";
-    else if (instruction.mnemonic == "ret") opcode = "return";
-    else if (instruction.mnemonic == "jmp" || instruction.mnemonic == "jz" || instruction.mnemonic == "jnz") opcode = "branch";
-    else opcode = "no_operation";
-    operations.push_back({opcode, instruction.mnemonic == "ret" || instruction.mnemonic == "call" ? pointer_width : 32U, instruction.rva});
+const char* statement_kind_name(StatementKind kind) {
+  switch (kind) {
+    case StatementKind::Comment: return "comment";
+    case StatementKind::Assign: return "assign";
+    case StatementKind::StoreMemory: return "store";
+    case StatementKind::CallGuest: return "call-guest";
+    case StatementKind::CallImport: return "call-import";
+    case StatementKind::CallIndirect: return "call-indirect";
+    case StatementKind::JumpIf: return "jump-if";
+    case StatementKind::Jump: return "jump";
+    case StatementKind::Label: return "label";
+    case StatementKind::Return: return "return";
+    case StatementKind::Trap: return "trap";
+    case StatementKind::Verbatim: return "verbatim";
+    case StatementKind::Trace: return "trace";
   }
-  return operations;
+  return "unknown";
+}
+
+StatementCensus census(const Module& module) {
+  StatementCensus result;
+  for (const auto& function : module.functions) {
+    for (const auto& statement : function.statements) {
+      ++result.total;
+      if (statement.kind == StatementKind::Verbatim) ++result.verbatim;
+      else if (statement.kind != StatementKind::Comment) ++result.structured;
+    }
+  }
+  return result;
 }
 
 }  // namespace recomp::ir

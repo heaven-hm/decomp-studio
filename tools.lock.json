@@ -12,6 +12,60 @@
       "purpose": "incremental project builds",
       "license": "Apache-2.0",
       "required": true
+    },
+    {
+      "name": "capstone",
+      "purpose": "x86/x64 instruction decoding",
+      "license": "BSD-3-Clause",
+      "required": true
+    },
+    {
+      "name": "lief",
+      "purpose": "binary-format parsing adapter",
+      "license": "Apache-2.0",
+      "required": false
+    },
+    {
+      "name": "zydis",
+      "purpose": "independent x86 decoding cross-check",
+      "license": "MIT",
+      "required": false
+    },
+    {
+      "name": "unicorn",
+      "purpose": "reference CPU emulation",
+      "license": "GPL-2.0",
+      "required": false
+    },
+    {
+      "name": "angr",
+      "purpose": "symbolic analysis and p-code lifting research",
+      "license": "BSD-2-Clause",
+      "required": false
+    },
+    {
+      "name": "z3",
+      "purpose": "constraint and equivalence checks",
+      "license": "MIT",
+      "required": false
+    },
+    {
+      "name": "ghidra",
+      "purpose": "optional function and CFG recovery adapter",
+      "license": "Apache-2.0",
+      "required": false
+    },
+    {
+      "name": "radare2",
+      "purpose": "optional analysis cross-check",
+      "license": "LGPL-3.0-only",
+      "required": false
+    },
+    {
+      "name": "frida",
+      "purpose": "optional runtime instrumentation",
+      "license": "wxWindows",
+      "required": false
     }
   ],
   "research_only": [
@@ -19,7 +73,7 @@
       "name": "igi-recomp",
       "url": "https://github.com/HenryKun55/igi-recomp",
       "license": "MIT",
-      "use": "architecture research only; no source copied"
+      "use": "architecture reference and selected MIT-licensed Win32 shim adaptations; see THIRD_PARTY_NOTICES.md"
     },
     {
       "name": "N64Recomp",

@@ -582,7 +582,10 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
   // with an answerable form: which version did this image ask for.
   for (const auto& resource : executable.resources) {
     if (resource.type != kResourceTypeManifest || resource.id != kManifestIdCreateProcess) continue;
-    const auto bytes = executable.read_rva(resource.rva, resource.size);
+    constexpr std::size_t kMaximumManifestBytes = 1024 * 1024;
+    const auto manifest_size = std::min<std::size_t>(
+        {resource.size, executable.file_bytes.size(), kMaximumManifestBytes});
+    const auto bytes = executable.read_rva(resource.rva, manifest_size);
     executable.manifest.assign(bytes.begin(), bytes.end());
     break;
   }
@@ -591,9 +594,18 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
     if (controls != std::string::npos) {
       const auto version_at = executable.manifest.find("version", controls);
       if (version_at != std::string::npos) {
-        const auto six = executable.manifest.find('6', version_at);
-        const auto closing = executable.manifest.find('"', version_at);
-        executable.requests_common_controls_v6 = six != std::string::npos && (closing == std::string::npos || six < closing);
+        const auto equals = executable.manifest.find('=', version_at + 7);
+        if (equals != std::string::npos) {
+          const auto value = executable.manifest.find_first_not_of(" \t\r\n", equals + 1);
+          if (value != std::string::npos && (executable.manifest[value] == '"' || executable.manifest[value] == '\'')) {
+            const auto quote = executable.manifest[value];
+            const auto first = value + 1;
+            executable.requests_common_controls_v6 = first + 1 < executable.manifest.size() &&
+                                                       executable.manifest[first] == '6' &&
+                                                       executable.manifest[first + 1] == '.' &&
+                                                       executable.manifest.find(quote, first) != std::string::npos;
+          }
+        }
       }
     }
   }
@@ -605,11 +617,17 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
   // missing target and a known requirement on the dispatch path.
   const auto load_config_rva = directory_rva(kDirectoryLoadConfig);
   if (load_config_rva != 0) {
-    const auto guard_flags_offset = executable.is_64_bit ? 0x70u : 0x6cu;
-    const auto guard_flags = executable.read_u32(load_config_rva + guard_flags_offset).value_or(0);
-    executable.guard_flags = guard_flags;
-    // IMAGE_GUARD_CF_INSTRUMENTED (0x100) means the compiler emitted the checks.
-    executable.has_control_flow_guard = (guard_flags & 0x100u) != 0;
+    const auto guard_flags_offset = executable.is_64_bit ? 0x90u : 0x58u;
+    const auto load_config_size = executable.read_u32(load_config_rva).value_or(0);
+    const auto directory_size = directories.size() > kDirectoryLoadConfig
+                                    ? directories[kDirectoryLoadConfig].second
+                                    : 0u;
+    if (load_config_size >= guard_flags_offset + 4 && directory_size >= guard_flags_offset + 4) {
+      const auto guard_flags = executable.read_u32(load_config_rva + guard_flags_offset).value_or(0);
+      executable.guard_flags = guard_flags;
+      // IMAGE_GUARD_CF_INSTRUMENTED (0x100) means the compiler emitted the checks.
+      executable.has_control_flow_guard = (guard_flags & 0x100u) != 0;
+    }
   }
 
   // Packed-image detection. The general rule is that a section which claims a

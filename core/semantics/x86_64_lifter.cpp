@@ -728,6 +728,18 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit_vector_move(operands[0], operands[1], mnemonic == "movss" ? 4 : 8);
     return;
   }
+  // Adapted from Remill's MOVLHPS/MOVHLPS semantics (Apache-2.0): preserve
+  // one half of the destination and copy the indicated half of the source.
+  if ((mnemonic == "movlhps" || mnemonic == "movhlps") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      !is_wide_vector_register(operands[0].register_name) && !is_wide_vector_register(operands[1].register_name)) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto source = std::to_string(vector_index(operands[1]));
+    emit("std::memcpy(context->vector_registers[" + destination + "] + " +
+         (mnemonic == "movlhps" ? "8" : "0") + ", context->vector_registers[" + source + "] + " +
+         (mnemonic == "movlhps" ? "0" : "8") + ", 8);");
+    return;
+  }
   if ((mnemonic == "movd" || mnemonic == "movq") && operands.size() == 2 &&
       (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
     const int byte_count = mnemonic == "movd" ? 4 : 8;

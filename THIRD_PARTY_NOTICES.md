@@ -14,6 +14,12 @@ HenryKun55. The `GetLocalTime` adaptation comes from commit
 The function-entry jump in `core/semantics/x86_64_lifter.cpp` is also adapted
 from `tools/recomp/gen.py` in the same project at that revision.
 
+The `MOVLHPS` and `MOVHLPS` translations in `core/semantics/x86_64_lifter.cpp`
+and their fixture adapt code and tests from [Remill](https://github.com/lifting-bits/remill),
+`lib/Arch/X86/Semantics/DATAXFER.cpp` and `tests/X86/DATAXFER/`, at commit
+`56918a8c2554088e93389e97d292f4035286506c`, copyright 2017 Trail of Bits, Inc.
+They are licensed under Apache-2.0; the license is reproduced in [LICENSE](LICENSE).
+
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit
 `9acf085770db2a7319cdb2d7498e855d5edba9ab`, copyright 2021 Sampo Hippeläinen.

@@ -39,6 +39,7 @@ FIXTURES = [
     ("simd_convert", "packed integer-to-float conversion and MXCSR rounding modes"),
     ("tail_import", "x64 import tail-call stack restoration"),
     ("backward_entry", "function entry with a lower-address block"),
+    ("remill_movhalf", "Remill half-register move semantics"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -48,12 +49,15 @@ FIXTURES_PE32 = [
     ("pe32_abi", "32-bit calling conventions, indirect dispatch and address wrapping"),
     ("pe32_simd_convert", "32-bit packed integer-to-float conversion and MXCSR"),
     ("teb32", "32-bit TEB access through fs:"),
+    ("pe32_remill_movhalf", "32-bit Remill half-register move semantics"),
 ]
 
 EXPECTED_OUTPUT = {
     "arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "tail_import": ["tail_stack_ok=1", "tail_rand_in_range=1"],
     "backward_entry": ["entry_zero=42", "entry_nonzero=7"],
+    "remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
+    "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
     "snake": ["snake:start", "snake:done"],
     "aliasing": ["aliasing:start", "zero_extend=1", "aliasing:done"],

@@ -6,6 +6,7 @@ development without mingw-w64). In CI this must stay unset so a missing
 dependency fails the build instead of silently skipping coverage.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -33,6 +34,34 @@ def main() -> int:
     for tool, purpose in OPTIONAL_TOOLS.items():
         status = "present" if shutil.which(tool) else "absent"
         print(f"optional  {tool:<26} {status:<8} {purpose}")
+
+    # `doctor` reports the optional upstream components the integration plan names.
+    # It must report them from the artifact each installs, not from a command name:
+    # macOS ships a text editor called `xed` in /usr/bin, so a name probe claims
+    # Intel XED is present when it is not.
+    doctor = subprocess.run([CLI, "doctor", "--json"], text=True, capture_output=True)
+    if doctor.returncode != 0:
+        print("FAIL: doctor --json did not succeed", file=sys.stderr)
+        return 1
+    try:
+        reported = json.loads(doctor.stdout)
+    except json.JSONDecodeError:
+        print(f"FAIL: doctor --json is not JSON: {doctor.stdout[:200]}", file=sys.stderr)
+        return 1
+    for component in ("llvm", "xed", "remill"):
+        if component not in reported:
+            print(f"FAIL: doctor does not report the {component} state", file=sys.stderr)
+            return 1
+        print(f"upstream  {component:<26} {'present' if reported[component] else 'absent'}")
+    if reported["xed"] and not any(
+            os.path.exists(path) for path in (
+                "/opt/homebrew/include/xed/xed-interface.h",
+                "/usr/local/include/xed/xed-interface.h",
+                "/usr/include/xed/xed-interface.h")):
+        print("FAIL: doctor reports Intel XED present but no xed-interface.h exists; "
+              "the probe is matching a command name, and /usr/bin/xed is a text editor",
+              file=sys.stderr)
+        return 1
 
     if missing_required:
         message = "missing required tool(s): " + "; ".join(missing_required)

@@ -531,6 +531,22 @@ void win32_get_system_time_as_file_time(GuestContext* context) {
   const auto out = import_argument(context, 0);
   if (out != 0) { store_guest_memory(context, out, 0, 4); store_guest_memory(context, out + 4, 0, 4); }
 }
+// Adapted from igi-recomp shim/src/kernel32.c GetLocalTime (MIT, HenryKun55).
+void win32_get_local_time(GuestContext* context) {
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+  localtime_r(&now, &tm);
+  const auto p = import_argument(context, 0);
+  store_guest_memory(context, p + 0u, static_cast<std::uint32_t>(tm.tm_year) + 1900u, 2);
+  store_guest_memory(context, p + 2u, static_cast<std::uint32_t>(tm.tm_mon) + 1u, 2);
+  store_guest_memory(context, p + 4u, static_cast<std::uint32_t>(tm.tm_wday), 2);
+  store_guest_memory(context, p + 6u, static_cast<std::uint32_t>(tm.tm_mday), 2);
+  store_guest_memory(context, p + 8u, static_cast<std::uint32_t>(tm.tm_hour), 2);
+  store_guest_memory(context, p + 10u, static_cast<std::uint32_t>(tm.tm_min), 2);
+  store_guest_memory(context, p + 12u, static_cast<std::uint32_t>(tm.tm_sec), 2);
+  store_guest_memory(context, p + 14u, 0, 2);
+  set_import_result(context, 0);
+}
 void win32_get_startup_info(GuestContext* context) {
   const auto out = import_argument(context, 0);
   if (out != 0 && out + 68 <= guest_memory_size) std::memset(guest_memory + out, 0, 68);
@@ -1949,6 +1965,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "lstrlenW", win32_lstrlen_w},
     {"kernel32.dll", "lstrcpyA", win32_lstrcpy_a},
     {"kernel32.dll", "GetACP", win32_code_page},
+    {"kernel32.dll", "GetLocalTime", win32_get_local_time},
     {"kernel32.dll", "IsDBCSLeadByte", win32_is_dbcs_lead_byte},
     {"kernel32.dll", "GetOEMCP", win32_code_page},
     {"kernel32.dll", "GetConsoleOutputCP", win32_code_page},

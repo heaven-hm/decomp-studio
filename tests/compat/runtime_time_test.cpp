@@ -50,6 +50,26 @@ int main() {
     if (!invoke_shared_shim(&output, "api-ms-win-crt-stdio-l1-1-0.dll", "putchar")) return 11;
     if (output.registers[0] != '!' || captured != "hello\n!") return 12;
     guest_output_capture = nullptr;
+    GuestContext local{};
+    local.registers[1] = 0x220000;
+    local.registers[4] = 0x700000;
+    store_guest_memory(&local, local.registers[4] + 4, 0x220000, 4);
+    const auto before_local = std::time(nullptr);
+    if (!invoke_shared_shim(&local, "kernel32.dll", "GetLocalTime")) return 13;
+    const auto after_local = std::time(nullptr);
+    const auto matches = [&](std::time_t time) {
+      std::tm fields{};
+      if (!localtime_r(&time, &fields)) return false;
+      return load_guest_memory(&local, 0x220000, 2) == static_cast<unsigned>(fields.tm_year + 1900) &&
+             load_guest_memory(&local, 0x220002, 2) == static_cast<unsigned>(fields.tm_mon + 1) &&
+             load_guest_memory(&local, 0x220004, 2) == static_cast<unsigned>(fields.tm_wday) &&
+             load_guest_memory(&local, 0x220006, 2) == static_cast<unsigned>(fields.tm_mday) &&
+             load_guest_memory(&local, 0x220008, 2) == static_cast<unsigned>(fields.tm_hour) &&
+             load_guest_memory(&local, 0x22000a, 2) == static_cast<unsigned>(fields.tm_min) &&
+             load_guest_memory(&local, 0x22000c, 2) == static_cast<unsigned>(fields.tm_sec);
+    };
+    if (!matches(before_local) && !matches(after_local)) return 14;
+    if (load_guest_memory(&local, 0x22000e, 2) != 0) return 15;
   }
   return 0;
 }

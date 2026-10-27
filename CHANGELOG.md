@@ -58,6 +58,14 @@ All notable changes to Recomp Studio are documented here. This project follows
   `cvtsi2ss` and `cvttss2si` were missing and are added. Effect on real
   applications: Pixeltetris.exe 556 -> 279 unsupported, legacy-notepad-x64.exe
   177 -> 123, clipjar.exe 1635 -> 1326.
+- 256-bit `ymm` state: the guest vector register file is now 32 bytes per
+  register (the low 16 remain the xmm view) with `load_guest_vector_256` /
+  `store_guest_vector_256` helpers, and the lifter emits 32-byte moves when a
+  `ymm` operand is involved. AVX widened the architectural registers, so a
+  128-bit-only file could not represent a guest that uses `ymm` at all, and
+  `vmovdqu ymm0, [rdx]` was the first blocker in both Pixeltetris.exe and
+  legacy-notepad-x64.exe. Effect: Pixeltetris.exe 279 -> 210 unsupported,
+  legacy-notepad-x64.exe 123 -> 72.
 - `tests/vex/vex_test.py`: checks the VEX fixture by value against the SDM, and
   asserts the fixture stays out of the differential suite.
 

@@ -149,11 +149,18 @@ const std::map<std::string, std::string>& vex_equivalents() {
 }
 
 int vector_register_index(const std::string& name) {
-  if (name.size() > 3 && name.compare(0, 3, "xmm") == 0) {
+  if (name.size() > 3 && (name.compare(0, 3, "xmm") == 0 || name.compare(0, 3, "ymm") == 0)) {
     try { return std::stoi(name.substr(3)); } catch (...) { return -1; }
   }
   return -1;
 }
+
+// AVX widened the architectural vector registers to 256 bits. A ymm operand
+// touches all 32 bytes; an xmm operand touches 16.
+bool is_wide_vector_register(const std::string& name) {
+  return name.size() > 3 && name.compare(0, 3, "ymm") == 0;
+}
+
 
 std::string format_hex(std::uint64_t value) {
   std::ostringstream stream;
@@ -336,14 +343,25 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   const auto emit_vector_move = [&](const discovery::Operand& destination, const discovery::Operand& source,
                                     int byte_count) {
     if (is_vector_register(destination) && source.kind == discovery::Operand::Kind::Memory) {
-      emit("load_guest_vector(context, " + effective_address_expression(instruction, source) + ", " +
-           std::to_string(vector_index(destination)) + ", " + std::to_string(byte_count) + ");");
+      if (byte_count >= 32) {
+        emit("load_guest_vector_256(context, " + effective_address_expression(instruction, source) + ", " +
+             std::to_string(vector_index(destination)) + ");");
+      } else {
+        emit("load_guest_vector(context, " + effective_address_expression(instruction, source) + ", " +
+             std::to_string(vector_index(destination)) + ", " + std::to_string(byte_count) + ");");
+      }
     } else if (destination.kind == discovery::Operand::Kind::Memory && is_vector_register(source)) {
-      emit("store_guest_vector(context, " + effective_address_expression(instruction, destination) + ", " +
-           std::to_string(vector_index(source)) + ", " + std::to_string(byte_count) + ");");
+      if (byte_count >= 32) {
+        emit("store_guest_vector_256(context, " + effective_address_expression(instruction, destination) + ", " +
+             std::to_string(vector_index(source)) + ");");
+      } else {
+        emit("store_guest_vector(context, " + effective_address_expression(instruction, destination) + ", " +
+             std::to_string(vector_index(source)) + ", " + std::to_string(byte_count) + ");");
+      }
     } else if (is_vector_register(destination) && is_vector_register(source)) {
       emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(destination)) +
-           "], context->vector_registers[" + std::to_string(vector_index(source)) + "], 16);");
+           "], context->vector_registers[" + std::to_string(vector_index(source)) + "], " +
+           std::to_string(byte_count >= 32 ? 32 : 16) + ");");
     } else {
       throw LiftError("unsupported vector move at " + format_hex(instruction.address));
     }
@@ -398,7 +416,11 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if ((mnemonic == "movaps" || mnemonic == "movups" || mnemonic == "movdqa" || mnemonic == "movdqu" ||
        mnemonic == "movapd" || mnemonic == "movupd") &&
       operands.size() == 2 && (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
-    emit_vector_move(operands[0], operands[1], 16);
+    int byte_count = 16;
+    for (const auto& operand : operands)
+      if (operand.kind == discovery::Operand::Kind::Register && is_wide_vector_register(operand.register_name))
+        byte_count = 32;
+    emit_vector_move(operands[0], operands[1], byte_count);
     return;
   }
   if ((mnemonic == "movss" || mnemonic == "movsd") && operands.size() == 2 &&

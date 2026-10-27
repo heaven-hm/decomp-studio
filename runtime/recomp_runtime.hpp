@@ -39,7 +39,10 @@ struct GuestContext {
   std::uint32_t direction_flag;
   std::uint64_t fs_base;
   std::uint64_t gs_base;
-  std::uint8_t vector_registers[16][16];
+  // 32 bytes each: the low 16 are xmm, all 32 are ymm. AVX widened the
+  // architectural vector registers, so a 128-bit-only file cannot
+  // represent a guest that uses ymm.
+  std::uint8_t vector_registers[16][32];
   double x87_registers[8];
   std::uint32_t x87_top;
   std::uint32_t x87_control_word;
@@ -394,6 +397,25 @@ inline std::uint64_t pop_guest_stack(GuestContext* context) {
 inline void return_from_guest_function(GuestContext* context, std::uint32_t extra_bytes) {
   context->registers[4] = mask_guest_address(context->registers[4] +
                                              static_cast<std::uint64_t>(guest_pointer_width) + extra_bytes);
+}
+
+// 256-bit forms. A VEX.256 load or store moves all 32 bytes; the 128-bit
+// helpers above deliberately still touch only the low 16 so that SSE code is
+// unaffected by the wider register file.
+inline void load_guest_vector_256(GuestContext* context, std::uint64_t address, int vector_index) {
+  if (address + 32 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 32, 0);
+    return;
+  }
+  std::memcpy(context->vector_registers[vector_index], guest_memory + address, 32);
+}
+
+inline void store_guest_vector_256(GuestContext* context, std::uint64_t address, int vector_index) {
+  if (address + 32 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 32, 1);
+    return;
+  }
+  std::memcpy(guest_memory + address, context->vector_registers[vector_index], 32);
 }
 
 inline void load_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {

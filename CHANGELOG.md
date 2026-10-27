@@ -69,6 +69,34 @@ All notable changes to Recomp Studio are documented here. This project follows
 - `tests/vex/vex_test.py`: checks the VEX fixture by value against the SDM, and
   asserts the fixture stays out of the differential suite.
 
+- A real guest heap. `HeapFree` was a no-op and `HeapAlloc` only bumped a
+  pointer, so a guest that allocates and frees in a loop consumed the region
+  until allocations returned null — which is what loading a level does. It is now
+  a boundary-tag allocator with splitting and coalescing, and it returns null
+  only when the region is genuinely exhausted, as the real API does.
+- `tests/heap/heap_test.py` and the `heap` fixture: 200 MB through a 128 MB
+  region, which the old allocator failed around round 128.
+
+### Fixed
+
+- Two vector-move defects, both found by independent audit of the VEX work
+  (`reports/gap-census.md`) and both reachable in lifted code:
+  * a register-to-register move narrower than 16 bytes was emitted as a 16-byte
+    copy, so `movsd xmm2, xmm0` clobbered the upper half that SSE requires it to
+    preserve (`movss` likewise). 68 instructions across 8 binaries.
+  * the three-operand VEX src1 copy hardcoded 16 bytes, so a `ymm` destination
+    kept half of src1 stale. 107 instructions, mostly `vpand ymm, ymm, ymm`.
+  The `vecmove` fixture pins the merge semantics and is differentially verified;
+  mutation-tested, the old code prints `movsd_hi=22`/`movss_lane3=0` and fails.
+- The differential reference no longer fabricates a result. It models four
+  imports and returned 0 for everything else, which made a comparison "pass"
+  against a program whose reference run was meaningless. It now stops and
+  reports `reference does not model <library>!<symbol>`, so verification fails
+  closed like everything else. This also corrects the documentation: the
+  executed-address trace is a post-failure diagnostic, not a pass/fail gate, and
+  the reference does not have "the same shim semantics as the runtime" — it has
+  4 of 63. Sharing one shim implementation is the real fix and is tracked.
+
 ### Fixed
 
 - `autorecomp` reported `AUTORECOMP COMPLETE` and exited 0 for a program that

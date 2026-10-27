@@ -140,11 +140,18 @@ extra_sources     = ["src/my_impl.cpp"]
 ## Verification and the repair harness
 
 Verification is first-class and runs the original x86-64 code under Unicorn with
-the same shim semantics as the runtime:
+the same shim semantics as the runtime — for the four imports the reference
+models (`GetStdHandle`, `WriteFile`, `ReadFile`, `ExitProcess`); the runtime
+implements 63, and the reference now stops with
+`reference does not model <library>!<symbol>` rather than inventing a result for
+the rest:
 
 - **Program level** — bytes written to standard output must match exactly.
-- **Trace level** — the executed guest address sequence must match; the first
-  divergence identifies the responsible instruction.
+- **Trace level** — the executed guest address sequence is compared and the
+  first divergence identifies the responsible instruction. This is currently a
+  *diagnostic run after a failure*, not a pass/fail gate: `verified()` is
+  output-only, so a change that alters control flow but reconverges to identical
+  output is not caught by the suite. Promoting it to a gate is tracked work.
 
 The repair harness automates the loop: translate, build, verify, localise the
 first divergence to an instruction, write a structured report per iteration, and

@@ -359,9 +359,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
              std::to_string(vector_index(source)) + ", " + std::to_string(byte_count) + ");");
       }
     } else if (is_vector_register(destination) && is_vector_register(source)) {
+      // A register-to-register move narrower than 16 bytes is a *merge*: SSE
+      // movsd copies the low 8 bytes and movss the low 4, leaving the rest of
+      // the destination untouched. Copying 16 bytes unconditionally clobbered
+      // that upper half, and it also broke the three-operand VEX form, whose
+      // whole purpose is that the destination's upper half comes from src1 —
+      // the src1 copy was immediately overwritten by this one.
+      const auto copy_bytes = byte_count >= 32 ? 32 : byte_count;
       emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(destination)) +
            "], context->vector_registers[" + std::to_string(vector_index(source)) + "], " +
-           std::to_string(byte_count >= 32 ? 32 : 16) + ");");
+           std::to_string(copy_bytes) + ");");
     } else {
       throw LiftError("unsupported vector move at " + format_hex(instruction.address));
     }
@@ -381,8 +388,13 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         mnemonic = equivalent->second;
       } else if (operands.size() == 3 && is_vector_register(operands[0]) &&
                  is_vector_register(operands[1])) {
+        // Copy as much of src1 as the destination register actually holds: a
+        // hardcoded 16 left the upper half of a ymm destination stale.
+        const auto destination_bytes =
+            is_wide_vector_register(operands[0].register_name) ? 32 : 16;
         emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) +
-             "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], 16);");
+             "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], " +
+             std::to_string(destination_bytes) + ");");
         auto two_operand = instruction;
         two_operand.mnemonic = equivalent->second;
         two_operand.operands = {operands[0], operands[2]};

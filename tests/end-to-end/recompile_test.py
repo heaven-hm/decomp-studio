@@ -34,6 +34,7 @@ FIXTURES = [
     ("byteops", "byte swap and the direction flag"),
     ("bitops", "BT/BTS/BTR/BTC register forms"),
     ("x87", "x87 stack, flags direction, counted loops"),
+    ("vecmove", "SSE register-move merge semantics"),
     ("simd_convert", "packed integer-to-float conversion and MXCSR rounding modes"),
 ]
 
@@ -63,6 +64,10 @@ EXPECTED_OUTPUT = {
     # complement prints 32 instead of -33 and 32768 instead of 32767.
     "bitops": ["bitops:start", "btr=-33", "btr_cf=1", "bts=8", "bts_cf=0", "btc=0",
                "btc_cf=1", "bt_cf=1", "btr32=32767", "btr32_cf=1", "bitops:done"],
+    # The merge is the point: a 16-byte register copy prints movsd_hi=22 and
+    # movss_lane3=0 instead of preserving 11 and 33.
+    "vecmove": ["vecmove:start", "movsd_lo=7", "movsd_hi=11", "movss_lo=5",
+                "movss_lane3=33", "load_lo=42", "load_hi=0", "vecmove:done"],
     "x87": ["x87:start", "add ", "fistp ", "sqrt ", "cmp_eq ", "sin ", "cw_trunc ",
             "store_trunc ", "rep_std ", "loop ", "jecxz_zero ", "jecxz_nonzero ", "x87:done"],
     "simd_convert": ["simdconvert:start", "default_mxcsr=", "mode=0", "mode=3", "boundary",

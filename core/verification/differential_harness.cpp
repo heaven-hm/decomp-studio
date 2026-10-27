@@ -41,6 +41,10 @@ struct ReferenceState {
   std::uint64_t thunk_base{};
   std::uint64_t instruction_count{};
   bool finished{};
+  // Set when the reference meets something it cannot model. The reference must
+  // never invent a result for an import it does not implement: doing so lets a
+  // comparison "pass" against a program that never really ran.
+  std::string failure_reason;
 };
 
 std::map<std::string, std::string> read_manifest(const std::filesystem::path& project_directory) {
@@ -160,7 +164,15 @@ void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
     uc_emu_stop(engine);
     return;
   } else {
-    set_result(0);
+    // Not modelled. Returning 0 here fabricated a result for every import the
+    // reference does not implement — 59 of the runtime's 63 shims — which let
+    // the comparison succeed for programs whose reference run was meaningless.
+    // Stop and report instead, so verification fails closed like everything
+    // else in this project.
+    const auto& library = index < state.library_names.size() ? state.library_names[index] : std::string{};
+    state.failure_reason = "reference does not model " + library + "!" + symbol;
+    uc_emu_stop(engine);
+    return;
   }
 
   const int stack_register = is_64_bit ? UC_X86_REG_RSP : UC_X86_REG_ESP;
@@ -280,6 +292,11 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.instruction_count = state.instruction_count;
   run.trace = std::move(trace);
   uc_close(engine);
+  if (!state.failure_reason.empty()) {
+    run.completed = false;
+    run.failure_reason = state.failure_reason;
+    return run;
+  }
   if (error != UC_ERR_OK && !state.finished) {
     run.completed = false;
     run.failure_reason = std::string("unicorn: ") + uc_strerror(error);

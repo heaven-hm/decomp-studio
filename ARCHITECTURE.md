@@ -125,11 +125,20 @@ converge on, and where this tool will grow next:
 ## Verification
 
 Verification is first-class. The reference side executes the original x86-64
-machine code under Unicorn with the same shim semantics as the runtime; the
+machine code under Unicorn with the same shim semantics as the runtime for the
+four imports the reference models; the runtime implements 63 shims, and the
+reference stops and reports `reference does not model <library>!<symbol>` for
+the other 59 rather than returning 0, which would fabricate a result and let a
+comparison pass for a program that never really ran. Until the two share one
+shim implementation, differential verification only covers guests that stay
+inside those four imports. The
 candidate side runs the compiled host binary. Two comparisons are performed:
 
 - **Program level** — the bytes written to standard output must match exactly.
-- **Instruction trace level** — the sequence of executed guest addresses must
+- **Instruction trace level** — the sequence of executed guest addresses is
+  compared as a diagnostic after a failure, not as a pass/fail gate; see the
+  note on the reference's shim coverage below. The first divergence identifies
+  the responsible instruction, and the sequence must
   match; the first divergence identifies the responsible instruction.
 
 ### What the reference cannot adjudicate

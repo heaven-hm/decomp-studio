@@ -128,6 +128,49 @@ int standard_handle_to_descriptor(std::uint64_t handle) {
 
 std::uint64_t next_heap_address = 0;
 
+// ---- guest heap ---------------------------------------------------------
+// A boundary-tag allocator inside the guest address space. HeapFree used to be
+// a no-op and HeapAlloc only ever bumped a pointer, so a guest that allocates
+// and frees in a loop — which is what loading a level does — exhausted the heap
+// and started getting null back. Each block carries an 8-byte header
+// immediately before the pointer the guest sees:
+//
+//   +0  std::uint32_t payload size in bytes (16-byte aligned, header excluded)
+//   +4  std::uint32_t 1 when the block is free
+//
+// Blocks are contiguous from heap_first_block up to heap_region_end, and free
+// neighbours are coalesced so the region can be reused rather than consumed.
+constexpr std::uint64_t kHeapHeaderSize = 8;
+constexpr std::uint64_t kHeapAlignment = 16;
+
+std::uint64_t heap_first_block = 0;
+std::uint64_t heap_region_end = 0;
+
+void heap_write_header(std::uint64_t block, std::uint32_t size, std::uint32_t is_free) {
+  store_guest_memory(nullptr, block, size, 4);
+  store_guest_memory(nullptr, block + 4, is_free, 4);
+}
+std::uint32_t heap_read_size(std::uint64_t block) {
+  return static_cast<std::uint32_t>(load_guest_memory(nullptr, block, 4));
+}
+std::uint32_t heap_read_free(std::uint64_t block) {
+  return static_cast<std::uint32_t>(load_guest_memory(nullptr, block + 4, 4));
+}
+std::uint64_t heap_next_block(std::uint64_t block) { return block + kHeapHeaderSize + heap_read_size(block); }
+
+// Lays out one free block spanning the whole heap region. Called once, after
+// guest memory exists and before any translated code runs.
+void heap_initialize(std::uint64_t base, std::uint64_t limit) {
+  heap_first_block = 0;
+  heap_region_end = 0;
+  if (limit > guest_memory_size) limit = guest_memory_size;
+  const auto start = (base + kHeapAlignment - 1) & ~(kHeapAlignment - 1);
+  if (limit < start + kHeapHeaderSize + kHeapAlignment) return;
+  heap_first_block = start;
+  heap_region_end = limit;
+  heap_write_header(start, static_cast<std::uint32_t>(limit - start - kHeapHeaderSize), 1);
+}
+
 // ---- Win32 shims -------------------------------------------------------
 void win32_get_std_handle(GuestContext* context) {
   const auto which = static_cast<std::int32_t>(import_argument(context, 0));
@@ -195,13 +238,64 @@ void win32_virtual_free(GuestContext* context) { set_import_result(context, 1); 
 void win32_get_process_heap(GuestContext* context) { set_import_result(context, 0x1000); }
 void win32_heap_create(GuestContext* context) { set_import_result(context, 0x1000); }
 void win32_heap_alloc(GuestContext* context) {
-  const auto size = import_argument(context, 2);
-  const auto aligned = (size + 0xf) & ~0xfull;
-  if (next_heap_address + aligned > guest_memory_size) { set_import_result(context, 0); return; }
-  set_import_result(context, next_heap_address);
-  next_heap_address += aligned;
+  const auto requested = import_argument(context, 2);
+  const auto payload = (requested == 0 ? kHeapAlignment : (requested + kHeapAlignment - 1) & ~(kHeapAlignment - 1));
+  if (heap_first_block == 0 || payload > 0xfffffff0ull) { set_import_result(context, 0); return; }
+  for (std::uint64_t block = heap_first_block; block != 0; block = heap_next_block(block)) {
+    const auto size = heap_read_size(block);
+    if (heap_read_free(block) == 0 || size < payload) {
+      const auto next = heap_next_block(block);
+      if (next + kHeapHeaderSize > heap_region_end) break;
+      continue;
+    }
+    // Split when the remainder can hold a header plus one aligned payload;
+    // otherwise hand over the whole block.
+    const auto remainder = size - static_cast<std::uint32_t>(payload);
+    if (remainder >= kHeapHeaderSize + kHeapAlignment) {
+      heap_write_header(block + kHeapHeaderSize + static_cast<std::uint32_t>(payload),
+                        static_cast<std::uint32_t>(remainder - kHeapHeaderSize), 1);
+      heap_write_header(block, static_cast<std::uint32_t>(payload), 0);
+    } else {
+      heap_write_header(block, size, 0);
+    }
+    set_import_result(context, block + kHeapHeaderSize);
+    return;
+  }
+  // The region is exhausted. Returning null is what the real API does, and the
+  // guest is entitled to see it rather than being handed a wild pointer.
+  set_import_result(context, 0);
 }
-void win32_heap_free(GuestContext* context) { set_import_result(context, 1); }
+
+void win32_heap_free(GuestContext* context) {
+  const auto pointer = import_argument(context, 2);
+  if (heap_first_block == 0 || pointer < heap_first_block + kHeapHeaderSize || pointer >= heap_region_end) {
+    set_import_result(context, 0);
+    return;
+  }
+  const auto block = pointer - kHeapHeaderSize;
+  heap_write_header(block, heap_read_size(block), 1);
+  // Coalesce with the following free blocks, then with the preceding one if it
+  // is free, so repeated alloc/free cycles reuse the region instead of walking
+  // it forward until it runs out.
+  for (;;) {
+    const auto next = heap_next_block(block);
+    if (next + kHeapHeaderSize > heap_region_end || heap_read_free(next) == 0) break;
+    heap_write_header(block, heap_read_size(block) + static_cast<std::uint32_t>(kHeapHeaderSize) + heap_read_size(next), 1);
+  }
+  std::uint64_t previous = heap_first_block;
+  while (previous != block) {
+    const auto next = heap_next_block(previous);
+    if (next == block) {
+      if (heap_read_free(previous) != 0) {
+        heap_write_header(previous, heap_read_size(previous) + static_cast<std::uint32_t>(kHeapHeaderSize) + heap_read_size(block), 1);
+      }
+      break;
+    }
+    if (next + kHeapHeaderSize > heap_region_end) break;
+    previous = next;
+  }
+  set_import_result(context, 1);
+}
 
 void win32_get_tick_count(GuestContext* context) {
   timespec now{};
@@ -680,6 +774,7 @@ int run_recompiled_image(const RecompiledImage* image) {
     store_guest_memory(nullptr, peb_address + 0x08, image->image_base, 4);
   }
   next_heap_address = image->heap_base;
+  heap_initialize(image->heap_base, image->stack_top);
 
   GuestContext context{};
   context.registers[kRegisterStackPointer] = image->stack_top;

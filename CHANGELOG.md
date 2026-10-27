@@ -302,6 +302,18 @@ All notable changes to Recomp Studio are documented here. This project follows
   Structured statements go from 4.86% to **51.95%** on `arith.exe`, with the
   generated C++ still byte-identical.
 
+- `Assign` and `StoreMemory` migrated: 20 write sites, and the IR model corrected
+  to make it possible. Structured statements go from 51.95% to **86.24%** on
+  `arith.exe`, with the generated C++ still byte-identical across all 22 fixtures.
+
+  A register write is not an assignment when the register is narrower than the
+  machine word: `al = x` compiles to a masked read-modify-write that preserves the
+  bits above AL, and the read form of a sub-register is a cast, which is not an
+  lvalue. The first attempt carried a text destination and produced code that did
+  not compile. `Assign` now carries the destination register's index, width and
+  high-byte offset, and the backend renders the mask — mirroring
+  `register_write_statement` rather than approximating it.
+
 ### Fixed
 
 - The golden test pinned the generated code but not the input, so a rebuilt fixture

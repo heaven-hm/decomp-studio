@@ -51,7 +51,15 @@ const char* statement_kind_name(StatementKind kind);
 struct Statement {
   StatementKind kind{StatementKind::Verbatim};
 
-  std::string destination;  // Assign: what is written
+  // Assign. A register write is not an assignment when the register is narrower
+  // than the machine word: `al = x` compiles to a masked read-modify-write that
+  // preserves the bits above AL, and the read form of a sub-register is a cast,
+  // which is not an lvalue. So the destination is described as a register field
+  // and its width, and the backend renders the mask.
+  int destination_register{-1};
+  int destination_width{};
+  int destination_high_byte_offset{};
+  std::string destination;  // Assign: a non-register destination, when there is one
   std::string expression;   // Assign, StoreMemory, JumpIf: the value or condition
   std::string address;      // StoreMemory: where
   int width{};              // StoreMemory: bytes

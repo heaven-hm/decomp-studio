@@ -11,12 +11,12 @@ not a claim about every copy of a binary in the corpus.
 | blackbox | `win32/blackbox.exe` | Passed | Exit 3 | Failed | Baseline `c14ef07`; at `4e9d7dc` it reaches missing `InitCommonControls` |
 | fifteensolver | `win32/fifteensolver.exe` | Passed | Exit 1, no stdout | Failed; reference completed, candidate did not | `autorecomp` with `--autorepair --buildrun`, baseline at `c14ef07` |
 | plink | `win64/plink.exe` | Not reached | Not reached | Not reached | Before `374664f`, translation stopped on memory-source `pshufd`; after `3c90f4d`, it stops on `aeskeygenassist` |
-| game2048 | `windows/x64/games/game2048.exe` | Passed | Exit 3 after 347 bytes | Failed | After `e4a533f`, displays a board and reaches missing `__stdio_common_vfscanf`; previously stopped at `unpcklpd`, `_time64`, a divide error, then `puts` |
+| game2048 | `windows/x64/games/game2048.exe` | Passed | EOF: exit 0 and 347 bytes; `q`: exit 3 | EOF: passed; interactive path not verified | After `5fe2627`, EOF output matches the reference. Piping `q` reaches an unresolved indirect jump at `0x140002daf`, so the game is not yet counted as fixed. |
 | arith-calc | `windows/x64/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `bb67ed0c581a1a00cfce9fd324c4003a970d4869829bb472e5f91b4ee476be3c` |
 | arith-calc | `windows/x86/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6` |
 
-**Applications newly verified by this work: 0.** The audit and fixes are still
-in progress. The two arith-calc executables above were observed to verify; no
+**Applications established as fixed by this work: 0.** The audit and fixes are
+still in progress. The two arith-calc executables above were observed to verify; no
 before-and-after evidence establishes that these fixes made them work. The other
 corpus locations have not yet been fully run and cannot be counted as passing.
 
@@ -27,14 +27,15 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 The feature branch's architecture-neutral IR updates were merged at `53f773e`;
 observations made before that merge need to be rerun on the integrated revision.
 
-For the missing scanf support, Wine's LGPL implementation in
+For scanf support, Wine's LGPL implementation in
 [`dlls/msvcrt/scanf.c`](https://github.com/wine-mirror/wine/blob/f343ca6085bfac807c33e9c1a8a43105071f1416/dlls/msvcrt/scanf.c)
 and the MIT-licensed [`hisahi/scanf`](https://github.com/hisahi/scanf/tree/9acf085770db2a7319cdb2d7498e855d5edba9ab)
-were downloaded for evaluation. Neither is integrated yet: both consume host
-`va_list` values, whereas the recompiled guest supplies Windows ABI arguments
-and guest addresses. Calling them directly would not establish correct guest
-memory or input handling. Wine also requires its CRT dependencies and LGPL
-distribution terms. The missing import remains open.
+were downloaded for evaluation. `hisahi/scanf` is copied unmodified at
+`12953ff` and a guest ABI adapter was added at `5fe2627`. The adapter supports
+only `%c` and ` %c` on standard input with the tested non-secure options; other
+formats and streams fail explicitly. Wine's implementation is not integrated
+and requires its CRT dependencies and LGPL distribution terms. Input replay
+between candidate and reference and general scanf support remain open.
 
 A recursive signature inventory found 489 valid PE files, 10 Mach-O/fat files and
 8 ELF files among 13,810 files. The PE files have 303 distinct SHA-256 hashes;
@@ -58,6 +59,7 @@ and must not be counted as running on the basis of their presence.
 | Restore the x64 stack after import tail calls | The `tail_import` PE fixture reports `tail_stack_ok=1` and matches 39 reference bytes; `game2048` no longer hits the divide error and reaches missing `puts`. | `0a82d05` |
 | Implement CRT `puts` and `putchar` | `runtime_time` checks output and returns on both guest widths. `game2048` now displays a 347-byte initial board and reaches the unimplemented `__stdio_common_vfscanf`; it is not yet verified. | `e4a533f` |
 | Port `GetLocalTime` from MIT-licensed igi-recomp | `runtime_time` checks the eight SYSTEMTIME fields on both guest widths. The source revision and MIT license are recorded in `THIRD_PARTY_NOTICES.md`; no app is yet claimed as fixed by this port. | `c9be7d5` |
+| Bridge single-character UCRT scanf to the copied MIT scanner | The upstream scanner passes 104 upstream tests; `runtime_time` tests guest input, pushback, and EOF on both pointer widths. `game2048` matches 347 reference bytes on EOF but fails the `q` input due to an unresolved jump. | `12953ff`, `5fe2627` |
 
 The observed input SHA-256 values are `7773fa08db2ab5a620a4ef4391a5f0fbd1af73474589128c6d0ef46f1c0b2d6e`
 for `win32/blackbox.exe` and `47b443772e36be8a8cf8c45fe80951a466264f370fa28a4851ea57b5c1f17d95`

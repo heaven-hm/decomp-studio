@@ -294,6 +294,14 @@ All notable changes to Recomp Studio are documented here. This project follows
   the checkpoint index, the guest instruction, and which register or flag
   disagrees. 178 checkpoints are compared on `arith.exe`, 189 on the PE32 fixture.
 
+- The `Trace` statement kind, and the migration of the largest shape in the
+  generated code. `trace_instruction(context, 0x...); // <disassembly>` is 48.25%
+  of all generated statements — 11,830 of 24,518 across the fixture corpus — and it
+  comes from a single site with a fixed template. The address and the disassembly
+  are separate fields, so a backend is not required to reproduce the C++ spelling.
+  Structured statements go from 4.86% to **51.95%** on `arith.exe`, with the
+  generated C++ still byte-identical.
+
 ### Fixed
 
 - The reported reference instruction count included import thunks. The counter was

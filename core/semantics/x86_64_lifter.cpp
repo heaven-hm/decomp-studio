@@ -1677,8 +1677,18 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
       label.address_of_instruction = address;
       lifted.statements.push_back(std::move(label));
     }
-    lifted.statements.push_back(ir::Statement::verbatim(
-        "trace_instruction(context, " + format_hex(address) + "); // " + instruction.text, address));
+    {
+      // 48% of the generated statements are this line and its content is a fixed
+      // template, so it is the highest-value single migration. The address and the
+      // disassembly are kept as separate fields rather than as pre-joined text, so
+      // a backend is not required to reproduce the C++ spelling.
+      ir::Statement trace;
+      trace.kind = ir::StatementKind::Trace;
+      trace.instruction_address = format_hex(address);
+      trace.text = instruction.text;
+      trace.address_of_instruction = address;
+      lifted.statements.push_back(std::move(trace));
+    }
     emit_instruction(instruction, function, lifted);
   }
   {

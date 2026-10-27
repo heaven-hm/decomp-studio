@@ -39,6 +39,11 @@ enum class StatementKind {
   Return,        // return from the guest function
   Trap,          // the guest reached something that cannot be executed
   Verbatim,      // not yet migrated: emitted unchanged by the backend
+  // Provenance: records that this guest instruction is about to execute, with the
+  // original disassembly. It is the largest single shape in the generated code --
+  // 48% of all statements on the fixture corpus -- and the only statement whose
+  // content is a fixed template rather than a computed expression.
+  Trace,
 };
 
 const char* statement_kind_name(StatementKind kind);
@@ -53,7 +58,8 @@ struct Statement {
   std::string symbol;       // CallGuest, CallImport: the callee
   std::string library;      // CallImport: the library
   std::string label;        // Jump, JumpIf, Label
-  std::string text;         // Comment, Verbatim
+  std::string text;         // Comment, Verbatim, Trace (the disassembly)
+  std::string instruction_address;  // Trace: the guest address, already formatted
   std::uint64_t address_of_instruction{};  // provenance for every statement
 
   static Statement verbatim(std::string line, std::uint64_t instruction_address) {

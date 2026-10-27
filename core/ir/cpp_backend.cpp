@@ -40,6 +40,10 @@ void render_statement(const Statement& statement, const CppBackendOptions& optio
     case StatementKind::Trap:
       output += options.indent + "recomp_trap(context, \"" + statement.text + "\");\n";
       return;
+    case StatementKind::Trace:
+      output += options.indent + "trace_instruction(context, " + statement.instruction_address +
+                "); // " + statement.text + "\n";
+      return;
     case StatementKind::Verbatim:
       // Not yet migrated. Emitted exactly as the lifter produced it, which is
       // what keeps the generated code byte-identical during the migration.

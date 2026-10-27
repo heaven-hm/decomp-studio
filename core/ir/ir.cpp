@@ -16,6 +16,7 @@ const char* statement_kind_name(StatementKind kind) {
     case StatementKind::Return: return "return";
     case StatementKind::Trap: return "trap";
     case StatementKind::Verbatim: return "verbatim";
+    case StatementKind::Trace: return "trace";
   }
   return "unknown";
 }

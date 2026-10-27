@@ -26,11 +26,13 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 | `win32/*.exe` | 74 | 1 | 73 | Historical shared-output loop. `fillingsolver.exe` reported verification with zero output bytes; this does not demonstrate interactive use. Builds changed during the run. The then-unrecognized `--autorepair` was silently ignored, so repair did not run. |
 | `win64/*.exe` | 52 | 0 | 52 | Historical per-app output sweep; revisions changed during the run and `--autorepair` was silently ignored. |
 | `win64/*.exe` rerun | 52 | 0 | 52 | Per-app output sweep after `5fe2627`; all returned nonzero before `ac4a69c`. `--autorepair` was silently ignored. |
+| `win32/*.exe` with repair | 8 | 0 | 8 | The requested shared-output loop was interrupted during the ninth executable to avoid exhausting disk space. Repair ran; the retained log is `build/requested-win32.log`. |
+| `win64/*.exe` with repair | 2 | 0 | 2 | The per-app sweep was interrupted during the third executable for the same reason. The build changed during the sweep; the retained log is `build/win64-repair.log`. |
 
 The feature branch's architecture-neutral IR updates were merged at `53f773e`
 and its subsequent verification and discovery updates at `c9b4d81`. The
 `--autorepair` spelling is accepted and enables repair starting at `0be6c42`;
-the exact requested win32 loop is being rerun. Observations made before these
+the exact requested win32 loop was started again but remains incomplete. Observations made before these
 changes need to be rerun on the integrated revision. Temporary logs from the
 earlier sweeps were removed by the host; the counts above are the recorded
 observations, not a retained per-app log archive.
@@ -78,8 +80,8 @@ A recursive signature inventory found 489 valid PE files, 10 Mach-O/fat files an
 8 ELF files among 13,810 files. The PE files have 303 distinct SHA-256 hashes;
 152 hashes are associated with images without the PE DLL flag. These are input
 counts, including copies and images not necessarily runnable as applications,
-not successful recompilations. A run of executable paths outside `win32` and
-`win64` is in progress. The project
+not successful recompilations. Executable paths outside `win32` and `win64`
+remain to be audited. The project
 currently accepts Windows PE input, so the non-PE inputs need separate support
 and must not be counted as running on the basis of their presence.
 

@@ -154,22 +154,27 @@ def main() -> int:
             managed = fixture_binaries / "managed_dotnet.exe"
             managed.write_bytes(bytes(data))
 
+            # Detection names the format before the PE reader is consulted, so the
+            # report says what the file is rather than only that it was refused.
             inspected = run_cli(["inspect", str(managed)])
             check("managed image is reported by inspect",
-                  inspected.returncode == 0 and "managed:" in inspected.stdout, inspected.stdout)
+                  "managed .NET" in inspected.stdout and "dotnet-clr" in inspected.stdout,
+                  inspected.stdout[:200])
 
             for command in ("coverage", "analyze"):
                 result = run_cli([command, str(managed)])
                 combined = result.stdout + result.stderr
                 check(f"managed image is refused by {command}", result.returncode != 0, combined.strip()[:120])
+                # The cause is that the code is IL, not machine code. Check the
+                # substance rather than a fixed wording.
                 check(f"managed refusal names the cause ({command})",
-                      "managed" in combined and "CLR" in combined, combined.strip()[:160])
+                      "managed .NET" in combined and "IL bytecode" in combined, combined.strip()[:200])
 
             translated = run_cli(["translate", str(managed), "--output", str(fixture_binaries / "managed-out")])
             combined = translated.stdout + translated.stderr
             check("managed image is refused by translate", translated.returncode != 0, combined.strip()[:120])
             check("managed translate refusal names the cause",
-                  "managed" in combined and "CLR" in combined, combined.strip()[:160])
+                  "managed .NET" in combined and "IL bytecode" in combined, combined.strip()[:200])
 
     for line in PASSES:
         print("PASS " + line)

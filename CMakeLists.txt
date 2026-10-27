@@ -27,6 +27,7 @@ set(RECOMP_SOURCES
   core/discovery/function_discovery.cpp
   core/pipeline.cpp
   core/semantics/x86_64_lifter.cpp
+  core/detection/detection.cpp
   core/ir/ir.cpp
   core/ir/cpp_backend.cpp
   # The guest runtime is linked into the studio as well as into every generated
@@ -104,6 +105,11 @@ add_test(NAME import_compatibility
 
 add_test(NAME autorecomp_pipeline
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/autorecomp/autorecomp_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
+add_test(NAME input_detection
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/detection/detection_test.py
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 

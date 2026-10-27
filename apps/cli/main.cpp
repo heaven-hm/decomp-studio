@@ -3,6 +3,7 @@
 #include "core/common/diagnostic.hpp"
 #include "core/common/sha256.hpp"
 #include "core/discovery/function_discovery.hpp"
+#include "core/detection/detection.hpp"
 #include "core/pipeline.hpp"
 #include "core/semantics/x86_64_lifter.hpp"
 #include "win32_abi.hpp"
@@ -122,6 +123,36 @@ int command_doctor(bool json) {
 }
 
 int command_inspect(const std::filesystem::path& input, bool json) {
+  // Detection runs first and reports what the file is, with the evidence it used.
+  // A reader can then check the conclusion rather than trust it, and a format this
+  // build cannot lift is named rather than described as a parse failure.
+  const auto detection = recomp::detection::detect_file(input.string());
+  if (!detection.is_supported()) {
+    if (json) {
+      std::cout << "{\"status\":\"unsupported\",\"container\":"
+                << recomp::common::quote_json(recomp::detection::container_format_name(detection.container))
+                << ",\"runtime\":"
+                << recomp::common::quote_json(recomp::detection::runtime_kind_name(detection.runtime))
+                << ",\"architecture\":" << recomp::common::quote_json(detection.architecture)
+                << ",\"confidence\":"
+                << recomp::common::quote_json(recomp::detection::confidence_name(detection.confidence))
+                << ",\"summary\":" << recomp::common::quote_json(detection.summary)
+                << ",\"reason\":" << recomp::common::quote_json(detection.unsupported_reason()) << "}\n";
+    } else {
+      std::cout << "detected:    " << detection.summary << "\n"
+                << "container:   " << recomp::detection::container_format_name(detection.container) << "\n"
+                << "runtime:     " << recomp::detection::runtime_kind_name(detection.runtime) << "\n"
+                << "confidence:  " << recomp::detection::confidence_name(detection.confidence) << "\n";
+      for (const auto& evidence : detection.evidence)
+        std::cout << "  evidence:  " << evidence.description << " at offset " << evidence.offset << ": "
+                  << evidence.bytes << "\n";
+      std::cout << "unsupported: " << detection.unsupported_reason() << "\n";
+    }
+    // The report has already been written, so this returns rather than throwing:
+    // a second JSON object after the first makes the output unparseable, and a
+    // caller asking for JSON is entitled to exactly one document.
+    return 1;
+  }
   const auto executable = recomp::binary::PortableExecutable::parse(input);
   const auto digest = recomp::common::sha256(executable.file_bytes);
   if (json) {
@@ -162,10 +193,7 @@ int command_analyze(const std::filesystem::path& input, bool json) {
   const auto executable = recomp::binary::PortableExecutable::parse(input);
   // A function count for a managed image counts the CLR launcher stub, not the
   // program, so it is refused for the same reason coverage is.
-  if (executable.is_managed())
-    throw std::runtime_error("input is a " + executable.managed_reason +
-                             "; the native code is only a CLR launcher, so a function count would "
-                             "describe that stub rather than the program. Managed images are not supported.");
+  if (executable.is_managed()) throw std::runtime_error(recomp::detection::detect_file(input.string()).unsupported_reason());
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   std::size_t instruction_count = 0;
@@ -193,10 +221,7 @@ int command_coverage(const std::filesystem::path& input, bool json) {
     throw std::runtime_error("input appears to be packed (" + executable.packing_reason +
                              "); instruction coverage would describe padding, not the program. "
                              "Unpack it first.");
-  if (executable.is_managed())
-    throw std::runtime_error("input is a " + executable.managed_reason +
-                             "; the native code is only a CLR launcher, so any coverage figure would "
-                             "describe that stub rather than the program. Managed images are not supported.");
+  if (executable.is_managed()) throw std::runtime_error(recomp::detection::detect_file(input.string()).unsupported_reason());
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   recomp::semantics::X86_64Lifter lifter(discovery);

@@ -322,7 +322,31 @@ All notable changes to Recomp Studio are documented here. This project follows
   threw on. A new `unpack` fixture exercises all four forms and both halves of the
   move, and verifies differentially.
 
+- `core/detection/`, the plug-in point for input detection. It recognises PE
+  (including the managed case), ELF, Mach-O thin and universal, JVM class files,
+  CPython bytecode and scripts, and reports the container, the runtime, the
+  architecture and the evidence each conclusion rests on. The language frontends
+  themselves are deliberately NOT implemented — what exists is the interface they
+  will register against, so adding one later cannot require redesigning the
+  pipeline.
+- A detector never guesses and never fabricates. Byte sequences that match nothing
+  are reported as unrecognised rather than forced into the nearest format; a
+  format that is detected but unsupported is refused with a reason naming the
+  format and the missing capability. `inspect`, `analyze`, `coverage` and
+  `translate` all refuse through this one path, so the reason cannot disagree
+  between commands.
+
 ### Fixed
+
+- `0xcafebabe` is shared by Mach-O universal binaries and Java class files, and
+  the Mach-O detector claimed the magic alone. A Java class file was reported as a
+  "universal binary with 52 architectures" — a fabricated answer of exactly the
+  kind this project forbids. The detector now validates the header it claims: a
+  plausible architecture count and, for each entry, a known CPU type and a
+  non-empty slice. Real universal binaries still detect, with their real count.
+- `inspect --json` on an unsupported input wrote two JSON documents — the report
+  and then an error object — which made the output unparseable by anything. It now
+  writes exactly one and returns non-zero.
 
 - **Verification passed with zero guest-state checkpoints compared.** The verdict
   returned true when `checkpoints_compared == 0`, on the reasoning that capture

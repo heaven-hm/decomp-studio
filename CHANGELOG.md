@@ -51,6 +51,16 @@ All notable changes to Recomp Studio are documented here. This project follows
   build-only mode, the log file, agreement with `analyze`, and the honesty rule
   below.
 
+- VEX (AVX) encodings of instructions the lifter already implemented: a
+  two-operand VEX instruction reuses the SSE handling for the same operands, and
+  a three-operand one becomes `dst = src1` followed by that operation, so the
+  upper half of a scalar destination comes from src1 as the SDM requires.
+  `cvtsi2ss` and `cvttss2si` were missing and are added. Effect on real
+  applications: Pixeltetris.exe 556 -> 279 unsupported, legacy-notepad-x64.exe
+  177 -> 123, clipjar.exe 1635 -> 1326.
+- `tests/vex/vex_test.py`: checks the VEX fixture by value against the SDM, and
+  asserts the fixture stays out of the differential suite.
+
 ### Fixed
 
 - `autorecomp` reported `AUTORECOMP COMPLETE` and exited 0 for a program that
@@ -61,6 +71,13 @@ All notable changes to Recomp Studio are documented here. This project follows
   `--buildrun`, the program to verify; a failed run is reported as
   `AUTORECOMP FAILED` with a non-zero exit. Verification also still runs after a
   failed run, since it produces the real diagnosis.
+- Recorded that Unicorn 2.1.4 cannot adjudicate VEX/AVX, so VEX correctness is
+  established against the SDM and QEMU's `ops_sse.h` (`SSE_HELPER_S`) rather than
+  differentially. Unicorn issue #1074 ("incorrect emulation of most VEX
+  instructions", naming `vpxor`) and PR #1658 ("AVX is not supported", "YMM isn't
+  supported in qemu upstream at all") are the upstream statements; both were
+  reproduced here, and in both cases the reference disagrees with the SDM and
+  with QEMU's own source, not with this project's translation.
 - `btr` was silently wrong: it emitted `original & mask` instead of
   `original & ~mask`, so instead of clearing the tested bit it kept *only* that
   bit and destroyed every other one. A `btr` of bit 5 in `0xffffffffffffffff`

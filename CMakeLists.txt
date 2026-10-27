@@ -94,8 +94,14 @@ add_test(NAME autorecomp_pipeline
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 
+add_test(NAME vex_encoding_values
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vex/vex_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
 set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)
 set_tests_properties(coverage_census PROPERTIES TIMEOUT 900)
 set_tests_properties(import_compatibility PROPERTIES TIMEOUT 900)
 set_tests_properties(autorecomp_pipeline PROPERTIES TIMEOUT 1800)
+set_tests_properties(vex_encoding_values PROPERTIES TIMEOUT 900)

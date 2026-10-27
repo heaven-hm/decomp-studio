@@ -132,6 +132,22 @@ candidate side runs the compiled host binary. Two comparisons are performed:
 - **Instruction trace level** — the sequence of executed guest addresses must
   match; the first divergence identifies the responsible instruction.
 
+### What the reference cannot adjudicate
+
+Unicorn 2.1.4 does not emulate VEX/AVX faithfully: its tracker records
+"[x86_64] incorrect emulation of most VEX instructions" (issue #1074, naming
+`vpxor`) and "AVX is not supported" (PR #1658, "YMM isn't supported in qemu
+upstream at all"). Measured here, a three-operand scalar VEX instruction's upper
+half is not merged from src1 and a three-operand `vpxor` produces the wrong
+value — in both cases the SDM and QEMU's own `ops_sse.h` (`SSE_HELPER_S`) agree
+with this project's translation, not with the reference.
+
+A differential test against a reference that is itself wrong is not evidence, so
+VEX fixtures are checked by value against the SDM (`tests/vex/vex_test.py`)
+instead of being run through the differential harness, and the VEX fixture is
+kept out of the differential fixture list deliberately. 256-bit `ymm` operands
+are not modelled.
+
 The repair harness runs this loop, writes a structured report per iteration and,
 when configured with an external agent, hands the diagnosis to it and rebuilds.
 It never marks a translation verified merely because it compiled.

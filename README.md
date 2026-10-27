@@ -178,6 +178,15 @@ integer add/sub/compare, `pshufd`, `punpckldq`/`punpckhdq`/`punpcklqdq`/
 `cvtsi2sd`/`cvttsd2si`/`cvtsd2ss`/`cvtss2sd`, `ldmxcsr`/`stmxcsr` (MXCSR is
 modelled as guest state), prefetch hints. `lock` and `rep` prefixes are handled.
 
+VEX (AVX) encodings: a two-operand VEX instruction is mapped onto the SSE form
+with the same operands, and a three-operand one onto `dst = src1` followed by
+that same operation, so `vmovdqa`/`vmovdqu`/`vmovapd`/`vmovd`/`vmovq`/`vmovsd`,
+`vpand`/`vpor`/`vpxor`/`vandps`/`vxorpd`, `vaddsd`/`vsubsd`/`vmulsd`/`vdivsd` and
+the `ss` forms, plus the VEX conversions, all lift. 256-bit `ymm` operands are
+not modelled yet. VEX code cannot be differentially verified with Unicorn 2.1.4,
+which does not emulate AVX faithfully (unicorn issues #1074, #1658), so the VEX
+fixture is checked by value instead; see `tests/vex/vex_test.py`.
+
 x87: `fld`/`fild`, `fst`/`fstp`/`fist`/`fistp`, `fadd`/`fsub`/`fsubr`/`fmul`/
 `fdiv`/`fdivr` and their pop forms, `fcom`/`fcomp`/`fcompp`/`fucom*`/`ftst`,
 `fsqrt`/`fabs`/`fchs`/`fsin`/`fcos`/`fpatan`/`fyl2x`/`frndint`, the `fld*`

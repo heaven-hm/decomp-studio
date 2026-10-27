@@ -20,6 +20,9 @@ mkdir -p "$out"
 # Fixtures that must build and pass for the 64-bit target.
 FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert"
 
+# VEX/AVX fixture: needs -mavx so the compiler emits genuine VEX encodings.
+FIXTURES_AVX="vex"
+
 # Fixtures that must build and pass for the 32-bit target, as source:output pairs
 # so they never collide with the 64-bit fixture built from the same source.
 FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert"
@@ -41,6 +44,14 @@ for name in $FIXTURES_X64; do
     exit 1
   fi
   build_one "$CC" "$name" "$name"
+done
+
+for name in $FIXTURES_AVX; do
+  if ! command -v "$CC" >/dev/null 2>&1; then
+    echo "error: $CC not found; cannot build required fixture $name" >&2
+    exit 1
+  fi
+  build_one "$CC" "$name" "$name" "-mavx"
 done
 
 # 32-bit fixtures are built when the i686 toolchain is present. They are used by

@@ -117,6 +117,37 @@ int x87_operand_index(const std::string& name) {
   return -1;
 }
 
+// VEX-encoded (AVX) instructions that perform, on 128-bit operands, exactly the
+// operation their SSE form already implements. Capstone spells them with a
+// leading 'v'. Mapping them lets the two-operand form reuse the SSE handling
+// instead of duplicating it; the three-operand form is handled by copying the
+// first source into the destination and then applying the same two-operand
+// operation.
+//
+// Only mnemonics the lifter already implements appear here. A VEX instruction
+// whose SSE form is unsupported is deliberately absent, so it still fails closed
+// rather than being silently mistranslated.
+const std::map<std::string, std::string>& vex_equivalents() {
+  static const std::map<std::string, std::string> table = {
+      // 128-bit moves. The non-temporal forms are the same store; the temporal
+      // hint is a cache-policy detail with no effect on the result.
+      {"vmovaps", "movaps"}, {"vmovups", "movups"}, {"vmovapd", "movapd"}, {"vmovupd", "movupd"},
+      {"vmovdqa", "movdqa"}, {"vmovdqu", "movdqu"}, {"vmovntdq", "movdqa"}, {"vmovntpd", "movapd"},
+      {"vmovss", "movss"},   {"vmovsd", "movsd"},   {"vmovd", "movd"},     {"vmovq", "movq"},
+      // Bitwise.
+      {"vpand", "pand"},     {"vpor", "por"},       {"vpxor", "pxor"},
+      {"vandps", "andps"},   {"vandpd", "andpd"},   {"vorps", "orps"},
+      {"vorpd", "orpd"},     {"vxorps", "xorps"},   {"vxorpd", "xorpd"},
+      // Scalar floating-point arithmetic.
+      {"vaddsd", "addsd"},   {"vsubsd", "subsd"},   {"vmulsd", "mulsd"},   {"vdivsd", "divsd"},
+      {"vaddss", "addss"},   {"vsubss", "subss"},   {"vmulss", "mulss"},   {"vdivss", "divss"},
+      // Conversions.
+      {"vcvtsi2sd", "cvtsi2sd"}, {"vcvtsi2ss", "cvtsi2ss"}, {"vcvttsd2si", "cvttsd2si"},
+      {"vcvttss2si", "cvttss2si"}, {"vcvtsd2ss", "cvtsd2ss"}, {"vcvtss2sd", "cvtss2sd"},
+  };
+  return table;
+}
+
 int vector_register_index(const std::string& name) {
   if (name.size() > 3 && name.compare(0, 3, "xmm") == 0) {
     try { return std::stoi(name.substr(3)); } catch (...) { return -1; }
@@ -290,7 +321,7 @@ void X86_64Lifter::record_unsupported(const std::string& mnemonic, const Decoded
 void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const RecoveredFunction& function,
                                     std::string& output) const {
   const auto parsed_mnemonic = parse_mnemonic(instruction.mnemonic);
-  const std::string& mnemonic = parsed_mnemonic.mnemonic;
+  std::string mnemonic = parsed_mnemonic.mnemonic;
   const int repeat_prefix = parsed_mnemonic.has_repeat_prefix ? 1 : 0;
   const auto& operands = instruction.operands;
   const auto emit = [&output](const std::string& line) { output += "  " + line + "\n"; };
@@ -317,6 +348,31 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       throw LiftError("unsupported vector move at " + format_hex(instruction.address));
     }
   };
+
+  // VEX (AVX) encodings. A two-operand VEX instruction is the SSE instruction
+  // with the same operands, so the mnemonic is rewritten and the existing
+  // handling is reused. A three-operand VEX instruction adds an explicit first
+  // source: dst = op(src1, src2), which is dst = src1 followed by that same
+  // two-operand operation. This matters for scalar forms, where the upper bits
+  // of the destination must come from src1 rather than being left alone.
+  if (!mnemonic.empty() && mnemonic[0] == 'v') {
+    const auto& equivalents = vex_equivalents();
+    const auto equivalent = equivalents.find(mnemonic);
+    if (equivalent != equivalents.end()) {
+      if (operands.size() == 2) {
+        mnemonic = equivalent->second;
+      } else if (operands.size() == 3 && is_vector_register(operands[0]) &&
+                 is_vector_register(operands[1])) {
+        emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) +
+             "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], 16);");
+        auto two_operand = instruction;
+        two_operand.mnemonic = equivalent->second;
+        two_operand.operands = {operands[0], operands[2]};
+        emit_instruction(two_operand, function, output);
+        return;
+      }
+    }
+  }
 
   // `movsd`/`cmpsd` are both SSE scalar-double instructions and string
   // operations. The string form has no operands; if any operand is an XMM
@@ -804,6 +860,24 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
                                                 : "static_cast<std::int64_t>(static_cast<std::int32_t>(" + source + "))";
     emit("vector_set_double(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<double>(" +
          signed_value + "));");
+    return;
+  }
+  if (mnemonic == "cvtsi2ss" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto source_width = operand_width(operands[1], 4);
+    const auto source = operand_read_expression(instruction, operands[1], source_width);
+    const auto signed_value = source_width == 8 ? "static_cast<std::int64_t>(" + source + ")"
+                                                : "static_cast<std::int64_t>(static_cast<std::int32_t>(" + source + "))";
+    emit("vector_set_float(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<float>(" +
+         signed_value + "));");
+    return;
+  }
+  if (mnemonic == "cvttss2si" && operands.size() == 2) {
+    const auto width = operand_width(operands[0], 4);
+    const auto source = operands[1].kind == discovery::Operand::Kind::Memory
+        ? "load_guest_float(context, " + effective_address_expression(instruction, operands[1]) + ")"
+        : "vector_get_float(context, " + std::to_string(vector_index(operands[1])) + ")";
+    emit(operand_write_statement(instruction, operands[0],
+         "static_cast<std::uint64_t>(static_cast<std::int64_t>(" + source + "))", width));
     return;
   }
   if (mnemonic == "cvttsd2si" && operands.size() == 2) {

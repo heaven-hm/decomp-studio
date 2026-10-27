@@ -1,8 +1,16 @@
 # Third-party notices
 
-Recomp Studio does not vendor or redistribute third-party source code. It links
-against or invokes the following components, and it was designed by studying the
-listed open-source recompilation projects.
+Recomp Studio links against or invokes the following components and includes
+adaptations of third-party code identified below.
+
+## Adapted source
+
+Several Win32 shims in `runtime/recomp_runtime.cpp` are adapted from
+`shim/src/kernel32.c` and `shim/src/ole32.c` in
+[igi-recomp](https://github.com/HenryKun55/igi-recomp), copyright 2026
+HenryKun55. The `GetLocalTime` adaptation comes from commit
+`278eaf6394f7f42c7de6cffef2cf982154f59899`. The MIT license is reproduced in
+[third_party/igi-recomp-LICENSE](third_party/igi-recomp-LICENSE).
 
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit
@@ -24,7 +32,7 @@ Unicorn is GPL-2.0. It is used only by the verification backend. Building withou
 recompiler and CLI that link only Capstone. Distributing a binary that links
 Unicorn requires compliance with the GPL-2.0.
 
-## Design references (studied, not copied)
+## Design references
 
 These projects informed the architecture (config-driven recompilation, one C
 function per guest function, a flat guest address space, a guest dispatch table
@@ -36,8 +44,7 @@ for indirect control flow, and a runtime-provided compatibility layer):
 | [igi-recomp](https://github.com/HenryKun55/igi-recomp) | MIT (c) 2026 HenryKun55 | x86-to-C translation model, backward flag liveness, jump-table switches, high-level emulation and native function replacement |
 | [Zelda 64: Recompiled](https://github.com/Zelda64Recomp/Zelda64Recomp) | MIT | Runtime integration pattern for recompiled output |
 
-No code from these projects is included in this repository. Where a technique is
-adopted it has been reimplemented.
+Except for the adaptations identified above, these projects are design references.
 
 ## Fixtures
 

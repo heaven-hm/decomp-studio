@@ -27,6 +27,15 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 The feature branch's architecture-neutral IR updates were merged at `53f773e`;
 observations made before that merge need to be rerun on the integrated revision.
 
+For the missing scanf support, Wine's LGPL implementation in
+[`dlls/msvcrt/scanf.c`](https://github.com/wine-mirror/wine/blob/f343ca6085bfac807c33e9c1a8a43105071f1416/dlls/msvcrt/scanf.c)
+and the MIT-licensed [`hisahi/scanf`](https://github.com/hisahi/scanf/tree/9acf085770db2a7319cdb2d7498e855d5edba9ab)
+were downloaded for evaluation. Neither is integrated yet: both consume host
+`va_list` values, whereas the recompiled guest supplies Windows ABI arguments
+and guest addresses. Calling them directly would not establish correct guest
+memory or input handling. Wine also requires its CRT dependencies and LGPL
+distribution terms. The missing import remains open.
+
 A recursive signature inventory found 489 valid PE files, 10 Mach-O/fat files and
 8 ELF files among 13,810 files. The PE files have 303 distinct SHA-256 hashes;
 152 hashes are associated with images without the PE DLL flag. These are input

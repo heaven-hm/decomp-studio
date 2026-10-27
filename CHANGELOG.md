@@ -296,6 +296,17 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The reported reference instruction count included import thunks. The counter was
+  incremented before the thunk check, so `executed instructions (reference)`
+  described a stream the candidate does not have — inflated by exactly the number
+  of import calls, while the comment three lines below said thunks are excluded.
+  On `arith.exe` the figure was 177,340 and is 177,195: 145 import calls. Found by
+  a teammate reading the hook rather than the output.
+- The guest-state test mutates a tracked source file, because the mutation has to
+  be compiled into the candidate. An interrupted run would have left the runtime
+  mutated, so it now restores from a signal handler as well as a `finally` block,
+  and refuses to start if a previous run left the file dirty.
+
 - The checkpoint reader used the 64-bit register names for a 32-bit guest.
   Unicorn returns zero for `RAX`/`RSP` in 32-bit mode rather than failing, so the
   reference appeared to report `esp = 0` — indistinguishable from a genuine state

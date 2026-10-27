@@ -17,6 +17,7 @@ state comparison would be decoration.
 import json
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -56,7 +57,28 @@ def main():
         print(f"FAIL: {fixture} is missing; build the fixtures first", file=sys.stderr)
         return 1
 
+    # This test mutates a tracked source file, because the mutation has to be
+    # compiled into the candidate and the only way to do that is through the
+    # runtime the translator copies. That makes it dangerous if it is interrupted:
+    # a killed run would leave the runtime mutated. So the original is restored
+    # from a signal handler as well as from the finally block, and the test refuses
+    # to start if a previous run left the file dirty.
     original = RUNTIME.read_text()
+    mutation_marker = "// test mutation"
+    if mutation_marker in original:
+        print("FAIL: runtime/recomp_runtime.cpp is already mutated; a previous run was "
+              "interrupted. Restore it with `git checkout -- runtime/recomp_runtime.cpp`.",
+              file=sys.stderr)
+        return 1
+
+    def restore_and_exit(signum, _frame):
+        RUNTIME.write_text(original)
+        print(f"restored runtime/recomp_runtime.cpp after signal {signum}", file=sys.stderr)
+        sys.exit(1)
+
+    for handled in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(handled, restore_and_exit)
+
     try:
         with tempfile.TemporaryDirectory() as workspace:
             workspace = pathlib.Path(workspace)

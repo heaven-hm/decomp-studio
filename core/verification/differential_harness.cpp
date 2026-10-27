@@ -207,13 +207,16 @@ void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
 void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, void* user_data) {
   (void)size;
   auto& state = *static_cast<ReferenceState*>(user_data);
-  ++state.instruction_count;
+  // An import thunk is a host bridge, not a guest instruction, and the candidate
+  // never executes one. Counting it here made the reported instruction count
+  // describe a stream the candidate does not have -- it was inflated by exactly
+  // the number of import calls, and the comment below already said thunks are
+  // excluded from the trace. The count and the trace now agree.
   if (address >= state.thunk_base && address < state.thunk_base + 0x10000) {
     emulate_shim(state, address);
     return;
   }
-  // Only genuine guest instructions enter the trace: import thunks are host
-  // bridges and never appear in the candidate's executed-address stream.
+  ++state.instruction_count;
   if (state.trace != nullptr && state.trace->size() < state.trace_limit) state.trace->push_back(address);
 
   // Guest-state checkpoints. The candidate records these from its own

@@ -480,6 +480,9 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << "\",\"reference_completed\":" << (result.reference_completed ? "true" : "false")
               << ",\"candidate_completed\":" << (result.candidate_completed ? "true" : "false")
               << ",\"outputs_match\":" << (result.outputs_match ? "true" : "false")
+              << ",\"checkpoints_compared\":" << result.checkpoints_compared
+              << ",\"state_match\":" << (result.state_match ? "true" : "false")
+              << ",\"state_diagnosis\":" << recomp::common::quote_json(result.state_diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
@@ -491,7 +494,7 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
     }
     std::cout << "]}\n";
   } else {
-    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"
+    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"              << "guest-state checkpoints compared: " << result.checkpoints_compared << "\n"
               << "reference completed: " << (result.reference_completed ? "yes" : "no") << "\n"
               << "candidate completed: " << (result.candidate_completed ? "yes" : "no") << "\n"
               << "reference output: " << result.reference_output.size() << " bytes\n"

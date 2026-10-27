@@ -107,6 +107,11 @@ add_test(NAME autorecomp_pipeline
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 
+add_test(NAME guest_state_checkpoints
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/guest_state_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
 add_test(NAME golden_generated_code
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/golden_code_test.py
           $<TARGET_FILE:recomp-studio>

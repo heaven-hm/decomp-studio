@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <vector>
 
 // The import calling-convention table. import_argument consults it, so a shim
 // reads its arguments correctly whether it was reached as cdecl, stdcall or a
@@ -125,8 +126,30 @@ void guest_trace_address(std::uint64_t address);
 // Records the current instruction pointer; when tracing is enabled every
 // executed guest address is appended to the trace stream for differential
 // diagnosis against the reference execution.
+// A guest-state checkpoint: what the machine looked like at a chosen point in the
+// executed instruction stream. Comparing output alone cannot see a wrong register,
+// a wrong flag or a wrong store that happens not to reach the program's output;
+// comparing state can. Both the candidate and the reference record these against
+// the same counter, so the first place they disagree names the instruction that
+// caused it.
+struct GuestCheckpoint {
+  std::uint64_t index{};      // position in the executed instruction stream
+  std::uint64_t address{};    // the guest instruction about to execute
+  std::uint64_t registers[16]{};
+  std::uint64_t flags{};
+};
+
+// Zero disables capture. The reference sets the same interval, so the two streams
+// line up index for index.
+extern std::uint64_t guest_checkpoint_interval;
+extern std::vector<GuestCheckpoint> guest_checkpoints;
+void capture_guest_checkpoint(GuestContext* context, std::uint64_t address);
+// Writes the captured checkpoints when RECOMP_CHECKPOINT names a file.
+void write_guest_checkpoints_if_requested();
+
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
   context->instruction_pointer = address;
+  if (guest_checkpoint_interval != 0) capture_guest_checkpoint(context, address);
   if (guest_tracing_enabled) guest_trace_address(address);
 }
 

@@ -286,6 +286,21 @@ All notable changes to Recomp Studio are documented here. This project follows
   candidate that invented the real Windows selector `0x23` would diverge on every
   instruction that stored one.
 
+- **Guest-state differential checkpoints.** Comparing program output cannot see a
+  wrong register, a wrong flag or a wrong store that never reaches the output, so
+  output agreement was never sufficient evidence. The candidate and the reference
+  now both record the eight general registers and the flags every 1000th executed
+  guest instruction, and the verdict requires them to agree. A divergence reports
+  the checkpoint index, the guest instruction, and which register or flag
+  disagrees. 178 checkpoints are compared on `arith.exe`, 189 on the PE32 fixture.
+
+### Fixed
+
+- The checkpoint reader used the 64-bit register names for a 32-bit guest.
+  Unicorn returns zero for `RAX`/`RSP` in 32-bit mode rather than failing, so the
+  reference appeared to report `esp = 0` — indistinguishable from a genuine state
+  divergence. Found on the one PE32 fixture, which was the only one that failed.
+
 ### Fixed
 
 - **Operand reads and writes failed silently and produced code that could not

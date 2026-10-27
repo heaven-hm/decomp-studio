@@ -2253,9 +2253,45 @@ void unbound_import_thunk(GuestContext* context) {
 // lets one shim implementation serve both.
 std::string* guest_output_capture = nullptr;
 
+std::uint64_t guest_checkpoint_interval = 0;
+std::vector<GuestCheckpoint> guest_checkpoints;
+static std::uint64_t guest_checkpoint_counter = 0;
+
+// Writes the captured checkpoints where the studio can read them. A generated
+// executable runs as its own process, so the state it recorded has to cross a
+// process boundary; the file is only written when RECOMP_CHECKPOINT names it.
+void write_guest_checkpoints_if_requested() {
+  const char* path = std::getenv("RECOMP_CHECKPOINT");
+  if (path == nullptr || guest_checkpoints.empty()) return;
+  std::FILE* file = std::fopen(path, "wb");
+  if (file == nullptr) return;
+  for (const auto& checkpoint : guest_checkpoints) {
+    std::fprintf(file, "%llu %llu %llu", static_cast<unsigned long long>(checkpoint.index),
+                 static_cast<unsigned long long>(checkpoint.address),
+                 static_cast<unsigned long long>(checkpoint.flags));
+    for (const auto value : checkpoint.registers)
+      std::fprintf(file, " %llu", static_cast<unsigned long long>(value));
+    std::fputc('\n', file);
+  }
+  std::fclose(file);
+}
+
+void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
+  const auto index = guest_checkpoint_counter++;
+  if (index % guest_checkpoint_interval != 0) return;
+  GuestCheckpoint checkpoint;
+  checkpoint.index = index;
+  checkpoint.address = address;
+  for (int register_index = 0; register_index < 16; ++register_index)
+    checkpoint.registers[register_index] = context->registers[register_index];
+  checkpoint.flags = eflags_value(context);
+  guest_checkpoints.push_back(checkpoint);
+}
+
 void (*guest_exit_handler)(int code) = nullptr;
 
 void guest_request_exit(int code) {
+  write_guest_checkpoints_if_requested();
   if (guest_exit_handler != nullptr) {
     guest_exit_handler(code);
     return;
@@ -2377,6 +2413,10 @@ int run_recompiled_image(const RecompiledImage* image) {
     store_guest_memory(nullptr, peb_address + 0x08, image->image_base, 4);
   }
   initialize_guest_state(image->heap_base, image->stack_top);
+  // The differential comparison asks for guest-state checkpoints at a fixed
+  // interval; the reference uses the same one, so the two streams line up.
+  if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))
+    guest_checkpoint_interval = std::strtoull(interval, nullptr, 0);
   if (const char* watch = std::getenv("RECOMP_WATCH"))
     watched_guest_address = std::strtoull(watch, nullptr, 0);
 

@@ -20,6 +20,13 @@
 namespace recomp::verification {
 namespace {
 
+std::string hex_text(std::uint64_t value) {
+  std::ostringstream text;
+  text << std::hex << value;
+  return text.str();
+}
+
+
 constexpr std::uint64_t kThreadEnvironmentBlockAddress64 = 0x0000000164000000ull;
 constexpr std::uint64_t kProcessEnvironmentBlockAddress64 = 0x0000000164001000ull;
 constexpr std::uint64_t kThreadEnvironmentBlockAddress32 = 0x000000007ffd0000ull;
@@ -45,10 +52,19 @@ struct ReferenceState {
   // never invent a result for an import it does not implement: doing so lets a
   // comparison "pass" against a program that never really ran.
   std::string failure_reason;
+  // Guest state at recorded checkpoints, for comparison against the candidate's.
+  std::uint64_t guest_instruction_count{};
+  std::vector<GuestCheckpoint> checkpoints;
 };
 
 // The state the exit handler acts on. Only one reference runs at a time.
 ReferenceState* reference_state = nullptr;
+
+// Guest-state checkpoints are recorded every this many executed guest
+// instructions, on both sides, so the two streams line up index for index. It is
+// a compile-time constant rather than a flag because the two sides must agree on
+// it or the comparison is meaningless.
+constexpr std::uint64_t kCheckpointInterval = 1000;
 
 std::map<std::string, std::string> read_manifest(const std::filesystem::path& project_directory) {
   std::ifstream input(project_directory / "recomp-manifest.json");
@@ -199,6 +215,36 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
   // Only genuine guest instructions enter the trace: import thunks are host
   // bridges and never appear in the candidate's executed-address stream.
   if (state.trace != nullptr && state.trace->size() < state.trace_limit) state.trace->push_back(address);
+
+  // Guest-state checkpoints. The candidate records these from its own
+  // trace_instruction with the same interval and the same counter, so the two
+  // streams line up and the first disagreement names the instruction responsible.
+  if (guest_checkpoint_interval != 0) {
+    const auto index = state.guest_instruction_count++;
+    if (index % guest_checkpoint_interval == 0) {
+      GuestCheckpoint checkpoint;
+      checkpoint.index = index;
+      checkpoint.address = address;
+      // The 64-bit and 32-bit register files are named separately in Unicorn.
+      // Reading RAX/RSP/... for a 32-bit guest returns zero rather than failing,
+      // which looked exactly like a genuine state divergence on the one PE32
+      // fixture until the register ids were made mode-aware.
+      static const int registers32[8] = {UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EBX,
+                                         UC_X86_REG_ESP, UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI};
+      static const int registers64[8] = {UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RBX,
+                                         UC_X86_REG_RSP, UC_X86_REG_RBP, UC_X86_REG_RSI, UC_X86_REG_RDI};
+      const bool is_64_bit = state.pointer_width == 8;
+      for (int register_index = 0; register_index < 8; ++register_index) {
+        const auto value = read_register(engine, is_64_bit ? registers64[register_index]
+                                                            : registers32[register_index]);
+        // A 32-bit guest's registers are 32 bits wide; the candidate masks them
+        // the same way, so the comparison is between like and like.
+        checkpoint.registers[register_index] = is_64_bit ? value : (value & 0xffffffffull);
+      }
+      checkpoint.flags = read_register(engine, UC_X86_REG_EFLAGS);
+      state.checkpoints.push_back(checkpoint);
+    }
+  }
   if (state.instruction_count > kInstructionBudget) {
     state.finished = true;
     uc_emu_stop(engine);
@@ -336,6 +382,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.output = state.output;
   run.instruction_count = state.instruction_count;
   run.note = state.note;
+  run.checkpoints = std::move(state.checkpoints);
   run.trace = std::move(trace);
   uc_close(engine);
   guest_output_capture = nullptr;
@@ -376,7 +423,9 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
 
   result.unsupported_mnemonics = read_unsupported_mnemonics(project_directory);
 
+  guest_checkpoint_interval = kCheckpointInterval;
   const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, 0);
+  guest_checkpoint_interval = 0;
   result.executed_instructions = reference.instruction_count;
   result.reference_output = reference.output;
   result.reference_completed = reference.completed;
@@ -386,7 +435,19 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     return result;
   }
 
+  // Ask for guest-state checkpoints on both sides. Output comparison alone cannot
+  // see a wrong register, a wrong flag or a wrong store that never reaches the
+  // program's output; this can, because it compares the machine itself.
+  const auto checkpoint_path = project_directory / "reports" / "candidate-checkpoints.txt";
+  std::filesystem::create_directories(project_directory / "reports");
+  std::filesystem::remove(checkpoint_path);
+  ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
+  ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
+
   const auto candidate = pipeline::run(project_directory);
+
+  ::unsetenv("RECOMP_CHECKPOINT");
+  ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
   result.candidate_exit_code = candidate.exit_code;
@@ -397,6 +458,60 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     std::ofstream(project_directory / "reports" / "candidate.txt") << result.candidate_output;
   }
   result.outputs_match = result.reference_output == result.candidate_output;
+
+  // Guest-state comparison. The two streams are recorded at the same interval, so
+  // the first index at which they differ names the guest instruction after which
+  // the candidate and the reference stopped agreeing.
+  {
+    std::vector<GuestCheckpoint> candidate_checkpoints;
+    if (std::ifstream input_stream(checkpoint_path); input_stream) {
+      std::string line;
+      while (std::getline(input_stream, line)) {
+        std::istringstream fields(line);
+        GuestCheckpoint checkpoint;
+        fields >> checkpoint.index >> checkpoint.address >> checkpoint.flags;
+        for (auto& value : checkpoint.registers)
+          if (!(fields >> value)) break;
+        if (!fields.fail()) candidate_checkpoints.push_back(checkpoint);
+      }
+    }
+    result.checkpoints_compared = std::min(reference.checkpoints.size(), candidate_checkpoints.size());
+    if (!candidate_checkpoints.empty()) {
+      const auto limit = result.checkpoints_compared;
+      for (std::size_t index = 0; index < limit; ++index) {
+        const auto& expected = reference.checkpoints[index];
+        const auto& actual = candidate_checkpoints[index];
+        if (expected.address != actual.address) {
+          result.state_diagnosis = "checkpoint " + std::to_string(index) + ": the guest instruction stream differs at " +
+                                   "0x" + hex_text(actual.address) + " (reference 0x" + hex_text(expected.address) + ")";
+          break;
+        }
+        bool flags_differ = (expected.flags & 0x8d5u) != (actual.flags & 0x8d5u);
+        std::size_t differing_register = 16;
+        for (std::size_t register_index = 0; register_index < 8; ++register_index) {
+          if (expected.registers[register_index] != actual.registers[register_index]) {
+            differing_register = register_index;
+            break;
+          }
+        }
+        if (flags_differ || differing_register != 16) {
+          result.state_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                   std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
+          if (differing_register != 16) {
+            static const char* names[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
+            result.state_diagnosis += std::string(names[differing_register]) + " is 0x" +
+                                      hex_text(actual.registers[differing_register]) + ", reference 0x" +
+                                      hex_text(expected.registers[differing_register]);
+          } else {
+            result.state_diagnosis += "flags are 0x" + hex_text(actual.flags) + ", reference 0x" +
+                                      hex_text(expected.flags);
+          }
+          break;
+        }
+      }
+      result.state_match = result.state_diagnosis.empty();
+    }
+  }
   if (!result.candidate_completed) {
     result.outputs_match = false;
     result.diagnosis = "candidate execution failed with exit code " + std::to_string(candidate.exit_code) +

@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "recomp_runtime.hpp"
+
 namespace recomp::verification {
 
 struct ReferenceRun {
@@ -18,12 +20,21 @@ struct ReferenceRun {
   std::uint64_t instruction_count{};
   // Set when the reference had to compensate for an emulator limitation.
   std::string note;
+  // Guest state recorded at the same checkpoints the candidate records, so the
+  // two can be compared directly.
+  std::vector<GuestCheckpoint> checkpoints;
 };
 
 struct DifferentialResult {
   bool reference_completed{};     // reference executed and captured output
   bool candidate_completed{};     // candidate exited with status 0
   bool outputs_match{};
+  // Guest-state comparison: how many checkpoints were compared, whether they
+  // agreed, and -- when they did not -- where the machine stopped matching, which
+  // is something an output comparison cannot say.
+  std::size_t checkpoints_compared{};
+  bool state_match{};
+  std::string state_diagnosis;
   int candidate_exit_code{};
   std::string reference_output;
   std::string candidate_output;
@@ -34,8 +45,19 @@ struct DifferentialResult {
 
   // Verification only passes when the reference completed, the candidate exited
   // cleanly, and the outputs are identical. A missing backend is never a pass.
+  // A program is verified when the reference and the candidate agree on the
+  // program's output *and* on the machine state at every checkpoint they both
+  // reached. Output alone cannot see a wrong register, a wrong flag or a wrong
+  // store that never reaches the output, so agreeing on output is not sufficient
+  // -- and reporting a pass while the state disagrees would be exactly the
+  // "verified because it ran" claim this project forbids.
+  //
+  // Checkpoints are only required when some were actually compared: a run with
+  // capture disabled is not evidence of disagreement.
   bool verified() const {
-    return reference_completed && candidate_completed && outputs_match;
+    if (!reference_completed || !candidate_completed || !outputs_match) return false;
+    if (checkpoints_compared == 0) return true;
+    return state_match;
   }
 };
 

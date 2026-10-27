@@ -401,6 +401,18 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **The new memory and control-register gate was mutation-tested.** A gate that has
+  never been shown to fail proves nothing, so `kMxcsrPrecisionFlag` was set back to
+  `1u << 5` and the suite run: `fixture_recompile_end_to_end` fails, 15/16. Restored,
+  16/16. The gate does catch the defect it was created for.
+- Every named bit constant in the runtime was audited against its architectural
+  position, because the bug was a named flag constant pointing at the wrong bit.
+  `kX87PrecisionFlag = 1u << 5` is **correct** — x87 PE is bit 5, and the bug was
+  copying that position into the MXCSR constant where PE is bit 12. MXCSR's rounding
+  control (bits 13–14), the x87 C1 flag (bit 9), the EFLAGS bit assignments and both
+  defaults are correct. No further instances; the audit found nothing, which is worth
+  recording as a negative result.
+
 - **MXCSR's precision flag was defined as the FTZ bit.** `kMxcsrPrecisionFlag` held
   `1u << 5`; MXCSR's exception flags are bits 7..12 (IE, DE, ZE, OE, UE, **PE**) and
   bit 5 is **FTZ**, which is not an exception flag at all. So every operation that

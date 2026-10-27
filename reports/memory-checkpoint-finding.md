@@ -685,3 +685,37 @@ store, the divergence is upstream of it.
 and `runtime/recomp_runtime.cpp` handles the return address in
 `invoke_import_thunk` and `invoke_guest_indirect`. That is where a stack-discipline
 difference for `call rbx` would live.
+
+
+## The gate was mutation-tested
+
+A new gate that has never been shown to fail proves nothing. So the fix was reverted
+— `kMxcsrPrecisionFlag` set back to `1u << 5` — and the suite run:
+
+```
+94% tests passed, 1 tests failed out of 16
+  4 - fixture_recompile_end_to_end (Failed)
+```
+
+With the one-line bug restored, `fixture_recompile_end_to_end` fails; with it fixed,
+16/16 pass. So the memory and control-register gate **does** catch the defect it was
+created for, and would have caught it had it existed from the start. That is the
+difference between a gate and a check that happens to be green.
+
+## The rest of the constants were audited
+
+The bug was a named flag constant pointing at the wrong bit, so every named bit
+constant in the runtime was checked against its architectural position:
+
+| constant | value | architectural position | verdict |
+|---|---|---|---|
+| `kMxcsrPrecisionFlag` | `1u << 12` | MXCSR PE is bit 12 | correct now |
+| `kMxcsrRoundingControlShift` | `13` | MXCSR RC is bits 13–14 | correct |
+| `kMxcsrDefaultValue` | `0x1f80` | FINIT default | correct |
+| `kX87PrecisionFlag` | `1u << 5` | x87 PE is bit 5 | **correct** — the bug was copying this position into the MXCSR constant |
+| x87 C1 | `0x0200` | x87 C1 is bit 9 | correct |
+| EFLAGS | bits 0, 2, 4, 6, 7, 10, 11 | CF, PF, AF, ZF, SF, DF, OF | correct |
+| x87 control word default | `0x037f` | FINIT default | correct now |
+
+No further instances. That is a negative result and worth recording as one: the audit
+found nothing, and saying so is more useful than implying it found something.

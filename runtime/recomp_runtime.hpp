@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace recomp {
 
@@ -425,6 +427,20 @@ inline float vector_get_float(GuestContext* context, int vector_index) {
   return value;
 }
 
+// COMISS / COMISD / UCOMISS / UCOMISD: flags only, no writeback.
+inline void compare_scalar_floats(GuestContext* context, double left, double right) {
+  context->overflow_flag = context->sign_flag = context->auxiliary_flag = 0;
+  if (std::isnan(left) || std::isnan(right)) {
+    context->zero_flag = context->parity_flag = context->carry_flag = 1;  // unordered
+  } else if (left < right) {
+    context->zero_flag = 0; context->parity_flag = 0; context->carry_flag = 1;
+  } else if (left > right) {
+    context->zero_flag = 0; context->parity_flag = 0; context->carry_flag = 0;
+  } else {
+    context->zero_flag = 1; context->parity_flag = 0; context->carry_flag = 0;
+  }
+}
+
 inline double load_guest_double(GuestContext* context, std::uint64_t address) {
   const auto bits = load_guest_memory(context, address, 8);
   double value = 0;
@@ -586,6 +602,206 @@ inline void vector_bitwise_and_memory(GuestContext* context, int destination, st
 inline void vector_bitwise_or_memory(GuestContext* context, int destination, std::uint64_t address, int byte_count) {
   for (int index = 0; index < byte_count; ++index)
     context->vector_registers[destination][index] |= static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+}
+
+// ---- x87 floating point ------------------------------------------------
+// The x87 stack lives in the guest context. Arithmetic is modelled with
+// `double`: on arm64 `long double` is 64-bit, so true 80-bit extended
+// precision is not natively available. Values that need more than 53 bits of
+// mantissa can therefore differ from the original; this is a documented
+// fidelity limit, not a silent substitution of single precision.
+inline constexpr int kX87StackSize = 8;
+inline constexpr std::uint32_t kX87PrecisionFlag = 1u << 5;
+
+inline int x87_rounding_mode(const GuestContext* context) {
+  return static_cast<int>((context->x87_control_word >> 10) & 3);
+}
+
+inline double x87_read(GuestContext* context, int index) {
+  return context->x87_registers[(context->x87_top + index) & 7];
+}
+
+inline void x87_write(GuestContext* context, int index, double value) {
+  context->x87_registers[(context->x87_top + index) & 7] = value;
+}
+
+inline void x87_push(GuestContext* context, double value) {
+  context->x87_top = (context->x87_top - 1) & 7;
+  context->x87_registers[context->x87_top] = value;
+}
+
+inline double x87_pop(GuestContext* context) {
+  const auto value = context->x87_registers[context->x87_top];
+  context->x87_top = (context->x87_top + 1) & 7;
+  return value;
+}
+
+inline double x87_load_extended80(GuestContext* context, std::uint64_t address) {
+  const auto mantissa = load_guest_memory(context, address, 8);
+  const auto sign_exponent = static_cast<std::uint32_t>(load_guest_memory(context, address + 8, 2));
+  const int sign = static_cast<int>(sign_exponent >> 15);
+  const int exponent = static_cast<int>(sign_exponent & 0x7fff);
+  double value;
+  if (exponent == 0 && mantissa == 0) value = 0.0;
+  else if (exponent == 0x7fff) value = (mantissa << 1) != 0 ? NAN : INFINITY;
+  else value = std::ldexp(static_cast<double>(mantissa), exponent - 16383 - 63);
+  return sign != 0 ? -value : value;
+}
+
+inline void x87_store_extended80(GuestContext* context, std::uint64_t address, double value) {
+  std::uint64_t mantissa = 0;
+  std::uint32_t sign_exponent = 0;
+  if (std::signbit(value)) sign_exponent = 0x8000u;
+  const auto magnitude = std::fabs(value);
+  if (std::isnan(magnitude)) {
+    sign_exponent |= 0x7fffu;
+    mantissa = 0xc000000000000000ull;
+  } else if (std::isinf(magnitude)) {
+    sign_exponent |= 0x7fffu;
+    mantissa = 0x8000000000000000ull;
+  } else if (magnitude != 0.0) {
+    int exponent = 0;
+    const auto fraction = std::frexp(magnitude, &exponent);
+    mantissa = static_cast<std::uint64_t>(std::ldexp(fraction, 64));
+    sign_exponent |= static_cast<std::uint32_t>(exponent - 1 + 16383) & 0x7fffu;
+  }
+  store_guest_memory(context, address, mantissa, 8);
+  store_guest_memory(context, address + 8, sign_exponent, 2);
+}
+
+// Rounds a double to single precision under the x87 control-word rounding mode.
+inline float x87_round_to_float(GuestContext* context, double value) {
+  const auto nearest = static_cast<float>(value);
+  if (static_cast<double>(nearest) == value) return nearest;
+  context->x87_status_word |= kX87PrecisionFlag;
+  float lower = nearest;
+  float upper = nearest;
+  if (static_cast<double>(nearest) < value) upper = std::nextafterf(nearest, INFINITY);
+  else lower = std::nextafterf(nearest, -INFINITY);
+  switch (x87_rounding_mode(context)) {
+    case 1: return lower;
+    case 2: return upper;
+    case 3: return value > 0 ? lower : upper;
+    default: return nearest;
+  }
+}
+
+// fld m32 / m64 / m80
+inline void x87_load_real(GuestContext* context, std::uint64_t address, int size) {
+  if (size == 4) {
+    const auto bits = static_cast<std::uint32_t>(load_guest_memory(context, address, 4));
+    float value = 0;
+    std::memcpy(&value, &bits, 4);
+    x87_push(context, static_cast<double>(value));
+  } else if (size == 8) {
+    const auto bits = load_guest_memory(context, address, 8);
+    double value = 0;
+    std::memcpy(&value, &bits, 8);
+    x87_push(context, value);
+  } else {
+    x87_push(context, x87_load_extended80(context, address));
+  }
+}
+
+// fild m16 / m32 / m64
+inline void x87_load_integer(GuestContext* context, std::uint64_t address, int size) {
+  std::int64_t value;
+  if (size == 2) value = static_cast<std::int16_t>(load_guest_memory(context, address, 2));
+  else if (size == 4) value = static_cast<std::int32_t>(load_guest_memory(context, address, 4));
+  else value = static_cast<std::int64_t>(load_guest_memory(context, address, 8));
+  x87_push(context, static_cast<double>(value));
+}
+
+// fst / fstp m32 / m64 / m80 (pop != 0 for fstp)
+inline void x87_store_real(GuestContext* context, std::uint64_t address, int size, int pop) {
+  const auto value = x87_read(context, 0);
+  if (size == 4) {
+    const auto narrowed = x87_round_to_float(context, value);
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &narrowed, 4);
+    store_guest_memory(context, address, bits, 4);
+  } else if (size == 8) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, 8);
+    store_guest_memory(context, address, bits, 8);
+  } else {
+    x87_store_extended80(context, address, value);
+  }
+  if (pop) (void)x87_pop(context);
+}
+
+// fcom / fucom: sets the x87 condition codes C3, C2, C0.
+inline void x87_compare(GuestContext* context, double operand) {
+  const auto value = x87_read(context, 0);
+  std::uint32_t status = context->x87_status_word & ~(0x0100u | 0x0400u | 0x4000u);
+  if (std::isnan(value) || std::isnan(operand)) {
+    status |= 0x0100u | 0x0400u | 0x4000u;  // unordered: C0 = C2 = C3 = 1
+  } else if (value < operand) {
+    status |= 0x0100u;                      // C0: ST(0) < operand
+  } else if (value == operand) {
+    status |= 0x4000u;                      // C3: equal
+  }
+  context->x87_status_word = status;
+}
+
+// Rounds ST(0) to an integer under the x87 rounding mode, clamped to int64.
+inline std::int64_t x87_round_to_integer(const GuestContext* context, double value) {
+  double rounded;
+  switch (x87_rounding_mode(context)) {
+    case 1: rounded = std::floor(value); break;
+    case 2: rounded = std::ceil(value); break;
+    case 3: rounded = std::trunc(value); break;
+    default: rounded = std::nearbyint(value); break;
+  }
+  if (rounded >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+    return std::numeric_limits<std::int64_t>::max();
+  if (rounded <= static_cast<double>(std::numeric_limits<std::int64_t>::min()))
+    return std::numeric_limits<std::int64_t>::min();
+  return static_cast<std::int64_t>(rounded);
+}
+
+// fist / fistp m16 / m32 / m64
+inline void x87_store_integer(GuestContext* context, std::uint64_t address, int size, int pop) {
+  const auto rounded = x87_round_to_integer(context, x87_read(context, 0));
+  if (size == 2) store_guest_memory(context, address, static_cast<std::uint16_t>(rounded), 2);
+  else if (size == 4) store_guest_memory(context, address, static_cast<std::uint32_t>(rounded), 4);
+  else store_guest_memory(context, address, static_cast<std::uint64_t>(rounded), 8);
+  if (pop) (void)x87_pop(context);
+}
+
+// operation: 0 add, 1 multiply, 2 subtract, 3 reverse subtract, 4 divide, 5 reverse divide
+inline void x87_arithmetic(GuestContext* context, int operation, double operand) {
+  const auto value = x87_read(context, 0);
+  double result = value;
+  switch (operation) {
+    case 0: result = value + operand; break;
+    case 1: result = value * operand; break;
+    case 2: result = value - operand; break;
+    case 3: result = operand - value; break;
+    case 4: result = value / operand; break;
+    default: result = operand / value; break;
+  }
+  x87_write(context, 0, result);
+}
+
+inline void x87_load_control_word(GuestContext* context, std::uint64_t address) {
+  context->x87_control_word = static_cast<std::uint32_t>(load_guest_memory(context, address, 2));
+}
+
+inline void x87_store_control_word(GuestContext* context, std::uint64_t address) {
+  store_guest_memory(context, address, context->x87_control_word, 2);
+}
+
+inline std::uint32_t x87_status_value(const GuestContext* context) {
+  return (context->x87_status_word & ~0x3800u) | ((context->x87_top & 7u) << 11);
+}
+
+inline void x87_store_status_word(GuestContext* context, std::uint64_t address) {
+  store_guest_memory(context, address, x87_status_value(context), 2);
+}
+
+inline void x87_store_status_word_ax(GuestContext* context) {
+  context->registers[0] = (context->registers[0] & ~0xffffull) | (x87_status_value(context) & 0xffffull);
 }
 
 void string_move(GuestContext* context, int element_size, int repeat);

@@ -95,8 +95,12 @@ converge on, and where this tool will grow next:
 2. **Jump-table recovery** — recognise `jmp [table + index*8]` with its bounds
    check and emit a `switch` with a dispatch fallback, instead of always doing
    dynamic dispatch (igi-recomp, N64Recomp).
-3. **x87 and full SSE/AVX** — the x87 stack is modelled in the context but not
-   yet lifted; 80-bit arithmetic must stay exact rather than degrading to doubles.
+3. **x87 precision and full SSE/AVX** — the x87 stack, control word and status
+   word are modelled and the instruction set used by real titles is lifted, but
+   arithmetic runs in `double`. On arm64 `long double` is 64-bit, so results that
+   need more than 53 mantissa bits differ from true 80-bit extended precision;
+   soft-float 80-bit is still open. The Unicorn reference also does not
+   initialise FCW, so the reset control word is not compared.
 4. **High-level emulation and native replacement** — already supported by address;
    the next step is hash-guarded replacement (apply only when the guest bytes
    match a known SHA-256), as igi-recomp does for CRT routines.

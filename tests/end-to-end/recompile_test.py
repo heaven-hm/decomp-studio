@@ -31,6 +31,7 @@ FIXTURES = [
     ("memory", "memory addressing"),
     ("flagprobe", "per-operation flag semantics"),
     ("wide", "64-bit arithmetic and shifts"),
+    ("x87", "x87 stack, flags direction, counted loops"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -50,6 +51,8 @@ EXPECTED_OUTPUT = {
     "memory": ["memory:start", "table_checksum=", "memory:done"],
     "flagprobe": ["add ", "imul ", "shln "],
     "wide": ["wide:start", "roll=", "wide:done"],
+    "x87": ["x87:start", "add ", "fistp ", "sqrt ", "cmp_eq ", "sin ", "cw_trunc ",
+            "store_trunc ", "rep_std ", "loop ", "jecxz_zero ", "jecxz_nonzero ", "x87:done"],
     "pe32_arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "pe32_abi": ["pe32:start", "cdecl=", "stdcall=", "fastcall=", "thiscall=", "dispatch=",
                  "wrapped=16", "checksum=", "pe32:done"],

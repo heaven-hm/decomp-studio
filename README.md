@@ -169,6 +169,15 @@ integer add/sub/compare, `pshufd`, `punpckldq`/`punpckhdq`/`punpcklqdq`/
 `punpckhqdq`, `vpxor`/`vandps`/`vpor`, conversions, `ldmxcsr`/`stmxcsr`,
 prefetch hints. `lock` and `rep` prefixes are handled.
 
+x87: `fld`/`fild`, `fst`/`fstp`/`fist`/`fistp`, `fadd`/`fsub`/`fsubr`/`fmul`/
+`fdiv`/`fdivr` and their pop forms, `fcom`/`fcomp`/`fcompp`/`fucom*`/`ftst`,
+`fsqrt`/`fabs`/`fchs`/`fsin`/`fcos`/`fpatan`/`fyl2x`/`frndint`, the `fld*`
+constants, `fxch`, and `fldcw`/`fnstcw`/`fnstsw`. The x87 stack, control word and
+status word are guest state. Arithmetic is modelled with `double`: on arm64
+`long double` is 64-bit, so results needing more than 53 mantissa bits can differ
+from true 80-bit extended precision - a documented limit, not a silent precision
+drop.
+
 Everything else is reported explicitly and names the offending instruction and
 address. Run `recomp-studio coverage <image>` for the complete set of
 unsupported classes in a given binary, ranked by how often they occur.

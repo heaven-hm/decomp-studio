@@ -46,6 +46,14 @@ observations, not a retained per-app log archive.
 | [#6 OSS integration policy](https://github.com/heaven-hm/recomp-studio/issues/6) | Supporting | Document source provenance and licensing. The issue's proposed no-copy policy conflicts with the requested source reuse and does not govern this audit. |
 | [#3 semantic names](https://github.com/heaven-hm/recomp-studio/issues/3) | Later | Improves readability but does not itself make an executable run. |
 
+Wine's LGPL-2.1-or-later [`commctrl.c`](https://github.com/wine-mirror/wine/blob/f343ca6085bfac807c33e9c1a8a43105071f1416/dlls/comctl32/commctrl.c)
+was inspected for the `InitCommonControls` failure in `blackbox.exe`. Its empty
+function depends on Wine registering the control classes during DLL
+initialization; copying the empty function alone would omit that behavior.
+The runtime does not yet provide that initialization and control implementation,
+so this source has not been integrated or counted as a fix. A usable Wine port
+needs those dependencies and the applicable LGPL distribution requirements.
+
 Ghidra 12.2 headless imported `game2048.exe` and ran its supplied
 `FixSwitchStatementsWithDecompiler.java` and `FindUnrecoveredSwitchesScript.java`
 scripts. The latter reported one possible bad switch without identifying its

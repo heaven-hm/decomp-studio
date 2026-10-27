@@ -16,6 +16,31 @@ class LiftError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// One unsupported instruction class, aggregated over the whole recovered program.
+struct UnsupportedInstructionClass {
+  std::string mnemonic;
+  std::uint64_t occurrences{};
+  std::uint64_t first_address{};
+  std::uint64_t first_function_entry{};
+  std::string reason;  // lifter diagnostic for the first occurrence
+};
+
+// Result of a non-aborting walk over every recovered instruction. Translation
+// stops at the first unsupported instruction, so a real binary reports a single
+// line; the census classifies the whole program and yields an accurate,
+// complete diagnostic that also ranks the work still to do.
+struct CoverageCensus {
+  std::uint64_t total_instructions{};
+  std::uint64_t lifted_instructions{};
+  std::uint64_t unsupported_instructions{};
+  std::vector<UnsupportedInstructionClass> unsupported;  // most frequent first
+
+  double coverage_percent() const {
+    if (total_instructions == 0) return 100.0;
+    return 100.0 * static_cast<double>(lifted_instructions) / static_cast<double>(total_instructions);
+  }
+};
+
 class X86_64Lifter {
  public:
   explicit X86_64Lifter(const discovery::FunctionDiscovery& discovery) : discovery_(discovery) {}
@@ -30,6 +55,10 @@ class X86_64Lifter {
 
   std::string lift_all_functions(bool strict) const;
   const std::map<std::string, int>& unsupported_mnemonics() const { return unsupported_mnemonics_; }
+
+  // Classify every recovered instruction without aborting, so that a program the
+  // lifter cannot translate still produces a complete, accurate diagnostic.
+  CoverageCensus census() const;
 
  private:
   std::string lift_function(const discovery::RecoveredFunction& function) const;

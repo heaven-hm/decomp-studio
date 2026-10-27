@@ -47,6 +47,7 @@ produces exactly the same 117 bytes of output.
 | --- | --- |
 | PE32/PE32+ parsing (sections, imports, exports, relocations, TLS) | Implemented |
 | Recursive-descent function recovery and CFG | Implemented |
+| Instruction coverage census for unsupported programs | Implemented |
 | x86-64 (PE32+) → C++ lifter with exact EFLAGS semantics | Implemented, verified |
 | x86 (PE32) → C++ lifter, 32-bit address wrapping | Implemented, verified |
 | 32-bit calling conventions for imports (stdcall stack cleanup) | Implemented, verified |
@@ -102,6 +103,7 @@ operating system and processor, is in [MANUAL.md](MANUAL.md).
 recomp-studio doctor                              Host and toolchain capability
 recomp-studio inspect   <image>                   PE structure, imports, hashes
 recomp-studio analyze   <image>                   Functions and instruction counts
+recomp-studio coverage  <image>                   Instruction coverage and unsupported classes
 recomp-studio functions <image>                   Recovered function candidates
 recomp-studio cfg       <image> --address <hex>   Function CFG as Graphviz DOT
 recomp-studio translate <image> --output <dir>    Recompile to a host project
@@ -163,13 +165,15 @@ Integer and control flow: `mov`/`movabs`, `movzx`/`movsx`/`movsxd`, `lea`,
 
 SSE/AVX subset: `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`/`movss`/
 `movsd`/`movd`/`movq`, scalar float and double arithmetic, vector bitwise and
-integer add/sub/compare, `pshufd`, `punpck*`, `vpxor`/`vandps`/`vpor`,
+integer add/sub/compare, `pshufd`, `punpckldq`/`punpckhdq`/`punpcklqdq`/
+`punpckhqdq`, `vpxor`/`vandps`/`vpor`,
 `cvtdq2ps` (packed dword → float, honouring the MXCSR rounding mode),
 `cvtsi2sd`/`cvttsd2si`/`cvtsd2ss`/`cvtss2sd`, `ldmxcsr`/`stmxcsr` (MXCSR is
 modelled as guest state), prefetch hints. `lock` and `rep` prefixes are handled.
 
 Everything else is reported explicitly and names the offending instruction and
-address.
+address. Run `recomp-studio coverage <image>` for the complete set of
+unsupported classes in a given binary, ranked by how often they occur.
 
 ## Legal and security
 

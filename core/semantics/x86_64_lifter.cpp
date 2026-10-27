@@ -1,5 +1,6 @@
 #include "core/semantics/x86_64_lifter.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <map>
 #include <set>
@@ -832,6 +833,44 @@ std::string X86_64Lifter::lift_all_functions(bool strict) const {
     }
   }
   return declarations + "\n" + definitions;
+}
+
+CoverageCensus X86_64Lifter::census() const {
+  CoverageCensus result;
+  std::map<std::string, UnsupportedInstructionClass> by_mnemonic;
+  for (const auto& [function_entry, function] : discovery_.functions()) {
+    for (const auto& [address, instruction] : function.instructions) {
+      ++result.total_instructions;
+      std::string scratch;
+      try {
+        emit_instruction(instruction, function, scratch);
+        ++result.lifted_instructions;
+      } catch (const LiftError& error) {
+        // Classify this instruction and keep going: the point of the census is
+        // the whole program, not the first failure.
+        ++result.unsupported_instructions;
+        auto& entry = by_mnemonic[instruction.mnemonic];
+        if (entry.occurrences == 0) {
+          entry.mnemonic = instruction.mnemonic;
+          entry.first_address = address;
+          entry.first_function_entry = function_entry;
+          entry.reason = error.what();
+        }
+        ++entry.occurrences;
+      }
+    }
+  }
+  result.unsupported.reserve(by_mnemonic.size());
+  for (auto& [mnemonic, entry] : by_mnemonic) {
+    (void)mnemonic;
+    result.unsupported.push_back(std::move(entry));
+  }
+  std::sort(result.unsupported.begin(), result.unsupported.end(),
+            [](const UnsupportedInstructionClass& left, const UnsupportedInstructionClass& right) {
+              if (left.occurrences != right.occurrences) return left.occurrences > right.occurrences;
+              return left.mnemonic < right.mnemonic;
+            });
+  return result;
 }
 
 }  // namespace recomp::semantics

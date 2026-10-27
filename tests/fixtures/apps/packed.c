@@ -19,6 +19,16 @@ static u64 fold(const u8* bytes) {
   return checksum;
 }
 
+static int unpack_matches(const u8* result, const u8* left, const u8* right, int size, int high) {
+  for (int index = 0; index < LANES; ++index) {
+    const int lane = index / size;
+    const u8* source = (lane & 1) ? right : left;
+    const int offset = (high ? 8 : 0) + (lane / 2) * size + index % size;
+    if (result[index] != source[offset]) return 0;
+  }
+  return 1;
+}
+
 /* result = a OP b, all three 128-bit. */
 #define BINOP(op)                                                                        \
   do {                                                                                   \
@@ -221,6 +231,14 @@ int app_main(void) {
   MEMOP("pmaddwd"); out("mem_pmaddwd="); outi((i64)fold(result)); crlf();
   MEMOP("psadbw"); out("mem_psadbw="); outi((i64)fold(result)); crlf();
   MEMOP("paddw"); out("mem_paddw="); outi((i64)fold(result)); crlf();
+  MEMOP("punpcklbw"); out("mem_unpack_lb="); outi(unpack_matches(result, left, right, 1, 0)); crlf();
+  MEMOP("punpckhbw"); out("mem_unpack_hb="); outi(unpack_matches(result, left, right, 1, 1)); crlf();
+  MEMOP("punpcklwd"); out("mem_unpack_lw="); outi(unpack_matches(result, left, right, 2, 0)); crlf();
+  MEMOP("punpckhwd"); out("mem_unpack_hw="); outi(unpack_matches(result, left, right, 2, 1)); crlf();
+  MEMOP("punpckldq"); out("mem_unpack_ld="); outi(unpack_matches(result, left, right, 4, 0)); crlf();
+  MEMOP("punpckhdq"); out("mem_unpack_hd="); outi(unpack_matches(result, left, right, 4, 1)); crlf();
+  MEMOP("punpcklqdq"); out("mem_unpack_lq="); outi(unpack_matches(result, left, right, 8, 0)); crlf();
+  MEMOP("punpckhqdq"); out("mem_unpack_hq="); outi(unpack_matches(result, left, right, 8, 1)); crlf();
 
   out("packed:done"); crlf();
   return 0;

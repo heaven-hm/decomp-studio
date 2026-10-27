@@ -492,6 +492,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // family additionally accepts an immediate count.
   if (operands.size() == 2 && is_vector_register(operands[0])) {
     const auto destination = std::to_string(vector_index(operands[0]));
+    if (operands[1].kind == discovery::Operand::Kind::Memory &&
+        (mnemonic == "punpcklbw" || mnemonic == "punpckhbw" || mnemonic == "punpcklwd" ||
+         mnemonic == "punpckhwd" || mnemonic == "punpckldq" || mnemonic == "punpckhdq" ||
+         mnemonic == "punpcklqdq" || mnemonic == "punpckhqdq")) {
+      const int element_size = mnemonic.find("qdq") != std::string::npos ? 8
+                               : mnemonic.find("dq") != std::string::npos ? 4
+                               : mnemonic.find("wd") != std::string::npos ? 2 : 1;
+      const bool high = mnemonic.find('h') != std::string::npos;
+      emit("vector_unpack_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + std::to_string(element_size) +
+           ", " + (high ? "1" : "0") + ");");
+      return;
+    }
     const auto& packed = packed_integer_helpers();
     const auto helper = packed.find(mnemonic);
     if (helper != packed.end()) {

@@ -749,6 +749,20 @@ inline void vector_shift_left_bytes_immediate(GuestContext* context, int destina
 }
 
 // Interleave the low or high halves of two registers: PUNPCK*BW / PUNPCK*WD.
+inline void vector_unpack_memory(GuestContext* context, int destination, std::uint64_t address,
+                                 int element_size, int high) {
+  std::uint8_t left[16], right[16], result[16];
+  std::memcpy(left, context->vector_registers[destination], sizeof(left));
+  for (int index = 0; index < 16; ++index)
+    right[index] = static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+  const int start = high ? 8 : 0;
+  for (int lane = 0; lane < 8 / element_size; ++lane) {
+    std::memcpy(result + lane * element_size * 2, left + start + lane * element_size, element_size);
+    std::memcpy(result + (lane * 2 + 1) * element_size, right + start + lane * element_size, element_size);
+  }
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
 inline void vector_unpack_bytes(GuestContext* context, int destination, int source, int high) {
   std::uint8_t left[16];
   std::uint8_t right[16];

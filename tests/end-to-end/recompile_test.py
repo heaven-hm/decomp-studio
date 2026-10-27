@@ -35,6 +35,7 @@ FIXTURES = [
     ("bitops", "BT/BTS/BTR/BTC register forms"),
     ("x87", "x87 stack, flags direction, counted loops"),
     ("vecmove", "SSE register-move merge semantics"),
+    ("packed", "SSE2 packed integer, register and immediate forms"),
     ("simd_convert", "packed integer-to-float conversion and MXCSR rounding modes"),
 ]
 
@@ -66,6 +67,18 @@ EXPECTED_OUTPUT = {
                "btc_cf=1", "bt_cf=1", "btr32=32767", "btr32_cf=1", "bitops:done"],
     # The merge is the point: a 16-byte register copy prints movsd_hi=22 and
     # movss_lane3=0 instead of preserving 11 and 33.
+    # Exact values: a wrong element width, a missing saturation clamp or a wrong
+    # shift direction all change these digits. pmuludq in particular must keep
+    # the full 64-bit product.
+    "packed": ["packed:start", "paddb=", "psubb=", "paddw=", "psubw=", "paddd=", "paddq=",
+               "paddusb=", "paddsb=", "psubusb=", "psubsb=", "paddusw=", "psubsw=",
+               "pcmpeqb=0", "pcmpeqw=0", "pcmpgtb=", "pcmpgtw=",
+               "pmullw=", "pmulhw=", "pmulhuw=", "pmuludq=", "pmaddwd=", "psadbw=", "pandn=",
+               "psllw3=", "pslld5=", "psllq9=", "psrlw3=", "psrld5=", "psrlq9=",
+               "psraw3=", "psrad5=", "psrldq4=", "pslldq4=",
+               "punpcklbw=", "punpckhbw=", "punpcklwd=", "punpckhwd=",
+               "packsswb=", "packuswb=", "packssdw=",
+               "pshufb=", "pshuflw=", "pshufhw=", "pmovmskb=", "packed:done"],
     "vecmove": ["vecmove:start", "movsd_lo=7", "movsd_hi=11", "movss_lo=5",
                 "movss_lane3=33", "load_lo=42", "load_hi=0", "vecmove:done"],
     "x87": ["x87:start", "add ", "fistp ", "sqrt ", "cmp_eq ", "sin ", "cw_trunc ",

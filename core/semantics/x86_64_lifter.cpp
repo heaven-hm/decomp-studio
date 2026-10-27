@@ -136,6 +136,25 @@ const std::map<std::string, std::string>& vex_equivalents() {
       {"vmovss", "movss"},   {"vmovsd", "movsd"},   {"vmovd", "movd"},     {"vmovq", "movq"},
       // Bitwise.
       {"vpand", "pand"},     {"vpor", "por"},       {"vpxor", "pxor"},
+      {"vpandn", "pandn"},
+      // SSE2 packed integer.
+      {"vpaddb", "paddb"},   {"vpaddw", "paddw"},   {"vpaddd", "paddd"},   {"vpaddq", "paddq"},
+      {"vpsubb", "psubb"},   {"vpsubw", "psubw"},   {"vpsubd", "psubd"},   {"vpsubq", "psubq"},
+      {"vpaddsb", "paddsb"}, {"vpaddusb", "paddusb"}, {"vpaddsw", "paddsw"}, {"vpaddusw", "paddusw"},
+      {"vpsubsb", "psubsb"}, {"vpsubusb", "psubusb"}, {"vpsubsw", "psubsw"}, {"vpsubusw", "psubusw"},
+      {"vpcmpeqb", "pcmpeqb"}, {"vpcmpeqw", "pcmpeqw"}, {"vpcmpeqd", "pcmpeqd"},
+      {"vpcmpgtb", "pcmpgtb"}, {"vpcmpgtw", "pcmpgtw"}, {"vpcmpgtd", "pcmpgtd"},
+      {"vpmullw", "pmullw"}, {"vpmulhw", "pmulhw"}, {"vpmulhuw", "pmulhuw"}, {"vpmuludq", "pmuludq"},
+      {"vpmaddwd", "pmaddwd"}, {"vpsadbw", "psadbw"},
+      {"vpsllw", "psllw"},   {"vpslld", "pslld"},   {"vpsllq", "psllq"},
+      {"vpsrlw", "psrlw"},   {"vpsrld", "psrld"},   {"vpsrlq", "psrlq"},
+      {"vpsraw", "psraw"},   {"vpsrad", "psrad"},
+      {"vpsrldq", "psrldq"}, {"vpslldq", "pslldq"},
+      {"vpunpcklbw", "punpcklbw"}, {"vpunpckhbw", "punpckhbw"},
+      {"vpunpcklwd", "punpcklwd"}, {"vpunpckhwd", "punpckhwd"},
+      {"vpacksswb", "packsswb"}, {"vpackuswb", "packuswb"}, {"vpackssdw", "packssdw"},
+      {"vpshufb", "pshufb"}, {"vpshuflw", "pshuflw"}, {"vpshufhw", "pshufhw"},
+      {"vpmovmskb", "pmovmskb"},
       {"vandps", "andps"},   {"vandpd", "andpd"},   {"vorps", "orps"},
       {"vorpd", "orpd"},     {"vxorps", "xorps"},   {"vxorpd", "xorpd"},
       // Scalar floating-point arithmetic.
@@ -146,6 +165,63 @@ const std::map<std::string, std::string>& vex_equivalents() {
       {"vcvttss2si", "cvttss2si"}, {"vcvtsd2ss", "cvtsd2ss"}, {"vcvtss2sd", "cvtss2sd"},
   };
   return table;
+}
+
+// SSE2 packed-integer operations, mapped to their runtime helpers. Each helper
+// has a register and a memory form, generated together in the runtime so they
+// cannot drift.
+const std::map<std::string, std::string>& packed_integer_helpers() {
+  static const std::map<std::string, std::string> helpers = {
+      {"paddb", "vector_add_bytes"},      {"paddw", "vector_add_words"},
+      {"paddd", "vector_add_dwords"},     {"paddq", "vector_add_qwords"},
+      {"psubb", "vector_subtract_bytes"}, {"psubw", "vector_subtract_words"},
+      {"psubd", "vector_subtract_dwords"}, {"psubq", "vector_subtract_qwords"},
+      {"paddsb", "vector_add_saturated_signed_bytes"},
+      {"paddusb", "vector_add_saturated_unsigned_bytes"},
+      {"psubsb", "vector_subtract_saturated_signed_bytes"},
+      {"psubusb", "vector_subtract_saturated_unsigned_bytes"},
+      {"paddsw", "vector_add_saturated_signed_words"},
+      {"paddusw", "vector_add_saturated_unsigned_words"},
+      {"psubsw", "vector_subtract_saturated_signed_words"},
+      {"psubusw", "vector_subtract_saturated_unsigned_words"},
+      {"pcmpeqb", "vector_compare_equal_bytes"},
+      {"pcmpeqw", "vector_compare_equal_words"},
+      {"pcmpeqd", "vector_compare_equal_dwords"},
+      {"pcmpgtb", "vector_compare_greater_signed_bytes"},
+      {"pcmpgtw", "vector_compare_greater_signed_words"},
+      {"pcmpgtd", "vector_compare_greater_signed_dwords"},
+      {"pmullw", "vector_multiply_low_words"},
+      {"pmulhw", "vector_multiply_high_words"},
+      {"pmulhuw", "vector_multiply_high_unsigned_words"},
+      {"pmuludq", "vector_multiply_unsigned_dwords"},
+      {"pandn", "vector_bitwise_and_not"},
+      {"pmaddwd", "vector_multiply_add_words"},
+      {"psadbw", "vector_sum_absolute_differences"},
+      {"psllw", "vector_shift_left_words"},
+      {"pslld", "vector_shift_left_dwords"},
+      {"psllq", "vector_shift_left_qwords"},
+      {"psrlw", "vector_shift_right_logical_words"},
+      {"psrld", "vector_shift_right_logical_dwords"},
+      {"psrlq", "vector_shift_right_logical_qwords"},
+      {"psraw", "vector_shift_right_arithmetic_words"},
+      {"psrad", "vector_shift_right_arithmetic_dwords"},
+  };
+  return helpers;
+}
+
+// The same operations whose second operand may also be an immediate count.
+const std::map<std::string, std::string>& packed_immediate_helpers() {
+  static const std::map<std::string, std::string> helpers = {
+      {"psllw", "vector_shift_left_words_immediate"},
+      {"pslld", "vector_shift_left_dwords_immediate"},
+      {"psllq", "vector_shift_left_qwords_immediate"},
+      {"psrlw", "vector_shift_right_logical_words_immediate"},
+      {"psrld", "vector_shift_right_logical_dwords_immediate"},
+      {"psrlq", "vector_shift_right_logical_qwords_immediate"},
+      {"psraw", "vector_shift_right_arithmetic_words_immediate"},
+      {"psrad", "vector_shift_right_arithmetic_dwords_immediate"},
+  };
+  return helpers;
 }
 
 int vector_register_index(const std::string& name) {
@@ -402,6 +478,86 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         return;
       }
     }
+  }
+
+  // SSE2 packed integer. These are element-wise over 128 bits; the runtime
+  // generates a register and a memory form of each helper together. The shift
+  // family additionally accepts an immediate count.
+  if (operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto& packed = packed_integer_helpers();
+    const auto helper = packed.find(mnemonic);
+    if (helper != packed.end()) {
+      if (is_vector_register(operands[1])) {
+        emit(helper->second + "(context, " + destination + ", " + std::to_string(vector_index(operands[1])) +
+             ");");
+        return;
+      }
+      if (operands[1].kind == discovery::Operand::Kind::Memory) {
+        emit(helper->second + "_memory(context, " + destination + ", " +
+             effective_address_expression(instruction, operands[1]) + ");");
+        return;
+      }
+    }
+    const auto& immediate = packed_immediate_helpers();
+    const auto immediate_helper = immediate.find(mnemonic);
+    if (immediate_helper != immediate.end() && operands[1].kind == discovery::Operand::Kind::Immediate) {
+      emit(immediate_helper->second + "(context, " + destination + ", " +
+           std::to_string(operands[1].immediate_value & 0xff) + ");");
+      return;
+    }
+    if ((mnemonic == "psrldq" || mnemonic == "pslldq") &&
+        operands[1].kind == discovery::Operand::Kind::Immediate) {
+      emit(std::string(mnemonic == "psrldq" ? "vector_shift_right_bytes_immediate"
+                                            : "vector_shift_left_bytes_immediate") +
+           "(context, " + destination + ", " + std::to_string(operands[1].immediate_value & 0xff) + ");");
+      return;
+    }
+    if ((mnemonic == "punpcklbw" || mnemonic == "punpckhbw" || mnemonic == "punpcklwd" ||
+         mnemonic == "punpckhwd") &&
+        is_vector_register(operands[1])) {
+      const bool bytes = mnemonic.find("bw") != std::string::npos;
+      const bool high = mnemonic.find('h') != std::string::npos;
+      emit(std::string(bytes ? "vector_unpack_bytes" : "vector_unpack_words") + "(context, " + destination +
+           ", " + std::to_string(vector_index(operands[1])) + ", " + (high ? "1" : "0") + ");");
+      return;
+    }
+    if ((mnemonic == "packsswb" || mnemonic == "packuswb" || mnemonic == "packssdw") &&
+        is_vector_register(operands[1])) {
+      const auto helper_name = mnemonic == "packsswb" ? "vector_pack_signed_words"
+                              : mnemonic == "packuswb" ? "vector_pack_unsigned_words"
+                                                       : "vector_pack_signed_dwords";
+      emit(std::string(helper_name) + "(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (mnemonic == "pshufb" && is_vector_register(operands[1])) {
+      emit("vector_shuffle_bytes(context, " + destination + ", " + std::to_string(vector_index(operands[1])) +
+           ");");
+      return;
+    }
+  }
+  // PSHUFLW/PSHUFHW are encoded with a source register and an immediate, so the
+  // destination is a separate operand: dst = shuffle(src, imm).
+  if ((mnemonic == "pshuflw" || mnemonic == "pshufhw") && operands.size() == 3 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto source = std::to_string(vector_index(operands[1]));
+    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    // The runtime helper shuffles in place, so seed the destination from the
+    // source first when they differ.
+    if (destination != source)
+      emit("std::memcpy(context->vector_registers[" + destination + "], context->vector_registers[" + source +
+           "], 16);");
+    emit(std::string(mnemonic == "pshuflw" ? "vector_shuffle_low_words" : "vector_shuffle_high_words") +
+         "(context, " + destination + ", " + control + ");");
+    return;
+  }
+  if (mnemonic == "pmovmskb" && operands.size() == 2 && is_vector_register(operands[1])) {
+    emit(operand_write_statement(instruction, operands[0],
+         "vector_move_byte_mask(context, " + std::to_string(vector_index(operands[1])) + ")", 4));
+    return;
   }
 
   // `movsd`/`cmpsd` are both SSE scalar-double instructions and string
@@ -837,6 +993,37 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // BSWAP has no memory form and no flags: it reverses the bytes of a 32- or
   // 64-bit register. A 32-bit write zero-extends into the 64-bit register, which
   // register_write_statement already models.
+  // CVTDQ2PD converts the low two signed dwords to two doubles, unlike
+  // CVTDQ2PS which converts four dwords to four floats.
+  if (mnemonic == "cvtdq2pd" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    if (is_vector_register(operands[1])) {
+      emit("vector_convert_dwords_to_doubles(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_convert_dwords_to_doubles_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
+  }
+
+  // PUSHFD/POPFD and their 64-bit spellings move the whole flags register.
+  if (mnemonic == "pushfd" || mnemonic == "pushfq" || mnemonic == "pushfw") {
+    emit("push_guest_stack(context, eflags_value(context));");
+    return;
+  }
+  if (mnemonic == "popfd" || mnemonic == "popfq" || mnemonic == "popfw") {
+    emit("set_eflags(context, static_cast<std::uint32_t>(pop_guest_stack(context)));");
+    return;
+  }
+
+  // VZEROUPPER clears the upper half of every vector register and VZEROALL the
+  // whole register; both are real state changes in a 256-bit register file.
+  if (mnemonic == "vzeroupper") { emit("vector_zero_upper(context);"); return; }
+  if (mnemonic == "vzeroall") { emit("vector_zero_all(context);"); return; }
+
   if (mnemonic == "bswap" && operands.size() == 1 &&
       operands[0].kind == discovery::Operand::Kind::Register) {
     const auto width = operand_width(operands[0], 8);

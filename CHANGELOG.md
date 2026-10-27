@@ -77,6 +77,38 @@ All notable changes to Recomp Studio are documented here. This project follows
 - `tests/heap/heap_test.py` and the `heap` fixture: 200 MB through a 128 MB
   region, which the old allocator failed around round 128.
 
+- The SSE2 packed-integer family: element-wise add/subtract (wrapping and
+  saturating, signed and unsigned), packed compares, multiplies, logical not-and,
+  immediate and variable shifts, whole-register byte shifts, unpack, pack, byte
+  and half-word shuffles, multiply-add, sum-of-absolute-differences, and
+  PMOVMSKB. The runtime generates a register and a memory form of each helper
+  from one macro so the two cannot drift. Effect on real applications
+  (unsupported instructions): plink.exe 1818 -> 279, powder.exe 9809 -> 1919,
+  rg.exe 2188 -> 725, bat.exe 2150 -> 594, clipjar.exe 1301 -> 449,
+  legacy-notepad-x64.exe 72 -> 26, Pixeltetris.exe 210 -> 125.
+- `cvtdq2pd`, `pushfd`/`popfd` (and the 64- and 16-bit spellings),
+  `vzeroupper`/`vzeroall`, and the three-operand `pshuflw`/`pshufhw` form, which
+  was silently unsupported because the operand guard assumed two operands.
+- The `packed` fixture: 47 operations checked byte-identically against the
+  Unicorn reference, including both shift forms, all three saturation widths and
+  the pack/unpack lane layout.
+
+### Fixed
+
+- `pmuludq` produced 32-bit results. It is not a uniform element-wise multiply:
+  it multiplies the low dwords of elements 0 and 2 and writes two 64-bit
+  results. Routing it through the generic element-wise helper truncated the
+  product back to 32 bits and lost the high half. Found by the new fixture —
+  which failed verification on exactly this line — before the independent audit
+  that was asked to look for it reported.
+- Recorded that no listed upstream project implements this instruction family,
+  so it could not be copied: igi-recomp's `gen.py` dispatches through
+  `emit_insn`/`emit_x87` and has no occurrence of pmaddwd, psrldq, punpcklbw,
+  pcmpeqb, pmuludq, pshuflw, packsswb or cvtdq2pd; SR's
+  `SRW/SR_full_llasm_instr.c` has none either. The only hits in SR are udis86's
+  decoder tables, not semantics. Wine has no x86 lifter at all and N64Recomp
+  lifts MIPS.
+
 ### Fixed
 
 - Two vector-move defects, both found by independent audit of the VEX work

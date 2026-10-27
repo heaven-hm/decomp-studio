@@ -579,6 +579,366 @@ inline void vector_bitwise_or(GuestContext* context, int destination, int source
     context->vector_registers[destination][index] |= context->vector_registers[source][index];
 }
 
+// ---- SSE2 packed integer --------------------------------------------------
+// Element-wise operations over the 128-bit vector registers. The two macros
+// below generate a register form and a memory form for each operation, so the
+// two can never drift apart; `a` and `b` are the element from the destination
+// and from the source respectively.
+#define RECOMP_PACKED_BINARY(name, element, expression)                                        \
+  inline void name(GuestContext* context, int destination, int source) {                        \
+    element left[16 / sizeof(element)];                                                         \
+    element right[16 / sizeof(element)];                                                        \
+    std::memcpy(left, context->vector_registers[destination], 16);                              \
+    std::memcpy(right, context->vector_registers[source], 16);                                  \
+    for (std::size_t index = 0; index < 16 / sizeof(element); ++index) {                        \
+      const element a = left[index];                                                            \
+      const element b = right[index];                                                           \
+      left[index] = static_cast<element>(expression);                                           \
+    }                                                                                           \
+    std::memcpy(context->vector_registers[destination], left, 16);                              \
+  }                                                                                             \
+  inline void name##_memory(GuestContext* context, int destination, std::uint64_t address) {    \
+    if (address + 16 > guest_memory_size) {                                                     \
+      report_guest_memory_fault(context, address, 16, 0);                                       \
+      return;                                                                                   \
+    }                                                                                           \
+    element left[16 / sizeof(element)];                                                         \
+    element right[16 / sizeof(element)];                                                        \
+    std::memcpy(left, context->vector_registers[destination], 16);                              \
+    std::memcpy(right, guest_memory + address, 16);                                             \
+    for (std::size_t index = 0; index < 16 / sizeof(element); ++index) {                        \
+      const element a = left[index];                                                            \
+      const element b = right[index];                                                           \
+      left[index] = static_cast<element>(expression);                                           \
+    }                                                                                           \
+    std::memcpy(context->vector_registers[destination], left, 16);                              \
+  }
+
+// Wrapping arithmetic.
+RECOMP_PACKED_BINARY(vector_add_bytes, std::uint8_t, a + b)
+RECOMP_PACKED_BINARY(vector_add_words, std::uint16_t, a + b)
+RECOMP_PACKED_BINARY(vector_add_qwords, std::uint64_t, a + b)
+RECOMP_PACKED_BINARY(vector_subtract_bytes, std::uint8_t, a - b)
+RECOMP_PACKED_BINARY(vector_subtract_words, std::uint16_t, a - b)
+RECOMP_PACKED_BINARY(vector_subtract_qwords, std::uint64_t, a - b)
+RECOMP_PACKED_BINARY(vector_multiply_low_words, std::uint16_t, a * b)
+RECOMP_PACKED_BINARY(vector_multiply_high_words, std::int16_t,
+                     static_cast<std::int32_t>(a) * static_cast<std::int32_t>(b) >> 16)
+RECOMP_PACKED_BINARY(vector_multiply_high_unsigned_words, std::uint16_t,
+                     (static_cast<std::uint32_t>(a) * static_cast<std::uint32_t>(b)) >> 16)
+RECOMP_PACKED_BINARY(vector_bitwise_and_not, std::uint8_t, static_cast<std::uint8_t>(~a) & b)
+
+// Saturating arithmetic, signed and unsigned.
+RECOMP_PACKED_BINARY(vector_add_saturated_signed_bytes, std::int8_t,
+                     a > 0 && b > 127 - a ? 127 : (a < 0 && b < -128 - a ? -128 : a + b))
+RECOMP_PACKED_BINARY(vector_add_saturated_unsigned_bytes, std::uint8_t,
+                     static_cast<int>(a) + static_cast<int>(b) > 255 ? 255 : a + b)
+RECOMP_PACKED_BINARY(vector_subtract_saturated_signed_bytes, std::int8_t,
+                     a < 0 && b > 127 + a ? -128 : (a > 0 && b < -128 + a ? 127 : a - b))
+RECOMP_PACKED_BINARY(vector_subtract_saturated_unsigned_bytes, std::uint8_t, a < b ? 0 : a - b)
+RECOMP_PACKED_BINARY(vector_add_saturated_signed_words, std::int16_t,
+                     a > 0 && b > 32767 - a ? 32767 : (a < 0 && b < -32768 - a ? -32768 : a + b))
+RECOMP_PACKED_BINARY(vector_add_saturated_unsigned_words, std::uint16_t,
+                     static_cast<int>(a) + static_cast<int>(b) > 65535 ? 65535 : a + b)
+RECOMP_PACKED_BINARY(vector_subtract_saturated_signed_words, std::int16_t,
+                     a < 0 && b > 32767 + a ? -32768 : (a > 0 && b < -32768 + a ? 32767 : a - b))
+RECOMP_PACKED_BINARY(vector_subtract_saturated_unsigned_words, std::uint16_t, a < b ? 0 : a - b)
+
+// Comparisons produce an all-ones or all-zero element, as the instruction does.
+RECOMP_PACKED_BINARY(vector_compare_equal_bytes, std::uint8_t, a == b ? 0xff : 0x00)
+RECOMP_PACKED_BINARY(vector_compare_equal_words, std::uint16_t, a == b ? 0xffff : 0x0000)
+RECOMP_PACKED_BINARY(vector_compare_greater_signed_bytes, std::int8_t, a > b ? 0xff : 0x00)
+RECOMP_PACKED_BINARY(vector_compare_greater_signed_words, std::int16_t, a > b ? 0xffff : 0x0000)
+RECOMP_PACKED_BINARY(vector_compare_greater_signed_dwords, std::int32_t,
+                     a > b ? 0xffffffffu : 0x00000000u)
+
+// Shift each element by the low 64 bits of the corresponding source element.
+RECOMP_PACKED_BINARY(vector_shift_left_words, std::uint16_t,
+                     b > 15 ? 0 : static_cast<std::uint16_t>(a << b))
+RECOMP_PACKED_BINARY(vector_shift_left_dwords, std::uint32_t,
+                     b > 31 ? 0 : static_cast<std::uint32_t>(a << b))
+RECOMP_PACKED_BINARY(vector_shift_left_qwords, std::uint64_t, b > 63 ? 0 : a << b)
+RECOMP_PACKED_BINARY(vector_shift_right_logical_words, std::uint16_t,
+                     b > 15 ? 0 : static_cast<std::uint16_t>(a >> b))
+RECOMP_PACKED_BINARY(vector_shift_right_logical_dwords, std::uint32_t,
+                     b > 31 ? 0 : static_cast<std::uint32_t>(a >> b))
+RECOMP_PACKED_BINARY(vector_shift_right_logical_qwords, std::uint64_t, b > 63 ? 0 : a >> b)
+RECOMP_PACKED_BINARY(vector_shift_right_arithmetic_words, std::int16_t,
+                     b > 15 ? (a < 0 ? -1 : 0) : static_cast<std::int16_t>(a >> b))
+RECOMP_PACKED_BINARY(vector_shift_right_arithmetic_dwords, std::int32_t,
+                     b > 31 ? (a < 0 ? -1 : 0) : static_cast<std::int32_t>(a >> b))
+
+
+// Immediate-count shifts: same expressions as the variable forms, with the count
+// as a constant instead of a source element.
+#define RECOMP_PACKED_SHIFT_IMMEDIATE(name, element, expression)                  \
+  inline void name(GuestContext* context, int destination, std::uint64_t count) { \
+    element values[16 / sizeof(element)];                                         \
+    std::memcpy(values, context->vector_registers[destination], 16);              \
+    for (std::size_t index = 0; index < 16 / sizeof(element); ++index) {          \
+      const element a = values[index];                                            \
+      const std::uint64_t b = count;                                              \
+      values[index] = static_cast<element>(expression);                           \
+    }                                                                             \
+    std::memcpy(context->vector_registers[destination], values, 16);              \
+  }
+
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_left_words_immediate, std::uint16_t, b > 15 ? 0 : a << b)
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_left_dwords_immediate, std::uint32_t, b > 31 ? 0 : a << b)
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_left_qwords_immediate, std::uint64_t, b > 63 ? 0 : a << b)
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_logical_words_immediate, std::uint16_t, b > 15 ? 0 : a >> b)
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_logical_dwords_immediate, std::uint32_t, b > 31 ? 0 : a >> b)
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_logical_qwords_immediate, std::uint64_t, b > 63 ? 0 : a >> b)
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_arithmetic_words_immediate, std::int16_t,
+                              b > 15 ? (a < 0 ? -1 : 0) : static_cast<std::int16_t>(a >> b))
+RECOMP_PACKED_SHIFT_IMMEDIATE(vector_shift_right_arithmetic_dwords_immediate, std::int32_t,
+                              b > 31 ? (a < 0 ? -1 : 0) : static_cast<std::int32_t>(a >> b))
+
+#undef RECOMP_PACKED_SHIFT_IMMEDIATE
+
+#undef RECOMP_PACKED_BINARY
+
+// EFLAGS as a 32-bit value. The individual flags are the source of truth in the
+// context; this packs and unpacks them at their architectural bit positions so
+// PUSHFD/POPFD and the reference agree.
+inline std::uint32_t eflags_value(const GuestContext* context) {
+  std::uint32_t value = 0x00000002u;  // bit 1 reads as 1
+  if (context->carry_flag != 0) value |= 1u << 0;
+  if (context->parity_flag != 0) value |= 1u << 2;
+  if (context->auxiliary_flag != 0) value |= 1u << 4;
+  if (context->zero_flag != 0) value |= 1u << 6;
+  if (context->sign_flag != 0) value |= 1u << 7;
+  if (context->direction_flag != 0) value |= 1u << 10;
+  if (context->overflow_flag != 0) value |= 1u << 11;
+  return value;
+}
+
+inline void set_eflags(GuestContext* context, std::uint32_t value) {
+  context->carry_flag = (value >> 0) & 1u;
+  context->parity_flag = (value >> 2) & 1u;
+  context->auxiliary_flag = (value >> 4) & 1u;
+  context->zero_flag = (value >> 6) & 1u;
+  context->sign_flag = (value >> 7) & 1u;
+  context->direction_flag = (value >> 10) & 1u;
+  context->overflow_flag = (value >> 11) & 1u;
+}
+
+// CVTDQ2PD: the low two signed dwords become two doubles. Not the same as
+// CVTDQ2PS, which converts four dwords into four floats.
+inline void vector_convert_dwords_to_doubles(GuestContext* context, int destination, int source) {
+  std::int32_t values[2];
+  std::memcpy(values, context->vector_registers[source], 8);
+  const double result[2] = {static_cast<double>(values[0]), static_cast<double>(values[1])};
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_convert_dwords_to_doubles_memory(GuestContext* context, int destination,
+                                                    std::uint64_t address) {
+  if (address + 8 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 8, 0);
+    return;
+  }
+  std::int32_t values[2];
+  std::memcpy(values, guest_memory + address, 8);
+  const double result[2] = {static_cast<double>(values[0]), static_cast<double>(values[1])};
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// VZEROUPPER/VZEROALL. AVX state is 256 bits wide, so the upper halves are real
+// guest state that these instructions clear.
+inline void vector_zero_upper(GuestContext* context) {
+  for (int index = 0; index < 16; ++index) std::memset(context->vector_registers[index] + 16, 0, 16);
+}
+
+inline void vector_zero_all(GuestContext* context) {
+  for (int index = 0; index < 16; ++index) std::memset(context->vector_registers[index], 0, 32);
+}
+
+// PMULUDQ is not a uniform element-wise multiply: it multiplies the low 32 bits
+// of dwords 0 and 2 and writes two *64-bit* results. An element-wise uint32
+// helper would truncate the product back to 32 bits and lose the high half.
+inline void vector_multiply_unsigned_dwords(GuestContext* context, int destination, int source) {
+  std::uint32_t left[4];
+  std::uint32_t right[4];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  const std::uint64_t result[2] = {static_cast<std::uint64_t>(left[0]) * right[0],
+                                   static_cast<std::uint64_t>(left[2]) * right[2]};
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_multiply_unsigned_dwords_memory(GuestContext* context, int destination,
+                                                   std::uint64_t address) {
+  if (address + 16 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 16, 0);
+    return;
+  }
+  std::uint32_t left[4];
+  std::uint32_t right[4];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, guest_memory + address, 16);
+  const std::uint64_t result[2] = {static_cast<std::uint64_t>(left[0]) * right[0],
+                                   static_cast<std::uint64_t>(left[2]) * right[2]};
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// Whole-register byte shifts: PSRLDQ/PSLLDQ move the 128-bit value by N bytes.
+inline void vector_shift_right_bytes_immediate(GuestContext* context, int destination, int count) {
+  if (count <= 0) return;
+  if (count >= 16) {
+    std::memset(context->vector_registers[destination], 0, 16);
+    return;
+  }
+  auto* bytes = context->vector_registers[destination];
+  for (int index = 0; index < 16 - count; ++index) bytes[index] = bytes[index + count];
+  for (int index = 16 - count; index < 16; ++index) bytes[index] = 0;
+}
+
+inline void vector_shift_left_bytes_immediate(GuestContext* context, int destination, int count) {
+  if (count <= 0) return;
+  if (count >= 16) {
+    std::memset(context->vector_registers[destination], 0, 16);
+    return;
+  }
+  auto* bytes = context->vector_registers[destination];
+  for (int index = 15; index >= count; --index) bytes[index] = bytes[index - count];
+  for (int index = 0; index < count; ++index) bytes[index] = 0;
+}
+
+// Interleave the low or high halves of two registers: PUNPCK*BW / PUNPCK*WD.
+inline void vector_unpack_bytes(GuestContext* context, int destination, int source, int high) {
+  std::uint8_t left[16];
+  std::uint8_t right[16];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  const int offset = high != 0 ? 8 : 0;
+  std::uint8_t result[16];
+  for (int index = 0; index < 8; ++index) {
+    result[index * 2] = left[offset + index];
+    result[index * 2 + 1] = right[offset + index];
+  }
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_unpack_words(GuestContext* context, int destination, int source, int high) {
+  std::uint16_t left[8];
+  std::uint16_t right[8];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  const int offset = high != 0 ? 4 : 0;
+  std::uint16_t result[8];
+  for (int index = 0; index < 4; ++index) {
+    result[index * 2] = left[offset + index];
+    result[index * 2 + 1] = right[offset + index];
+  }
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// PACKSSWB/PACKSSDW/PACKUSWB: saturate two registers down into one.
+inline void vector_pack_signed_words(GuestContext* context, int destination, int source) {
+  std::int16_t left[8];
+  std::int16_t right[8];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  std::int8_t result[16];
+  for (int index = 0; index < 8; ++index) {
+    result[index] = static_cast<std::int8_t>(left[index] > 127 ? 127 : (left[index] < -128 ? -128 : left[index]));
+    result[index + 8] = static_cast<std::int8_t>(right[index] > 127 ? 127 : (right[index] < -128 ? -128 : right[index]));
+  }
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_pack_unsigned_words(GuestContext* context, int destination, int source) {
+  std::int16_t left[8];
+  std::int16_t right[8];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  std::uint8_t result[16];
+  for (int index = 0; index < 8; ++index) {
+    result[index] = static_cast<std::uint8_t>(left[index] < 0 ? 0 : (left[index] > 255 ? 255 : left[index]));
+    result[index + 8] = static_cast<std::uint8_t>(right[index] < 0 ? 0 : (right[index] > 255 ? 255 : right[index]));
+  }
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_pack_signed_dwords(GuestContext* context, int destination, int source) {
+  std::int32_t left[4];
+  std::int32_t right[4];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  std::int16_t result[8];
+  for (int index = 0; index < 4; ++index) {
+    result[index] = static_cast<std::int16_t>(left[index] > 32767 ? 32767 : (left[index] < -32768 ? -32768 : left[index]));
+    result[index + 4] = static_cast<std::int16_t>(right[index] > 32767 ? 32767 : (right[index] < -32768 ? -32768 : right[index]));
+  }
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// PMOVMSKB: the sign bit of each byte, packed into a general-purpose register.
+inline std::uint32_t vector_move_byte_mask(const GuestContext* context, int source) {
+  std::uint32_t mask = 0;
+  for (int index = 0; index < 16; ++index)
+    if ((context->vector_registers[source][index] & 0x80u) != 0) mask |= (1u << index);
+  return mask;
+}
+
+// PSHUFB: destination bytes selected by the source; a source byte with bit 7
+// set produces zero instead.
+inline void vector_shuffle_bytes(GuestContext* context, int destination, int source) {
+  std::uint8_t indices[16];
+  std::uint8_t values[16];
+  std::memcpy(indices, context->vector_registers[source], 16);
+  std::memcpy(values, context->vector_registers[destination], 16);
+  std::uint8_t result[16];
+  for (int index = 0; index < 16; ++index)
+    result[index] = (indices[index] & 0x80u) != 0 ? 0 : values[indices[index] & 0x0fu];
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// PSHUFLW/PSHUFHW: shuffle the low or high four words by an immediate.
+inline void vector_shuffle_low_words(GuestContext* context, int destination, int control) {
+  std::uint16_t words[8];
+  std::memcpy(words, context->vector_registers[destination], 16);
+  std::uint16_t result[8];
+  for (int index = 0; index < 4; ++index) result[index] = words[(control >> (index * 2)) & 3];
+  for (int index = 4; index < 8; ++index) result[index] = words[index];
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_shuffle_high_words(GuestContext* context, int destination, int control) {
+  std::uint16_t words[8];
+  std::memcpy(words, context->vector_registers[destination], 16);
+  std::uint16_t result[8];
+  for (int index = 0; index < 4; ++index) result[index] = words[index];
+  for (int index = 0; index < 4; ++index) result[index + 4] = words[4 + ((control >> (index * 2)) & 3)];
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// PMADDWD: multiply signed words pairwise and add the 32-bit products.
+inline void vector_multiply_add_words(GuestContext* context, int destination, int source) {
+  std::int16_t left[8];
+  std::int16_t right[8];
+  std::memcpy(left, context->vector_registers[destination], 16);
+  std::memcpy(right, context->vector_registers[source], 16);
+  std::int32_t result[4];
+  for (int index = 0; index < 4; ++index)
+    result[index] = static_cast<std::int32_t>(left[index * 2]) * right[index * 2] +
+                    static_cast<std::int32_t>(left[index * 2 + 1]) * right[index * 2 + 1];
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// PSADBW: sum of absolute differences, one result per eight-byte half.
+inline void vector_sum_absolute_differences(GuestContext* context, int destination, int source) {
+  const std::uint8_t* left = context->vector_registers[destination];
+  const std::uint8_t* right = context->vector_registers[source];
+  std::uint64_t result[2] = {0, 0};
+  for (int index = 0; index < 16; ++index) {
+    const int difference = static_cast<int>(left[index]) - static_cast<int>(right[index]);
+    result[index / 8] += static_cast<std::uint64_t>(difference < 0 ? -difference : difference);
+  }
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
 inline void vector_add_dwords(GuestContext* context, int destination, int source) {
   auto* left = reinterpret_cast<std::uint32_t*>(context->vector_registers[destination]);
   const auto* right = reinterpret_cast<const std::uint32_t*>(context->vector_registers[source]);

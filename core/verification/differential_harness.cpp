@@ -597,11 +597,25 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
             ++result.x87_precision_differences;
           } else {
             ++unclassified;
-            if (first_unclassified.empty())
-              first_unclassified = "checkpoint " + std::to_string(checkpoint) + ", window offset 0x" +
-                                   hex_text(offset) + ": candidate 0x" +
-                                   hex_text(candidate_window[offset]) + ", reference 0x" +
-                                   hex_text(expected[offset]);
+            if (first_unclassified.empty()) {
+              // The whole 8-byte slot, not the single byte: a byte on its own says
+              // nothing about whether the difference is a float, a double, an
+              // address or an integer, and that is the first thing a reader needs.
+              std::uint64_t expected_slot = 0;
+              std::uint64_t candidate_slot = 0;
+              std::memcpy(&expected_slot, expected.data() + slot, 8);
+              std::memcpy(&candidate_slot, candidate_window.data() + slot, 8);
+              double expected_double = 0;
+              double candidate_double = 0;
+              std::memcpy(&expected_double, expected.data() + slot, 8);
+              std::memcpy(&candidate_double, candidate_window.data() + slot, 8);
+              std::ostringstream text;
+              text << "checkpoint " << checkpoint << ", window offset 0x" << std::hex << offset
+                   << " (8-byte slot at 0x" << slot << "): candidate 0x" << candidate_slot
+                   << " reference 0x" << expected_slot << std::dec << " (as doubles "
+                   << candidate_double << " against " << expected_double << ")";
+              first_unclassified = text.str();
+            }
           }
         }
       }

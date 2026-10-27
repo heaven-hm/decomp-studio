@@ -481,9 +481,42 @@ narrow and named: two `simd_convert` fixtures and one known emulator defect, aga
 18 that agree. Making it a gate needs either those two explained or a tolerance that
 is justified rather than chosen.
 
+## The two `simd_convert` differences: MXCSR's FTZ bit
+
+The diagnosis now reports the whole 8-byte slot, which was the first thing missing:
+a single byte says nothing about whether the difference is a float, a double, an
+address or an integer.
+
+```
+checkpoint 7, window offset 0xcc (8-byte slot at 0xc8):
+  candidate 0x1fa020000000  reference 0x1f8020000000
+```
+
+The low 4 bytes of that slot are `0x00001fa0` against `0x00001f80`, written by
+
+```
+0x14000127c  stmxcsr dword ptr [rsp + 0x3c]
+0x140001281  mov     ecx, dword ptr [rsp + 0x3c]
+0x140001285  and     ecx, 0xffffffdf      ; clear bit 5
+```
+
+`stmxcsr` stores **MXCSR**, not a float. `0x1f80` is the architectural default; the
+candidate's `0x1fa0` is that value **with bit 5 set**, which is **FTZ**, flush to zero.
+The guest is clearing FTZ, which says it expects it set and wants it clear.
+
+Both sides start at `0x1f80` — `kMxcsrDefaultValue` in the runtime and the explicit
+write in the reference setup — and MXCSR is changed only by `ldmxcsr` and `fxrstor`.
+So one of those set the bit on one side, and the next step is to trace which.
+
+This is not a precision difference: it is a **single control bit**, and it is exactly
+the kind of divergence the memory gate exists to catch. It is also the same shape as
+the x87 control word found two rounds earlier — a control register read by a guest
+that disagreed between the two sides.
+
 ## Not established
 
-The two `simd_convert` differences: whether they are the same precision limit at a
+Which `ldmxcsr` or `fxrstor` set the FTZ bit on the candidate, and whether the
+candidate or the reference is right about it.: whether they are the same precision limit at a
 greater distance -- a float-to-double conversion amplifies a one-bit difference -- or
 something else. Logging the *instruction* that wrote the differing byte, rather than
 the byte, is what would settle it, and that is the method that found the control word. What remains is the classification rule

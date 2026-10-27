@@ -401,6 +401,18 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The two `simd_convert` memory differences are **the FTZ bit of MXCSR**, and the
+  diagnosis now reports the whole 8-byte slot rather than one byte — a byte alone says
+  nothing about whether the difference is a float, a double, an address or an integer,
+  which is the first thing a reader needs. The differing value is `0x00001fa0` against
+  `0x00001f80`, written by `stmxcsr dword ptr [rsp+0x3c]`. `0x1f80` is the
+  architectural default; `0x1fa0` is that with **bit 5 set, which is FTZ**. The guest
+  then clears it, which says it expects it set and wants it clear. Both sides start at
+  `0x1f80` and MXCSR changes only through `ldmxcsr` and `fxrstor`, so the next step is
+  to trace which of those set the bit. This is a single control bit, not a precision
+  difference, and it is the same shape as the x87 control word found two rounds
+  earlier: a control register read by a guest that disagreed between the two sides.
+
 - Guest memory is now compared **byte by byte, with the difference classified**. A
   byte inside an aligned 8-byte slot whose two values are within one unit in the last
   place of each other is named as the documented x87 precision limit; anything else is

@@ -422,6 +422,11 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   }
 
   write_register(engine, UC_X86_REG_MXCSR, default_mxcsr);
+  // The x87 control word after FINIT. Unicorn leaves it at zero, which is not a
+  // value hardware ever has -- all exceptions unmasked and the precision field
+  // reserved -- so a guest reading it with FNSTCW saw a different value from the
+  // candidate's and from a real machine's.
+  write_register(engine, UC_X86_REG_FPCW, 0x037f);
   if (const char* store_log_path = std::getenv("RECOMP_REF_STORE_LOG"))
     state.store_log = std::fopen(store_log_path, "w");
   uc_hook write_hook = 0;

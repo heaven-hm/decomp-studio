@@ -366,9 +366,44 @@ inline float x87_round_to_float(GuestContext* context, double value) {
 
 That accounts for one of the six flags. The other five are not yet traced.
 
+## Fixed: the x87 control word, on both sides
+
+Tracing what set AX showed it was not the status word at all:
+
+```
+0x140001599  fnstcw  word ptr [rsp + 0x3e]      ; read the x87 CONTROL word
+0x14000159d  movzx   eax, word ptr [rsp + 0x3e]  ; EAX = control word
+0x1400015b0  or      ah, 0xc                     ; rounding control := 0b11
+0x1400015b3  mov     word ptr [rsp + 0x3c], ax   ; store
+0x1400015b8  fldcw   word ptr [rsp + 0x3c]       ; load it back
+```
+
+So AX held the **control word**, and the two values decompose exactly:
+
+| | stored | minus `or ah, 0xc` | control word |
+|---|---|---|---|
+| candidate | `0x0e7f` | `0x0e7f & ~0x0c00` | `0x027f` |
+| reference | `0x0c00` | `0x0c00 & ~0x0c00` | `0x0000` |
+
+**Both were wrong, differently.** The architectural default after `FINIT` is
+`0x037f` — all exceptions masked, precision control `0b11` (extended), round to
+nearest. The candidate used `0x027f`, which selects **double** precision; Unicorn
+left its control word at `0x0000`, which is not a value hardware ever has. Both now
+start at `0x037f`.
+
+That is a fidelity bug in this project's own runtime, found because a guest read the
+control word and the two sides disagreed — the kind of thing only a differential
+comparison surfaces.
+
+With it fixed, `x87.exe`'s first divergence moves from **checkpoint 3 to checkpoint
+8**, so it resolved real divergences and a second x87 issue remains.
+
 ## Not established
 
-Whether the candidate or the reference is right about the x87 status word, and where
+The remaining divergence, now at checkpoint 8 (`0x1400010a5`), and the two
+floating-point fixtures at checkpoints 12 and 7. Whether these are further x87
+initialisation differences of the same kind — the status word, the tag word and the
+exception flags are all plausible next candidates — or something else., and where
 the other five exception flags are set. The next step is to log the x87 status word
 on both sides at `0x1400015b3` and trace it back to the operation that set each bit,
 rather than reading the memory it was eventually stored to., and

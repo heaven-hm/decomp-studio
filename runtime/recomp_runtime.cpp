@@ -2530,7 +2530,12 @@ int run_recompiled_image(const RecompiledImage* image) {
   context.registers[kRegisterStackPointer] = image->stack_top;
   context.fs_base = teb_address;
   context.gs_base = teb_address;
-  context.x87_control_word = 0x027f;
+  // The x87 control word after FINIT: all exceptions masked, extended precision
+  // (precision control 0b11), round to nearest. 0x027f was wrong -- it selected
+  // double precision, so a guest that read the control word with FNSTCW saw a
+  // different value from the one hardware would give it, and `x87.exe` does
+  // exactly that.
+  context.x87_control_word = 0x037f;
   context.mxcsr = kMxcsrDefaultValue;
   push_guest_stack(&context, 0);
 

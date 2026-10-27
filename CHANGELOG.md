@@ -401,6 +401,17 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **The x87 control word was wrong on both sides of the comparison.** A guest that
+  executed `FNSTCW` and compared the result exposed it: the architectural default
+  after `FINIT` is `0x037f` — all exceptions masked, precision control `0b11`
+  (extended), round to nearest. This runtime used `0x027f`, which selects **double**
+  precision, and the Unicorn reference left its control word at `0x0000`, which is
+  not a value hardware ever has. Both now start at `0x037f`. It was found by tracing
+  the store that differed back to the instruction that set the register, rather than
+  reading the memory it was eventually written to. With it fixed, `x87.exe`'s first
+  divergence moves from checkpoint 3 to checkpoint 8, so real divergences were
+  resolved and a second x87 issue remains.
+
 - The three floating-point divergences are the **x87 status word**, and the store
   that exposed them is an ordinary one. The differing slot is written by
   `mov word ptr [rsp+0x3c], ax` — a plain 2-byte store of AX, not an x87

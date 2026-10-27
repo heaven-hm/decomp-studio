@@ -50,6 +50,7 @@ FIXTURES_PE32 = [
     ("pe32_simd_convert", "32-bit packed integer-to-float conversion and MXCSR"),
     ("teb32", "32-bit TEB access through fs:"),
     ("pe32_remill_movhalf", "32-bit Remill half-register move semantics"),
+    ("pe32_remill_aas", "32-bit Remill ASCII adjust after subtraction"),
 ]
 
 EXPECTED_OUTPUT = {
@@ -58,6 +59,7 @@ EXPECTED_OUTPUT = {
     "backward_entry": ["entry_zero=42", "entry_nonzero=7"],
     "remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
     "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
+    "pe32_remill_aas": ["remill_aas=1"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
     "snake": ["snake:start", "snake:done"],
     "aliasing": ["aliasing:start", "zero_extend=1", "aliasing:done"],

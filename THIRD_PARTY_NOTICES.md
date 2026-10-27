@@ -19,6 +19,9 @@ and their fixture adapt code and tests from [Remill](https://github.com/lifting-
 `lib/Arch/X86/Semantics/DATAXFER.cpp` and `tests/X86/DATAXFER/`, at commit
 `56918a8c2554088e93389e97d292f4035286506c`, copyright 2017 Trail of Bits, Inc.
 They are licensed under Apache-2.0; the license is reproduced in [LICENSE](LICENSE).
+The `AAS` translation and PE32 fixture also adapt Remill's
+`lib/Arch/X86/Semantics/DECIMAL.cpp` and `tests/X86/DECIMAL/AAS.S` at the same
+revision under the same license.
 
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit

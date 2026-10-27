@@ -1646,6 +1646,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("context->registers[4] = mask_guest_address(context->registers[4] - " + std::to_string(frame) + ");");
     return;
   }
+  // Adapted from Remill's AAS semantics, lib/Arch/X86/Semantics/DECIMAL.cpp
+  // (Apache-2.0). OF, ZF and PF are undefined; leave them unchanged.
+  if (mnemonic == "aas") {
+    emit("{ std::uint16_t ax = static_cast<std::uint16_t>(context->registers[0]); "
+         "if ((ax & 0xfu) > 9 || context->auxiliary_flag == 1) { "
+         "ax = static_cast<std::uint16_t>(ax - 6); "
+         "ax = static_cast<std::uint16_t>(ax - 0x100); "
+         "context->carry_flag = 1; context->auxiliary_flag = 1; } else { "
+         "context->carry_flag = 0; context->auxiliary_flag = 0; } "
+         "ax = static_cast<std::uint16_t>((ax & 0xff00u) | (ax & 0x0fu)); "
+         "context->registers[0] = (context->registers[0] & ~0xffffull) | ax; }");
+    return;
+  }
   // AAA: ASCII adjust AL after addition, in the BCD sense the manual defines.
   if (mnemonic == "aaa") {
     emit("{ const std::uint32_t low = static_cast<std::uint32_t>(context->registers[0] & 0x0fu); "

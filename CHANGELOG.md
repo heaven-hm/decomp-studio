@@ -376,6 +376,13 @@ All notable changes to Recomp Studio are documented here. This project follows
   path, so the reference digested a different range and reported a divergence that
   was an artefact of the harness.
 
+- The executed-instruction streams can be captured from both sides and compared:
+  `RECOMP_TRACE` on the candidate, `RECOMP_REF_TRACE` on the reference, each
+  writing the address of every executed guest instruction. Comparing them is how a
+  memory divergence is localised, and on `arith.exe` it establishes that the
+  streams are **byte-for-byte identical** over 177,195 instructions — so the
+  remaining difference is a store, not control flow.
+
 ### Fixed
 
 - The guest-memory digest compared **dead stack**. It covered

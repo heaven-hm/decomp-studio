@@ -433,8 +433,21 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.unsupported_mnemonics = read_unsupported_mnemonics(project_directory);
 
   guest_checkpoint_interval = kCheckpointInterval;
-  const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, 0);
+  // A trace is collected only when asked for, because it is one word per executed
+  // instruction and the corpus runs to millions. Comparing the two instruction
+  // streams is how a memory divergence is localised: if the streams agree up to
+  // the differing address, the difference is in what one side stored; if they
+  // diverge earlier, the divergence is upstream of the store.
+  const char* trace_path = std::getenv("RECOMP_REF_TRACE");
+  const std::size_t trace_limit = trace_path != nullptr ? 20000000 : 0;
+  const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, trace_limit);
   guest_checkpoint_interval = 0;
+  if (trace_path != nullptr) {
+    if (std::FILE* file = std::fopen(trace_path, "wb")) {
+      for (const auto address : reference.trace) std::fwrite(&address, sizeof(address), 1, file);
+      std::fclose(file);
+    }
+  }
   result.executed_instructions = reference.instruction_count;
   result.reference_output = reference.output;
   result.reference_completed = reference.completed;

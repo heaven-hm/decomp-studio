@@ -59,9 +59,30 @@ had overwritten it. Nothing observable differed. Digesting the live stack instea
 moved the first divergence from checkpoint 1 to checkpoint 175, which is what made
 the remaining difference small enough to isolate.
 
+## Established since: the control flow is identical
+
+The two executed-instruction streams were captured and compared —
+`RECOMP_TRACE` on the candidate, `RECOMP_REF_TRACE` on the reference, both writing
+the address of every executed guest instruction as a 64-bit word.
+
+```
+reference: 177195 addresses
+candidate: 177195 addresses
+THE INSTRUCTION STREAMS ARE IDENTICAL
+```
+
+Byte for byte, in the same order. This is therefore **not** a control-flow
+divergence and not a counter drift: the two sides execute exactly the same guest
+instructions. Combined with the register and flag agreement at every checkpoint
+and the exact agreement of the writable data window, what remains is a difference
+in **what one side stored to one stack slot**, under identical control flow.
+
+That is a much smaller question than the one this investigation started with, and
+it is where the next attempt should begin.
+
 ## Not established
 
-Which side is wrong. Either
+Which side is wrong, and the trace does not settle it. Either
 
 - the candidate writes `1` into a slot where the reference's frame still holds the
   return address of the `call rbx` at `0x140001076`, which would mean the

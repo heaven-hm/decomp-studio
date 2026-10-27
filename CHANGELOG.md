@@ -3,6 +3,37 @@
 All notable changes to Recomp Studio are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.5.0
+
+### Added
+
+- Centralised CLI option parsing, validation and capability declarations in
+  `core/cli/`. `--help` is generated from the same option table the parser
+  validates against, so help and parsing cannot disagree; `capabilities` reports
+  the same table as data.
+- Three commands: `capabilities` (every declared value, implemented or planned,
+  with what is missing for a planned one), `detect` (format, runtime,
+  architecture, confidence and the evidence behind each conclusion), and
+  `backends list` (source, target and reference backends).
+- `--explain` on any command, printing the resolved options — unset ones showing
+  their declared default — and the capability behind each choice.
+- `core/detection/`, the plug-in point for input detection: PE including managed,
+  ELF, Mach-O thin and universal, JVM class files, CPython bytecode and scripts.
+  The language frontends are deliberately not implemented; what exists is the
+  interface they will register against.
+
+### Changed
+
+- Version 0.5.0.
+- Three rules are now enforced rather than intended: an undeclared option is an
+  error and never ignored; a value outside its declared set is an error listing
+  what is accepted; and a declared value this build does not implement returns
+  `UNSUPPORTED` naming the option, the value and the missing capability, with exit
+  code 3 distinct from the usage error's exit code 2. There is no silent fallback
+  and no substitution of a different backend.
+- `inspect`, `analyze`, `coverage` and `translate` all refuse an unsupported input
+  through the detection layer, so the reason cannot disagree between commands.
+
 ## [Unreleased]
 
 ### Added
@@ -285,6 +316,377 @@ All notable changes to Recomp Studio are documented here. This project follows
   `es`, `ss` and `cs` all as `0x0000` in 32-bit mode for the same reason, so a
   candidate that invented the real Windows selector `0x23` would diverge on every
   instruction that stored one.
+
+- **Guest-state differential checkpoints.** Comparing program output cannot see a
+  wrong register, a wrong flag or a wrong store that never reaches the output, so
+  output agreement was never sufficient evidence. The candidate and the reference
+  now both record the eight general registers and the flags every 1000th executed
+  guest instruction, and the verdict requires them to agree. A divergence reports
+  the checkpoint index, the guest instruction, and which register or flag
+  disagrees. 178 checkpoints are compared on `arith.exe`, 189 on the PE32 fixture.
+
+- The `Trace` statement kind, and the migration of the largest shape in the
+  generated code. `trace_instruction(context, 0x...); // <disassembly>` is 48.25%
+  of all generated statements — 11,830 of 24,518 across the fixture corpus — and it
+  comes from a single site with a fixed template. The address and the disassembly
+  are separate fields, so a backend is not required to reproduce the C++ spelling.
+  Structured statements go from 4.86% to **51.95%** on `arith.exe`, with the
+  generated C++ still byte-identical.
+
+- `Assign` and `StoreMemory` migrated: 20 write sites, and the IR model corrected
+  to make it possible. Structured statements go from 51.95% to **86.24%** on
+  `arith.exe`, with the generated C++ still byte-identical across all 22 fixtures.
+
+  A register write is not an assignment when the register is narrower than the
+  machine word: `al = x` compiles to a masked read-modify-write that preserves the
+  bits above AL, and the read form of a sub-register is a cast, which is not an
+  lvalue. The first attempt carried a text destination and produced code that did
+  not compile. `Assign` now carries the destination register's index, width and
+  high-byte offset, and the backend renders the mask — mirroring
+  `register_write_statement` rather than approximating it.
+
+- Two instruction forms that were reaching the lifter and being rejected, both
+  with helpers that already existed: `unpcklps`/`unpckhps` (dword interleave) and
+  `unpcklpd`/`unpckhpd` (qword interleave), which are the `punpck` operation at a
+  coarser granularity; and `movq xmm, xmm`, which reads the low 64 bits of a
+  vector source that the generic operand reader treated as a general register and
+  threw on. A new `unpack` fixture exercises all four forms and both halves of the
+  move, and verifies differentially.
+
+- `core/detection/`, the plug-in point for input detection. It recognises PE
+  (including the managed case), ELF, Mach-O thin and universal, JVM class files,
+  CPython bytecode and scripts, and reports the container, the runtime, the
+  architecture and the evidence each conclusion rests on. The language frontends
+  themselves are deliberately NOT implemented — what exists is the interface they
+  will register against, so adding one later cannot require redesigning the
+  pipeline.
+- A detector never guesses and never fabricates. Byte sequences that match nothing
+  are reported as unrecognised rather than forced into the nearest format; a
+  format that is detected but unsupported is refused with a reason naming the
+  format and the missing capability. `inspect`, `analyze`, `coverage` and
+  `translate` all refuse through this one path, so the reason cannot disagree
+  between commands.
+
+- Guest memory is digested at every checkpoint and compared. Registers, flags and
+  output could all agree while a store lands in memory the program reads later, or
+  never reads at all; a bounded digest of the stack window and the image's data
+  window catches that. It is reported rather than gated, and the reason is the
+  finding below.
+- The image base is set by the shared startup. It was set only on the candidate
+  path, so the reference digested a different range and reported a divergence that
+  was an artefact of the harness.
+
+- The executed-instruction streams can be captured from both sides and compared:
+  `RECOMP_TRACE` on the candidate, `RECOMP_REF_TRACE` on the reference, each
+  writing the address of every executed guest instruction. Comparing them is how a
+  memory divergence is localised, and on `arith.exe` it establishes that the
+  streams are **byte-for-byte identical** over 177,195 instructions — so the
+  remaining difference is a store, not control flow.
+
+- **A store the candidate never made, on x86-64 indirect calls through a
+  register.** A store log on both sides (`RECOMP_STORE_LOG`,
+  `RECOMP_REF_STORE_LOG`, writing `instruction address value width` per line)
+  attributed the guest-memory divergence to one store rather than to one byte:
+  for `call rdi` the reference logged the return address the emulated `call`
+  pushed, and the candidate logged nothing. On x86-64 the thunk path passed
+  `push_return = false` — deliberately, so the stack would be untouched — which
+  left the candidate self-consistent but not faithful: a real `call` writes the
+  return address, and skipping the write made the two sides disagree about a slot
+  that later falls above the stack pointer and becomes live. The path now pushes
+  and pops it, leaving the stack pointer exactly where it was while writing the
+  memory hardware writes.
+
+  Effect: `arith.exe` reports `memory: True`, and **19 of 22 fixtures now agree on
+  guest memory**, up from none.
+
+### Fixed
+
+- **`atexit` registration is real, and non-execution is reported.** `atexit`,
+  `_crt_atexit` and `_cexit` were no-ops that reported success, so a program
+  registering an exit handler produced neither the handler's effect nor a diagnostic.
+  The handlers are now kept, and every one that will not run is named on stderr. They
+  are not executed yet: the candidate could call them as compiled functions but the
+  reference has no compiled code and would have to continue emulation, and doing that
+  on one side only makes the two sides' output differ for every program that registers
+  one. Running them in the reference was implemented and consumed the instruction
+  budget, so it is deferred rather than half-done.
+- **`puts` is implemented.** A compiler emits it for any `printf` whose entire format
+  is a literal ending in a newline, so a program reaches it without naming it. The
+  fixture that exposed the atexit gap hit it immediately.
+- **Address-taken functions are recovered.** `lea reg, [rip + disp]` is how x86-64
+  takes the address of a function; the displacement is relative, so the absolute
+  pointer scan could not see it, and nothing calls the target directly. The C
+  runtime's atexit thunks are reached exactly this way. This is an ABI fact rather
+  than a program-specific one, and it recovered 58 functions where 54 were found
+  before. The seed uses a weaker gate than the pointer scan deliberately: the routine
+  boundary test exists because a 32-bit word in data can land on plausible
+  instructions by chance, but an instruction written to take a code address is not a
+  coincidence, and requiring a boundary there rejected real functions whose
+  predecessor ends in a multi-byte `nop`.
+
+- **The new memory and control-register gate was mutation-tested.** A gate that has
+  never been shown to fail proves nothing, so `kMxcsrPrecisionFlag` was set back to
+  `1u << 5` and the suite run: `fixture_recompile_end_to_end` fails, 15/16. Restored,
+  16/16. The gate does catch the defect it was created for.
+- Every named bit constant in the runtime was audited against its architectural
+  position, because the bug was a named flag constant pointing at the wrong bit.
+  `kX87PrecisionFlag = 1u << 5` is **correct** — x87 PE is bit 5, and the bug was
+  copying that position into the MXCSR constant where PE is bit 12. MXCSR's rounding
+  control (bits 13–14), the x87 C1 flag (bit 9), the EFLAGS bit assignments and both
+  defaults are correct. No further instances; the audit found nothing, which is worth
+  recording as a negative result.
+
+- **MXCSR's precision flag was defined as the FTZ bit.** `kMxcsrPrecisionFlag` held
+  `1u << 5`; MXCSR's exception flags are bits 7..12 (IE, DE, ZE, OE, UE, **PE**) and
+  bit 5 is **FTZ**, which is not an exception flag at all. So every operation that
+  recorded an inexact result — `cvtdq2ps` among them — set the **flush-to-zero** bit
+  instead of the precision flag, and a guest that read MXCSR with `stmxcsr` saw a
+  control bit set that it had never asked for. It is now `1u << 12`. Found by logging
+  every MXCSR change and attributing it to the instruction that caused it: `0x140001164`,
+  a `cvtdq2ps`, was writing a control register it has no business touching.
+- **Memory and the control registers now gate the verification verdict.**
+  `verified()` requires `state_match && memory_match && control_registers_match`, and
+  `--checkpoints memory` and `--checkpoints full` are declared **Implemented**. Every
+  fixture but one agrees on registers, flags, memory and the control registers; the
+  exception is `vex`, whose divergence is the known defect in the emulator used as the
+  reference for AVX. The `cli_options` contract moved both values from the list that
+  must be refused to the list that must be accepted, which is the test doing its job.
+
+- **Every change to MXCSR is logged on both sides** (`RECOMP_MXCSR_LOG`,
+  `RECOMP_REF_MXCSR_LOG`), so the two runs can be compared by change rather than at
+  checkpoints 1000 instructions apart. The reference makes 7 changes and the candidate
+  12; the seven are shared, and the five the candidate makes alone are `0x1fa0`,
+  `0x3fa0`, `0x5fa0`, `0x7fa0` and `0x1fa0` — every one a value the reference also
+  reaches, **with bit 5 set**. Bit 5 of MXCSR is **FTZ**. So the two sides agree about
+  every field of MXCSR except that one bit. The instruction producing the differing
+  value is `LDMXCSR` reading `0x167ffff80` at ip `0x14000148c`.
+
+- **MXCSR and the x87 control and status words are compared at every checkpoint**, as
+  first-class fields rather than inferred from the memory a guest eventually stores
+  them to. Two of the last three divergences found were control registers a guest read
+  that disagreed between the two sides, so they are worth comparing directly. It
+  localised the MXCSR one immediately: `checkpoint 4 after guest instruction index
+  4000: mxcsr is 0x1fa0, reference 0x1f80` — **index 4000**, not the index 7000 the
+  memory digest had pointed at, a 3000-instruction difference and a 1000-instruction
+  window instead of the whole run. The comparison is reported, not gated, for the same
+  reason the memory digest is: the divergence is not yet explained, and a gate that
+  fails for an undiagnosed reason gets weakened or ignored. It appears in
+  `verify --json` as `control_registers_match` and `control_diagnosis`.
+- Unicorn's `ldmxcsr` was checked before assuming the reference was ignoring it, as it
+  ignored `UC_X86_REG_FS_BASE` writes earlier in the project. It is not ignored: a
+  standalone probe executes `ldmxcsr 0x1fa0`, reads back `0x1fa0`, and `stmxcsr`
+  stores it. The reference honours the instruction, so the divergence is elsewhere.
+
+- The two `simd_convert` memory differences are **the FTZ bit of MXCSR**, and the
+  diagnosis now reports the whole 8-byte slot rather than one byte — a byte alone says
+  nothing about whether the difference is a float, a double, an address or an integer,
+  which is the first thing a reader needs. The differing value is `0x00001fa0` against
+  `0x00001f80`, written by `stmxcsr dword ptr [rsp+0x3c]`. `0x1f80` is the
+  architectural default; `0x1fa0` is that with **bit 5 set, which is FTZ**. The guest
+  then clears it, which says it expects it set and wants it clear. Both sides start at
+  `0x1f80` and MXCSR changes only through `ldmxcsr` and `fxrstor`, so the next step is
+  to trace which of those set the bit. This is a single control bit, not a precision
+  difference, and it is the same shape as the x87 control word found two rounds
+  earlier: a control register read by a guest that disagreed between the two sides.
+
+- Guest memory is now compared **byte by byte, with the difference classified**. A
+  byte inside an aligned 8-byte slot whose two values are within one unit in the last
+  place of each other is named as the documented x87 precision limit; anything else is
+  a divergence. The candidate exports the windows (`RECOMP_MEMORY_WINDOWS`) because a
+  digest says only *that* memory differs and classifying it needs the bytes.
+  `x87.exe` now passes with a named exception rather than a silent tolerance: *"2
+  byte(s) differ by at most one unit in the last place of a double; this is the
+  documented x87 precision limit"*. 18 of 22 fixtures agree. `--checkpoints memory`
+  still does not gate the verdict, and the reason is now narrow: two `simd_convert`
+  fixtures differ by more than one ULP, and `vex` differs for the known Unicorn AVX
+  defect.
+
+- The three floating-point memory divergences are **one unit in the last place of a
+  double**, which is the documented x87 precision limit and not a defect. The
+  remaining difference at `x87.exe`'s checkpoint 8 is a single byte: the reference
+  holds `0x40295c01a39fbd69` and the candidate `0x40295c01a39fbd68` — `12.67970000576925`
+  against `12.679700005769249`, differing by `1.776e-15`, which is `2^-52 * 2^3`, the
+  spacing of doubles at that magnitude. This runtime holds the x87 stack as `double`
+  with a 53-bit mantissa and the reference uses 80-bit extended with 64, so a result
+  needing more than 53 bits rounds differently in the last place. The documentation
+  said this would happen; the investigation reached it by measurement.
+
+  `--checkpoints memory` therefore cannot be a bit-exact gate as it stands, and the
+  reason is now specific. The design that would work — compare memory exactly, and
+  classify a difference as the known x87 class when every differing byte lies in an
+  aligned 8-byte slot whose two values are within one unit in the last place — is
+  recorded and not implemented.
+
+- **The x87 control word was wrong on both sides of the comparison.** A guest that
+  executed `FNSTCW` and compared the result exposed it: the architectural default
+  after `FINIT` is `0x037f` — all exceptions masked, precision control `0b11`
+  (extended), round to nearest. This runtime used `0x027f`, which selects **double**
+  precision, and the Unicorn reference left its control word at `0x0000`, which is
+  not a value hardware ever has. Both now start at `0x037f`. It was found by tracing
+  the store that differed back to the instruction that set the register, rather than
+  reading the memory it was eventually written to. With it fixed, `x87.exe`'s first
+  divergence moves from checkpoint 3 to checkpoint 8, so real divergences were
+  resolved and a second x87 issue remains.
+
+- The three floating-point divergences are the **x87 status word**, and the store
+  that exposed them is an ordinary one. The differing slot is written by
+  `mov word ptr [rsp+0x3c], ax` — a plain 2-byte store of AX, not an x87
+  instruction — so the memory difference is a symptom: AX itself differs between the
+  two sides at that point, and because the divergence falls *between* checkpoints
+  the register comparison never saw it. The two values are status words agreeing on
+  TOP, C2 and C3 and differing in the **exception-flag field** (candidate `0x3f`,
+  reference `0x00`) and in **C1**. The concrete site is `x87_round_to_float`, which
+  sets `kX87PrecisionFlag` when a double does not round-trip through `float`; that
+  is one of the six flags. The other five are not yet traced.
+
+- The three floating-point memory divergences are **x87 environment state**, and the
+  `WriteFile` hypothesis is refuted. Dumping the memory at the divergent checkpoint
+  and diffing it localises the difference to four bytes at `ESP+332`: the reference
+  holds `0x00000c00` and the candidate holds `0x027f0e7f` — `0x027f` is the x87
+  control word default and the high half carries TOP=1 in the status word, which is
+  what `fnstenv`/`fnsave` write. The data window matches exactly (0 of 65536 bytes).
+  The store-log comparison could not see this because the write happens inside a
+  shim, which is the blind spot recorded above. `x87.exe`, `simd_convert.exe` and
+  `pe32_simd_convert.exe` are the three fixtures that execute `fnstenv`/`fnsave`.
+
+- Shim writes are marked in the store log. `guest_in_shim` brackets every shim
+  invocation so a store a shim performs can be told apart from a guest store, which
+  matters because the reference's log is blind to the former by construction — its
+  shim writes to `guest_memory` with a host `memcpy` that the emulator never
+  observes. The thunk table's direct call bypassed the marker at first, leaving 335
+  shim stores indistinguishable from guest stores.
+
+  With them marked, the per-instruction comparison reports **zero** instructions
+  whose written ranges differ: every guest store agrees, and the 216 differences
+  reported before were all shim stores. That narrows the remaining memory divergence
+  to a write a shim performs — the only class the comparison cannot see.
+
+- The store logs are now compared **per instruction** rather than line by line, in
+  `tools/compare_store_logs.py`. The reference reports a 16-byte store as two 8-byte
+  writes, so a line-by-line comparison reported a divergence for every vector store;
+  grouping by instruction and comparing the byte ranges each instruction wrote
+  removes the question of how either side chose to chunk them. It reduced 216
+  reported differences to a concrete one.
+- That comparison established a limitation of the instrument itself: **the
+  reference's store log cannot see writes a shim performs.** The reference dispatches
+  through the same shim as the candidate, and the shim writes to `guest_memory` with
+  a host `memcpy`, which Unicorn never observes as a guest access, so
+  `UC_HOOK_MEM_WRITE` does not fire. A store the candidate logs and the reference
+  does not is therefore not evidence of a difference — both perform it, into their
+  own copy of the guest address space. The store logs are comparable for guest
+  instructions and not for shim calls.
+
+- The store log was missing every SSE store. Vector stores write memory directly
+  rather than through `store_guest_memory`, so they never reached the log, and a
+  16-byte `movaps` looked like a store the candidate never performed. They are
+  recorded now, as one entry per register store.
+- The x87 precision hypothesis for the remaining three floating-point fixtures is
+  **refuted**, not confirmed. The store log records every store's width, and across
+  2,204 stores on `x87.exe` the widths are `{1, 2, 4, 8}` — **there are no 10-byte
+  stores at all**, so a `tbyte` round-trip through 80-bit extended cannot be the
+  cause. What the logs actually disagree about is **granularity**: the candidate
+  records a 16-byte vector store as one entry and Unicorn reports it as two 8-byte
+  writes. Merging adjacent same-instruction writes was tried and withdrawn — it
+  produced widths of 3, 5, 6, 7 and 19, which no x86 instruction can store, because
+  a single instruction making two separate stores is indistinguishable from one
+  store the emulator split. Comparing the logs per instruction is the normalisation
+  that avoids the question, and is the next step.
+
+- **The reference counted a `rep` instruction once per iteration.** A `rep`-prefixed
+  instruction is one guest instruction that the emulator runs once per iteration,
+  and Unicorn fires the code hook for each; the candidate lifts it as a single
+  `string_move` and traces it once. So the reference's executed-address stream, its
+  instruction count and its checkpoint indices all advanced once per byte copied —
+  meaning the two sides were comparing **different points in execution** from the
+  first `rep` a program ran. That is a defect in the harness, not the translation,
+  and it affected every program using a string instruction. The hook now collapses
+  consecutive repeats, which counts a `rep` once, as the guest instruction stream
+  does; a loop that revisits an address is unaffected because it does not repeat
+  consecutively. Found by comparing the streams for `x87.exe`, where the reference
+  repeated `0x140001909` — `rep movsb` — while the candidate advanced. With it
+  fixed those streams are identical, 9948 addresses each.
+
+- The guest-memory digest compared **dead stack**. It covered
+  `[ESP - 0x1000, ESP)`, but memory below the stack pointer is memory the program
+  has moved past and cannot read again, and the two sides legitimately differ
+  there. The first comparison reported a divergence at checkpoint 1 that was four
+  bytes of dead stack — a return address the reference had popped and the candidate
+  had overwritten — and nothing observable differed. Digesting the live stack
+  `[ESP, ESP + 0x1000)` instead moved the first divergence from checkpoint 1 to
+  checkpoint 175, which is what made the remaining difference small enough to
+  isolate. See `reports/memory-checkpoint-finding.md`.
+
+- The candidate and the reference did not agree on where the guest's stack begins,
+  and nothing could see it. The candidate pushed a sentinel with `push_guest_stack`
+  and the reference wrote one at `stack_top - pointer_width`; the two happened to
+  land on the same address, but the definition lived in two places and was one
+  edit away from diverging. It is one function now, used by both.
+
+### Open, reported rather than hidden
+
+The memory digest found a divergence the other three comparisons cannot see: at
+checkpoint 1, after 1000 guest instructions at `0x1400017ab`, the stack window
+differs while the registers, the flags and the program's output all agree. It is
+not diagnosed. Rather than gate the verdict on a comparison that fails for an
+unexplained reason -- which ends with the gate weakened or ignored, and both are
+worse than a diagnostic -- `verify` reports it:
+
+    guest-memory digest agrees: no
+    checkpoint 1 after guest instruction index 1000 (0x1400017ab):
+    guest memory digest 0x6bac5d86a031e69f, reference 0x5db0c91916a61c92
+
+The next step is to bisect that window: digest the stack below the current pointer
+separately from the stack above it, and separately again from the image's data.
+
+- `0xcafebabe` is shared by Mach-O universal binaries and Java class files, and
+  the Mach-O detector claimed the magic alone. A Java class file was reported as a
+  "universal binary with 52 architectures" — a fabricated answer of exactly the
+  kind this project forbids. The detector now validates the header it claims: a
+  plausible architecture count and, for each entry, a known CPU type and a
+  non-empty slice. Real universal binaries still detect, with their real count.
+- `inspect --json` on an unsupported input wrote two JSON documents — the report
+  and then an error object — which made the output unparseable by anything. It now
+  writes exactly one and returns non-zero.
+
+- **Verification passed with zero guest-state checkpoints compared.** The verdict
+  returned true when `checkpoints_compared == 0`, on the reasoning that capture
+  might have been disabled — but the harness enables capture itself before running
+  either side, so zero means the capture *failed*, and the CLI printed
+  `VERIFY: PASS` from a comparison that never happened. That is a verdict issued
+  without the measurement it claims to rest on. A comparison of zero checkpoints
+  is now a failure. Found by an independent honesty audit, not by the tests.
+- `WriteFile` reported the requested length rather than what the host accepted, and
+  `write_guest_output` discarded the host result entirely, so a short write — a
+  full disk, a closed descriptor — was indistinguishable from success and the
+  guest was told its data had been written. Both now report the accepted count.
+- The golden harness passed vacuously: an empty fixture directory reported
+  "checked 0 fixtures ... 0 passed, 0 failed" and exited 0, and deleting one
+  fixture reported "21 passed". A harness that passes when its inputs are missing
+  is worse than no harness. Every baseline entry must now have a fixture, and the
+  count must match. Proven by running it against an empty directory: exit 1.
+
+- The golden test pinned the generated code but not the input, so a rebuilt fixture
+  was reported as a changed compiler — a misdiagnosis in the one test whose whole
+  job is to tell those two apart, and it happened: the fixtures were rebuilt 25
+  minutes after the baseline was captured and all 22 entries failed as though the
+  lifter had changed. The fixture digest is pinned alongside the output now, and a
+  changed input is reported as a changed input.
+
+- The reported reference instruction count included import thunks. The counter was
+  incremented before the thunk check, so `executed instructions (reference)`
+  described a stream the candidate does not have — inflated by exactly the number
+  of import calls, while the comment three lines below said thunks are excluded.
+  On `arith.exe` the figure was 177,340 and is 177,195: 145 import calls. Found by
+  a teammate reading the hook rather than the output.
+- The guest-state test mutates a tracked source file, because the mutation has to
+  be compiled into the candidate. An interrupted run would have left the runtime
+  mutated, so it now restores from a signal handler as well as a `finally` block,
+  and refuses to start if a previous run left the file dirty.
+
+- The checkpoint reader used the 64-bit register names for a 32-bit guest.
+  Unicorn returns zero for `RAX`/`RSP` in 32-bit mode rather than failing, so the
+  reference appeared to report `esp = 0` — indistinguishable from a genuine state
+  divergence. Found on the one PE32 fixture, which was the only one that failed.
 
 ### Fixed
 

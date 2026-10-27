@@ -3,6 +3,8 @@
 #include "core/common/diagnostic.hpp"
 #include "core/common/sha256.hpp"
 #include "core/discovery/function_discovery.hpp"
+#include "core/cli/options.hpp"
+#include "core/detection/detection.hpp"
 #include "core/pipeline.hpp"
 #include "core/semantics/x86_64_lifter.hpp"
 #include "win32_abi.hpp"
@@ -27,7 +29,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.4.0";
+constexpr const char* kVersion = "0.5.0";
 
 #ifndef RECOMP_DEFAULT_RUNTIME_DIR
 #define RECOMP_DEFAULT_RUNTIME_DIR "runtime"
@@ -40,24 +42,10 @@ std::string format_hex(std::uint64_t value, int width = 8) {
 }
 
 void print_help() {
-  std::cout << "recomp-studio " << kVersion << "\n"
-            << "Usage: recomp-studio <command> [options]\n\n"
-            << "Commands:\n"
-            << "  doctor                       Report host and toolchain capability\n"
-            << "  inspect <image>              Inspect a PE32/PE32+ executable\n"
-            << "  analyze <image>              Recover functions and instructions\n"
-            << "  coverage <image>             Instruction coverage and unsupported classes\n"
-            << "  imports <image>              Import compatibility and missing shims\n"
-            << "  autorecomp <image> [--output <dir>] [--target <t>] [--buildrun] [--repair]\n"
-            << "  functions <image>            List recovered function candidates\n"
-            << "  cfg <image> --address <hex>  Export a function CFG as Graphviz DOT\n"
-            << "  translate <image> --target <t> --output <dir>   Recompile to a host project\n"
-            << "  build <project>              Build a generated host project\n"
-            << "  run <project>                Run a generated host project\n"
-            << "  verify <project>             Differentially verify a generated project\n"
-            << "  repair <image> --output <dir>  Autonomous translate/build/verify/repair loop\n"
-            << "  report <project>             Print the generated project manifest\n"
-            << "  examples list                List bundled example profiles\n";
+  // Generated from the option and capability tables. The help text and the parser
+  // read the same declarations, so an option cannot be documented and not
+  // accepted, or accepted and not documented.
+  std::cout << recomp::cli::render_help();
 }
 
 int fail(const std::string& message, bool json, int code = 1) {
@@ -122,6 +110,36 @@ int command_doctor(bool json) {
 }
 
 int command_inspect(const std::filesystem::path& input, bool json) {
+  // Detection runs first and reports what the file is, with the evidence it used.
+  // A reader can then check the conclusion rather than trust it, and a format this
+  // build cannot lift is named rather than described as a parse failure.
+  const auto detection = recomp::detection::detect_file(input.string());
+  if (!detection.is_supported()) {
+    if (json) {
+      std::cout << "{\"status\":\"unsupported\",\"container\":"
+                << recomp::common::quote_json(recomp::detection::container_format_name(detection.container))
+                << ",\"runtime\":"
+                << recomp::common::quote_json(recomp::detection::runtime_kind_name(detection.runtime))
+                << ",\"architecture\":" << recomp::common::quote_json(detection.architecture)
+                << ",\"confidence\":"
+                << recomp::common::quote_json(recomp::detection::confidence_name(detection.confidence))
+                << ",\"summary\":" << recomp::common::quote_json(detection.summary)
+                << ",\"reason\":" << recomp::common::quote_json(detection.unsupported_reason()) << "}\n";
+    } else {
+      std::cout << "detected:    " << detection.summary << "\n"
+                << "container:   " << recomp::detection::container_format_name(detection.container) << "\n"
+                << "runtime:     " << recomp::detection::runtime_kind_name(detection.runtime) << "\n"
+                << "confidence:  " << recomp::detection::confidence_name(detection.confidence) << "\n";
+      for (const auto& evidence : detection.evidence)
+        std::cout << "  evidence:  " << evidence.description << " at offset " << evidence.offset << ": "
+                  << evidence.bytes << "\n";
+      std::cout << "unsupported: " << detection.unsupported_reason() << "\n";
+    }
+    // The report has already been written, so this returns rather than throwing:
+    // a second JSON object after the first makes the output unparseable, and a
+    // caller asking for JSON is entitled to exactly one document.
+    return 1;
+  }
   const auto executable = recomp::binary::PortableExecutable::parse(input);
   const auto digest = recomp::common::sha256(executable.file_bytes);
   if (json) {
@@ -162,10 +180,7 @@ int command_analyze(const std::filesystem::path& input, bool json) {
   const auto executable = recomp::binary::PortableExecutable::parse(input);
   // A function count for a managed image counts the CLR launcher stub, not the
   // program, so it is refused for the same reason coverage is.
-  if (executable.is_managed())
-    throw std::runtime_error("input is a " + executable.managed_reason +
-                             "; the native code is only a CLR launcher, so a function count would "
-                             "describe that stub rather than the program. Managed images are not supported.");
+  if (executable.is_managed()) throw std::runtime_error(recomp::detection::detect_file(input.string()).unsupported_reason());
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   std::size_t instruction_count = 0;
@@ -193,10 +208,7 @@ int command_coverage(const std::filesystem::path& input, bool json) {
     throw std::runtime_error("input appears to be packed (" + executable.packing_reason +
                              "); instruction coverage would describe padding, not the program. "
                              "Unpack it first.");
-  if (executable.is_managed())
-    throw std::runtime_error("input is a " + executable.managed_reason +
-                             "; the native code is only a CLR launcher, so any coverage figure would "
-                             "describe that stub rather than the program. Managed images are not supported.");
+  if (executable.is_managed()) throw std::runtime_error(recomp::detection::detect_file(input.string()).unsupported_reason());
   recomp::discovery::FunctionDiscovery discovery(executable);
   discovery.discover();
   recomp::semantics::X86_64Lifter lifter(discovery);
@@ -477,6 +489,13 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << "\",\"reference_completed\":" << (result.reference_completed ? "true" : "false")
               << ",\"candidate_completed\":" << (result.candidate_completed ? "true" : "false")
               << ",\"outputs_match\":" << (result.outputs_match ? "true" : "false")
+              << ",\"checkpoints_compared\":" << result.checkpoints_compared
+              << ",\"state_match\":" << (result.state_match ? "true" : "false")
+              << ",\"state_diagnosis\":" << recomp::common::quote_json(result.state_diagnosis)
+              << ",\"memory_match\":" << (result.memory_match ? "true" : "false")
+              << ",\"memory_diagnosis\":" << recomp::common::quote_json(result.memory_diagnosis)
+              << ",\"control_registers_match\":" << (result.control_registers_match ? "true" : "false")
+              << ",\"control_diagnosis\":" << recomp::common::quote_json(result.control_diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
@@ -488,7 +507,7 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
     }
     std::cout << "]}\n";
   } else {
-    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"
+    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"              << "guest-state checkpoints compared: " << result.checkpoints_compared << "\n"              << "guest-memory digest agrees: " << (result.memory_match ? "yes" : "no") << "\n"
               << "reference completed: " << (result.reference_completed ? "yes" : "no") << "\n"
               << "candidate completed: " << (result.candidate_completed ? "yes" : "no") << "\n"
               << "reference output: " << result.reference_output.size() << " bytes\n"
@@ -986,15 +1005,235 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  if (argc == 1) {
-    print_help();
+// Every capability this build declares, with what it is and whether it is
+// implemented. Generated from the capability table, so it cannot claim more than
+// the parser will accept.
+int command_capabilities(bool json) {
+  const auto& all = recomp::cli::capabilities();
+  std::size_t implemented = 0;
+  for (const auto& capability : all)
+    if (capability.support == recomp::cli::Support::Implemented) ++implemented;
+
+  if (json) {
+    std::cout << "{\"status\":\"ok\",\"total\":" << all.size() << ",\"implemented\":" << implemented
+              << ",\"planned\":" << (all.size() - implemented) << ",\"capabilities\":[";
+    for (std::size_t index = 0; index < all.size(); ++index) {
+      const auto& capability = all[index];
+      if (index != 0) std::cout << ",";
+      std::cout << "{\"id\":" << recomp::common::quote_json(capability.id)
+                << ",\"option\":" << recomp::common::quote_json(capability.option)
+                << ",\"value\":" << recomp::common::quote_json(capability.value)
+                << ",\"support\":" << recomp::common::quote_json(recomp::cli::support_name(capability.support))
+                << ",\"summary\":" << recomp::common::quote_json(capability.summary)
+                << ",\"note\":" << recomp::common::quote_json(capability.note) << "}";
+    }
+    std::cout << "]}\n";
     return 0;
   }
+
+  std::cout << "recomp-studio " << kVersion << " capabilities\n"
+            << all.size() << " declared, " << implemented << " implemented, " << (all.size() - implemented)
+            << " planned\n\n";
+  // std::string, not const char*: comparing a std::string against a null pointer
+  // is undefined behaviour, and it crashed here before the first line was printed.
+  std::string current;
+  bool first = true;
+  for (const auto& capability : all) {
+    if (first || capability.option != current) {
+      first = false;
+      current = capability.option;
+      std::cout << (capability.option.empty() ? "(feature)" : capability.option) << ":\n";
+    }
+    std::string label = capability.value.empty() ? std::string("(feature)") : capability.value;
+    while (label.size() < 14) label += ' ';
+    std::cout << "  " << label << recomp::cli::support_name(capability.support) << "  " << capability.summary
+              << "\n";
+    if (capability.support == recomp::cli::Support::Planned && !capability.note.empty())
+      std::cout << "                 -> " << capability.note << "\n";
+  }
+  return 0;
+}
+
+// detect: what the file is, with the evidence, and whether this build can lift it.
+int command_detect(const std::filesystem::path& input, bool json) {
+  const auto detection = recomp::detection::detect_file(input.string());
+  const auto supported = detection.is_supported();
+  if (json) {
+    std::cout << "{\"status\":\"" << (supported ? "ok" : "unsupported") << "\""
+              << ",\"container\":"
+              << recomp::common::quote_json(recomp::detection::container_format_name(detection.container))
+              << ",\"runtime\":" << recomp::common::quote_json(recomp::detection::runtime_kind_name(detection.runtime))
+              << ",\"architecture\":" << recomp::common::quote_json(detection.architecture)
+              << ",\"runtime_version\":" << recomp::common::quote_json(detection.runtime_version)
+              << ",\"confidence\":"
+              << recomp::common::quote_json(recomp::detection::confidence_name(detection.confidence))
+              << ",\"summary\":" << recomp::common::quote_json(detection.summary)
+              << ",\"supported\":" << (supported ? "true" : "false")
+              << ",\"reason\":" << recomp::common::quote_json(detection.unsupported_reason())
+              << ",\"evidence\":[";
+    for (std::size_t index = 0; index < detection.evidence.size(); ++index) {
+      const auto& evidence = detection.evidence[index];
+      if (index != 0) std::cout << ",";
+      std::cout << "{\"description\":" << recomp::common::quote_json(evidence.description)
+                << ",\"offset\":" << evidence.offset
+                << ",\"bytes\":" << recomp::common::quote_json(evidence.bytes) << "}";
+    }
+    std::cout << "]}\n";
+    return supported ? 0 : 1;
+  }
+  std::cout << "summary:     " << detection.summary << "\n"
+            << "container:   " << recomp::detection::container_format_name(detection.container) << "\n"
+            << "runtime:     " << recomp::detection::runtime_kind_name(detection.runtime) << "\n"
+            << "architecture:" << (detection.architecture.empty() ? " unknown" : " " + detection.architecture)
+            << "\n"
+            << "confidence:  " << recomp::detection::confidence_name(detection.confidence) << "\n"
+            << "evidence:\n";
+  for (const auto& evidence : detection.evidence)
+    std::cout << "  " << evidence.description << " (offset " << evidence.offset << ": " << evidence.bytes << ")\n";
+  if (!supported) {
+    std::cout << "unsupported: " << detection.unsupported_reason() << "\n";
+    return 1;
+  }
+  std::cout << "supported:   this build can lift this input\n";
+  return 0;
+}
+
+// backends list: which source and target backends exist, and which are declared
+// but absent. Read from the capability table rather than a second list.
+int command_backends(bool json) {
+  struct Backend {
+    const char* kind;
+    const char* name;
+    recomp::cli::Support support;
+    const char* note;
+  };
+  static const Backend backends[] = {
+      {"source", "pe32", recomp::cli::Support::Implemented, "Windows PE32 (x86) frontend"},
+      {"source", "pe32+", recomp::cli::Support::Implemented, "Windows PE32+ (x86-64) frontend"},
+      {"source", "elf", recomp::cli::Support::Planned, "detection only; no ELF frontend"},
+      {"source", "macho", recomp::cli::Support::Planned, "detection only; no Mach-O frontend"},
+      {"source", "il", recomp::cli::Support::Planned, "detection only; no IL frontend"},
+      {"source", "jvm-bytecode", recomp::cli::Support::Planned, "detection only; no JVM frontend"},
+      {"source", "cpython-bytecode", recomp::cli::Support::Planned, "detection only; no Python frontend"},
+      {"target", "macos-arm64", recomp::cli::Support::Implemented, "arm64-apple-macos"},
+      {"target", "macos-x86_64", recomp::cli::Support::Implemented, "x86_64-apple-macos"},
+      {"target", "linux-arm64", recomp::cli::Support::Planned, "triple declared; the project does not build"},
+      {"target", "linux-x86_64", recomp::cli::Support::Planned, "triple declared; the project does not build"},
+      {"target", "windows-*", recomp::cli::Support::Planned, "no Windows host runtime"},
+      {"source-language", "cpp", recomp::cli::Support::Implemented, "C++20, the primary editable output"},
+      {"source-language", "c", recomp::cli::Support::Planned, "not implemented"},
+      {"source-language", "rust", recomp::cli::Support::Planned, "not implemented"},
+      {"source-language", "llvm-ir", recomp::cli::Support::Planned, "IR backend not implemented"},
+      {"reference", "unicorn", recomp::cli::Support::Implemented, "the differential reference"},
+      {"reference", "qemu", recomp::cli::Support::Planned, "not integrated; GPL-2.0, not linked"},
+  };
+  if (json) {
+    std::cout << "{\"status\":\"ok\",\"backends\":[";
+    for (std::size_t index = 0; index < std::size(backends); ++index) {
+      if (index != 0) std::cout << ",";
+      std::cout << "{\"kind\":" << recomp::common::quote_json(backends[index].kind)
+                << ",\"name\":" << recomp::common::quote_json(backends[index].name)
+                << ",\"support\":" << recomp::common::quote_json(recomp::cli::support_name(backends[index].support))
+                << ",\"note\":" << recomp::common::quote_json(backends[index].note) << "}";
+    }
+    std::cout << "]}\n";
+    return 0;
+  }
+  std::cout << "Registered backends (" << std::size(backends) << ")\n\n";
+  const char* kind = nullptr;
+  for (const auto& backend : backends) {
+    if (kind == nullptr || std::string(kind) != backend.kind) {
+      kind = backend.kind;
+      std::cout << backend.kind << ":\n";
+    }
+    std::string name = backend.name;
+    while (name.size() < 20) name += ' ';
+    std::cout << "  " << name << recomp::cli::support_name(backend.support) << "  " << backend.note << "\n";
+  }
+  return 0;
+}
+
+// --explain: the resolved pipeline, the capability behind each choice, and what
+// would run. Derived from the option and capability tables, so it cannot describe
+// a pipeline the parser would not accept.
+int command_explain(const recomp::cli::ParsedOptions& options) {
+  std::cout << "resolved options (unset options show their declared default):\n";
+  const char* group = nullptr;
+  for (const auto& spec : recomp::cli::option_specs()) {
+    if (spec.kind == recomp::cli::ValueKind::Flag) continue;
+    if (group == nullptr || std::string(group) != spec.group) {
+      group = spec.group.c_str();
+      std::cout << "  " << spec.group << ":\n";
+    }
+    const auto value = options.get(spec.name);
+    std::string left = spec.name;
+    while (left.size() < 18) left += ' ';
+    std::cout << "    " << left << (value.empty() ? "(unset)" : value) << "\n";
+  }
+  std::cout << "\ncapabilities behind those choices:\n";
+  for (const auto& spec : recomp::cli::option_specs()) {
+    if (!spec.capability_checked) continue;
+    const auto value = options.get(spec.name);
+    if (value.empty()) continue;
+    const auto* capability = recomp::cli::find_capability(spec.name, value);
+    if (capability == nullptr) continue;
+    std::string left = spec.name + " " + value;
+    while (left.size() < 34) left += ' ';
+    std::cout << "  " << left << recomp::cli::support_name(capability->support) << "\n";
+  }
+  return 0;
+}
+
+int main(int argc, char** argv) {
+  const std::vector<std::string> arguments(argv + 1, argv + argc);
+  if (arguments.empty()) {
+    std::cout << recomp::cli::render_help();
+    return 0;
+  }
+  // Two option-shaped commands are handled before the parser, because they are
+  // not commands and a parser that saw them would look for a value.
+  if (arguments.front() == "--help" || arguments.front() == "help") {
+    std::cout << recomp::cli::render_help();
+    return 0;
+  }
+  if (arguments.front() == "--version") {
+    if (argc >= 3 && std::string{argv[argc - 1]} == "--json")
+      std::cout << "{\"status\":\"ok\",\"version\":\"" << kVersion << "\"}\n";
+    else
+      std::cout << kVersion << "\n";
+    return 0;
+  }
+
+  // Central parsing and capability validation run before any command. An option
+  // that is not declared, a value outside its declared set, or a value this build
+  // does not implement is reported here rather than being ignored by a command
+  // that happens not to look at it.
+  recomp::cli::ParsedOptions options;
+  try {
+    options = recomp::cli::parse(arguments);
+    recomp::cli::validate_capabilities(options);
+  } catch (const recomp::cli::UsageError& error) {
+    std::cerr << "error: " << error.what() << "\n";
+    return 2;
+  } catch (const recomp::cli::UnsupportedError& error) {
+    std::cerr << "error: UNSUPPORTED: " << error.what() << "\n";
+    return 3;
+  }
+
   const std::string command{argv[1]};
   const bool json = argc >= 3 && std::string{argv[argc - 1]} == "--json";
 
   try {
+    // --explain reports the resolved pipeline and the capability behind each
+    // choice, then stops. It is deliberately independent of which command was
+    // named, so it can be asked of any of them.
+    if (options.flag("--explain")) return command_explain(options);
+    if (command == "capabilities") return command_capabilities(json);
+    if (command == "backends" && argc >= 3 && std::string{argv[2]} == "list") return command_backends(json);
+    if (command == "detect") {
+      if (argc < 3) return fail("detect requires an image path", json);
+      return command_detect(argv[2], json);
+    }
     if (command == "--help" || command == "help") { print_help(); return 0; }
     if (command == "--version") {
       if (json) std::cout << "{\"status\":\"ok\",\"version\":\"" << kVersion << "\"}\n";

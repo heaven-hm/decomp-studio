@@ -39,6 +39,11 @@ enum class StatementKind {
   Return,        // return from the guest function
   Trap,          // the guest reached something that cannot be executed
   Verbatim,      // not yet migrated: emitted unchanged by the backend
+  // Provenance: records that this guest instruction is about to execute, with the
+  // original disassembly. It is the largest single shape in the generated code --
+  // 48% of all statements on the fixture corpus -- and the only statement whose
+  // content is a fixed template rather than a computed expression.
+  Trace,
 };
 
 const char* statement_kind_name(StatementKind kind);
@@ -46,14 +51,23 @@ const char* statement_kind_name(StatementKind kind);
 struct Statement {
   StatementKind kind{StatementKind::Verbatim};
 
-  std::string destination;  // Assign: what is written
+  // Assign. A register write is not an assignment when the register is narrower
+  // than the machine word: `al = x` compiles to a masked read-modify-write that
+  // preserves the bits above AL, and the read form of a sub-register is a cast,
+  // which is not an lvalue. So the destination is described as a register field
+  // and its width, and the backend renders the mask.
+  int destination_register{-1};
+  int destination_width{};
+  int destination_high_byte_offset{};
+  std::string destination;  // Assign: a non-register destination, when there is one
   std::string expression;   // Assign, StoreMemory, JumpIf: the value or condition
   std::string address;      // StoreMemory: where
   int width{};              // StoreMemory: bytes
   std::string symbol;       // CallGuest, CallImport: the callee
   std::string library;      // CallImport: the library
   std::string label;        // Jump, JumpIf, Label
-  std::string text;         // Comment, Verbatim
+  std::string text;         // Comment, Verbatim, Trace (the disassembly)
+  std::string instruction_address;  // Trace: the guest address, already formatted
   std::uint64_t address_of_instruction{};  // provenance for every statement
 
   static Statement verbatim(std::string line, std::uint64_t instruction_address) {

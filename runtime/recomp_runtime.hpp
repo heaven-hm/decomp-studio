@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <vector>
 
 // The import calling-convention table. import_argument consults it, so a shim
 // reads its arguments correctly whether it was reached as cdecl, stdcall or a
@@ -74,7 +75,15 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
 // Brings the guest address space to the state a program starts in, with the image
 // already loaded. The candidate and the differential reference both call this, so
 // they begin from the same state rather than from two lists that happen to agree.
-void initialize_guest_state(std::uint64_t heap_base, std::uint64_t stack_top);
+void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top);
+
+// The stack pointer a guest starts with, and the address a sentinel return is
+// written to. A guest entry point is entered as if called, so a return address is
+// on the stack; placing a zero there means the entry point's `ret` terminates
+// instead of running off the stack. Defined once because the candidate and the
+// reference must agree on it: they did not, and the eight-byte difference shifted
+// every memory checkpoint by eight bytes.
+std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_width);
 
 // When set, everything the guest writes to a standard stream is appended here
 // instead of being sent to the host. The differential reference uses this to
@@ -93,11 +102,14 @@ extern void (*guest_exit_handler)(int code);
 void guest_request_exit(int code);
 
 // Sends guest output to the capture buffer when one is installed, and to the host
-// descriptor otherwise.
-void write_guest_output(int descriptor, const char* data, std::size_t size);
+// descriptor otherwise. Returns the number of bytes accepted, so a caller can
+// report a short write rather than assuming the whole buffer went out.
+std::ptrdiff_t write_guest_output(int descriptor, const char* data, std::size_t size);
 
 extern std::uint8_t* guest_memory;
 extern std::uint64_t guest_memory_size;
+// The base address the guest image was loaded at; set by initialize_guest_state.
+extern std::uint64_t recompiled_image_base;
 extern bool guest_tracing_enabled;
 
 // 4 for a PE32/x86 guest, 8 for a PE32+/x86-64 guest. Set once by
@@ -125,8 +137,74 @@ void guest_trace_address(std::uint64_t address);
 // Records the current instruction pointer; when tracing is enabled every
 // executed guest address is appended to the trace stream for differential
 // diagnosis against the reference execution.
+// A guest-state checkpoint: what the machine looked like at a chosen point in the
+// executed instruction stream. Comparing output alone cannot see a wrong register,
+// a wrong flag or a wrong store that happens not to reach the program's output;
+// comparing state can. Both the candidate and the reference record these against
+// the same counter, so the first place they disagree names the instruction that
+// caused it.
+struct GuestCheckpoint {
+  std::uint64_t index{};      // position in the executed instruction stream
+  std::uint64_t address{};    // the guest instruction about to execute
+  std::uint64_t registers[16]{};
+  std::uint64_t flags{};
+  // A digest of the guest's writable state: a window of the stack and a window of
+  // the image's data. Comparing registers and flags alone cannot see a wrong
+  // store that lands in memory the program reads later, or that it never reads at
+  // all. Hashing the whole 8 GiB address space per checkpoint is not possible, and
+  // hashing nothing is what comparing the output already does.
+  std::uint64_t memory_digest{};
+  // Control registers, compared directly rather than inferred from the memory a
+  // guest eventually stores them to. Two of the last three divergences found were
+  // control registers -- the x87 control word, and MXCSR's FTZ bit -- and both were
+  // read by a guest and disagreed between the two sides. Comparing them here names
+  // the checkpoint at which they part instead of leaving it to be localised from
+  // memory afterwards.
+  std::uint32_t mxcsr{};
+  std::uint32_t x87_control_word{};
+  std::uint32_t x87_status_word{};
+};
+
+// A bounded digest of the guest's writable state, computed the same way on both
+// sides so the two can be compared. Bounded because a checkpoint happens every
+// thousand instructions.
+std::uint64_t guest_memory_digest(const GuestContext* context);
+
+// Zero disables capture. The reference sets the same interval, so the two streams
+// line up index for index.
+extern std::uint64_t guest_checkpoint_interval;
+extern std::vector<GuestCheckpoint> guest_checkpoints;
+void capture_guest_checkpoint(GuestContext* context, std::uint64_t address);
+// Writes the captured checkpoints when RECOMP_CHECKPOINT names a file.
+void write_guest_checkpoints_if_requested();
+// Opens the store log named by the environment, when one is asked for.
+void open_guest_store_log(const char* path);
+
+// Opens the memory-window export named by the environment, when one is asked for.
+// A digest says only *that* memory differs; classifying the difference -- the x87
+// precision class is one unit in the last place of a double, which is a known and
+// documented limit -- needs the bytes. The windows are written per checkpoint,
+// with the stack pointer and image base that locate them.
+void open_guest_memory_windows(const char* path);
+void open_guest_mxcsr_log(const char* path);
+
+// The handlers the guest registered with atexit, oldest first. Exposed so the
+// differential reference can run them: it has no compiled code, so it continues
+// emulation at each handler rather than calling it.
+const std::vector<std::uint64_t>& registered_atexit_handlers();
+
+// Every change to MXCSR, in order, when a log is installed. Comparing two runs
+// instruction by instruction is what localises a control-register divergence to the
+// instruction that caused it, rather than to the checkpoint after it.
+extern bool guest_mxcsr_logging;
+extern std::uint64_t guest_mxcsr_previous_address;
+void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr);
+
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
   context->instruction_pointer = address;
+  if (guest_mxcsr_logging) record_mxcsr_change(address, context->mxcsr);
+  guest_mxcsr_previous_address = address;
+  if (guest_checkpoint_interval != 0) capture_guest_checkpoint(context, address);
   if (guest_tracing_enabled) guest_trace_address(address);
 }
 
@@ -152,8 +230,27 @@ inline std::uint64_t load_guest_memory(GuestContext* context, std::uint64_t addr
   return value;
 }
 
+// Every store the guest performs, in order, when a log is installed. Comparing
+// the two logs is how a memory divergence is attributed: identical instruction
+// streams and identical checkpoints leave only "what was stored" as the
+// difference, and a log says which store it was rather than which byte ended up
+// wrong.
+extern bool guest_store_logging;
+// True while a shim is executing. The reference's store log cannot see shim writes
+// -- the shim writes to guest_memory with a host memcpy, which the emulator never
+// observes as a guest access -- so a store the candidate logs and the reference
+// does not is not evidence of a difference unless the comparison knows which
+// stores came from a shim. This marks them.
+extern bool guest_in_shim;
+void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width);
+// A vector store writes a whole register; the log records it as one entry per
+// register rather than as the bytes it happens to be made of, so that a 16-byte
+// `movaps` is one line on both sides instead of two on one and one on the other.
+void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t address, int width);
+
 inline void store_guest_memory(GuestContext* context, std::uint64_t address, std::uint64_t value, int width) {
   note_watched_write(context, address, width);
+  if (guest_store_logging) record_guest_store(context != nullptr ? context->instruction_pointer : 0, address, value, width);
   if (address + static_cast<std::uint64_t>(width) > guest_memory_size) {
     report_guest_memory_fault(context, address, width, 1);
     return;
@@ -466,6 +563,7 @@ inline void load_guest_vector_256(GuestContext* context, std::uint64_t address, 
 
 inline void store_guest_vector_256(GuestContext* context, std::uint64_t address, int vector_index) {
   note_watched_write(context, address, 32);
+  if (guest_store_logging) record_guest_vector_store(context != nullptr ? context->instruction_pointer : 0, address, 32);
   if (address + 32 > guest_memory_size) {
     report_guest_memory_fault(context, address, 32, 1);
     return;
@@ -613,6 +711,12 @@ inline std::uint64_t bit_scan_forward(GuestContext* context, std::uint64_t value
 }
 inline void store_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {
   note_watched_write(context, address, byte_count);
+  // A vector store writes memory directly rather than through
+  // store_guest_memory, so without this the store log was missing every SSE
+  // store -- which made the log comparison attribute a divergence to the wrong
+  // place, and made a 16-byte `movaps` look like a store the candidate never
+  // performed.
+  if (guest_store_logging) record_guest_vector_store(context != nullptr ? context->instruction_pointer : 0, address, byte_count);
   if (address + static_cast<std::uint64_t>(byte_count) > guest_memory_size) {
     report_guest_memory_fault(context, address, byte_count, 1);
     return;
@@ -1613,7 +1717,13 @@ inline void x87_store_status_word_ax(GuestContext* context) {
 // FP environment, so a guest rounding-mode change cannot leak into the
 // recompiled program's own arithmetic.
 inline constexpr std::uint32_t kMxcsrDefaultValue = 0x1f80u;
-inline constexpr std::uint32_t kMxcsrPrecisionFlag = 1u << 5;
+// MXCSR's exception flags are bits 7..12: IE, DE, ZE, OE, UE, PE. Bit 5 is FTZ,
+// which is not an exception flag at all. This constant held 1u << 5, so every
+// operation that recorded an inexact result -- cvtdq2ps among them -- set the
+// FLUSH-TO-ZERO bit instead of the precision flag. A guest that read MXCSR with
+// stmxcsr saw a control bit set that it had never asked for, and two fixtures
+// diverged on it.
+inline constexpr std::uint32_t kMxcsrPrecisionFlag = 1u << 12;
 inline constexpr std::uint32_t kMxcsrRoundingControlShift = 13;
 inline constexpr std::uint32_t kMxcsrRoundingControlMask = 3u << kMxcsrRoundingControlShift;
 

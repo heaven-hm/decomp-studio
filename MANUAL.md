@@ -122,6 +122,48 @@ Expected tail:
 
 ## 4. Command reference
 
+### 4.0 Options, capabilities and UNSUPPORTED
+
+Options are declared once, in `core/cli/options.cpp`, and everything else is
+derived from that table: `--help` is generated from it, the parser validates
+against it, and `capabilities` reports it. Help text and parsing therefore cannot
+disagree.
+
+Every option value is classified as **implemented** or **planned** in
+`core/cli/capabilities.cpp`. The classification is data, not prose, so it is the
+same answer wherever it is asked for.
+
+```
+$ recomp-studio capabilities          # every value, with what is missing for each planned one
+$ recomp-studio capabilities --json   # the same as data
+$ recomp-studio backends list         # source, target and reference backends
+$ recomp-studio detect <image>        # format, runtime, architecture, with the evidence
+$ recomp-studio <command> --explain   # the resolved options and the capability behind each
+```
+
+Three rules, and they are the point of the whole arrangement:
+
+1. An option that is not declared is an **error**, never ignored. A misspelled
+   `--target-arhc` fails; it does not silently run with the default.
+2. A value outside an option's declared set is an **error**, and the error lists
+   the values that are accepted.
+3. A declared value this build does not implement returns **`UNSUPPORTED`** with
+   the reason, and exit code 3 — distinct from a usage error, which is exit code 2.
+   There is no silent fallback and no substitution of a different backend.
+
+```
+$ recomp-studio translate game.exe --output-lang rust --output out/
+error: UNSUPPORTED: --output-lang rust is not supported by this build: only the
+C++ backend exists
+$ echo $?
+3
+```
+
+Options that existed before this table did — `--json`, `--target`, `--config`,
+`--address`, `--budget`, `--agent` — are declared in it too, so commands that have
+worked for several releases keep working unchanged.
+
+
 Every command supports `--json` for machine-readable output. `translate`,
 `build` and `repair` accept `--config <file>`.
 

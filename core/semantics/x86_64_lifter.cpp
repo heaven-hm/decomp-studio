@@ -405,6 +405,9 @@ std::string operand_read_expression(const DecodedInstruction& instruction, const
          std::to_string(width_in_bytes) + ")";
 }
 
+std::string operand_write(ir::Function& output, const DecodedInstruction& instruction, const Operand& operand,
+                          const std::string& value, int width_in_bytes);
+
 std::string operand_write_statement(const DecodedInstruction& instruction, const Operand& operand,
                                     const std::string& value, int width_in_bytes) {
   if (operand.kind == Operand::Kind::Register) {
@@ -415,6 +418,30 @@ std::string operand_write_statement(const DecodedInstruction& instruction, const
   }
   return "store_guest_memory(context, " + effective_address_expression(instruction, operand) + ", " + value +
          ", " + std::to_string(width_in_bytes) + ");";
+}
+
+std::string operand_write(ir::Function& output, const DecodedInstruction& instruction, const Operand& operand,
+                          const std::string& value, int width_in_bytes) {
+  const auto text = operand_write_statement(instruction, operand, value, width_in_bytes);
+  ir::Statement statement;
+  statement.address_of_instruction = instruction.address;
+  if (operand.kind == Operand::Kind::Register) {
+    const auto iterator = register_descriptors().find(operand.register_name);
+    if (iterator == register_descriptors().end())
+      fail_operand(instruction, "write", "'" + operand.register_name + "'");
+    statement.kind = ir::StatementKind::Assign;
+    statement.destination_register = iterator->second.index;
+    statement.destination_width = iterator->second.width_in_bytes;
+    statement.destination_high_byte_offset = iterator->second.high_byte_offset;
+    statement.expression = value;
+  } else {
+    statement.kind = ir::StatementKind::StoreMemory;
+    statement.address = effective_address_expression(instruction, operand);
+    statement.expression = value;
+    statement.width = width_in_bytes;
+  }
+  output.statements.push_back(std::move(statement));
+  return text;
 }
 
 int operand_width(const Operand& operand, int fallback) {
@@ -605,6 +632,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            "(context, " + destination + ", " + std::to_string(operands[1].immediate_value & 0xff) + ");");
       return;
     }
+    // unpcklps/unpckhps interleave dwords and unpcklpd/unpckhpd interleave
+    // qwords, the same operation the punpck family performs at byte and word
+    // granularity. The runtime already implements both, so this is a dispatch
+    // entry rather than new semantics.
+    if ((mnemonic == "unpcklps" || mnemonic == "unpckhps" || mnemonic == "unpcklpd" ||
+         mnemonic == "unpckhpd") &&
+        is_vector_register(operands[1])) {
+      const bool qwords = mnemonic.back() == 'd';
+      const bool high = mnemonic.find('h') != std::string::npos;
+      emit(std::string(qwords ? "vector_unpack_qwords" : "vector_unpack_dwords") + "(context, " + destination +
+           ", " + std::to_string(vector_index(operands[1])) + ", " + (high ? "1" : "0") + ");");
+      return;
+    }
     if ((mnemonic == "punpcklbw" || mnemonic == "punpckhbw" || mnemonic == "punpcklwd" ||
          mnemonic == "punpckhwd") &&
         is_vector_register(operands[1])) {
@@ -647,8 +687,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
   if (mnemonic == "pmovmskb" && operands.size() == 2 && is_vector_register(operands[1])) {
-    emit(operand_write_statement(instruction, operands[0],
-         "vector_move_byte_mask(context, " + std::to_string(vector_index(operands[1])) + ")", 4));
+    operand_write(output, instruction, operands[0],
+         "vector_move_byte_mask(context, " + std::to_string(vector_index(operands[1])) + ")", 4);
     return;
   }
 
@@ -692,16 +732,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
     const int byte_count = mnemonic == "movd" ? 4 : 8;
     if (is_vector_register(operands[0])) {
+      // A vector source is not a general register: reading it as one throws, and
+      // `movq xmm0, xmm3` moves the low 64 bits of the source, which is exactly
+      // what vector_get_low returns.
       const auto value = operands[1].kind == discovery::Operand::Kind::Memory
           ? "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", " +
                 std::to_string(byte_count) + ")"
-          : operand_read_expression(instruction, operands[1], byte_count);
+          : is_vector_register(operands[1])
+              ? "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                    std::to_string(byte_count) + ")"
+              : operand_read_expression(instruction, operands[1], byte_count);
       emit("vector_set_low(context, " + std::to_string(vector_index(operands[0])) + ", " + value + ", " +
            std::to_string(byte_count) + ");");
     } else {
-      emit(operand_write_statement(instruction, operands[0],
+      operand_write(output, instruction, operands[0],
            "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", " +
-               std::to_string(byte_count) + ")", byte_count));
+               std::to_string(byte_count) + ")", byte_count);
     }
     return;
   }
@@ -828,7 +874,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
 
   if (mnemonic == "mov" || mnemonic == "movabs") {
     const auto width = operand_width(operands[0], 8);
-    emit(operand_write_statement(instruction, operands[0], operand_read_expression(instruction, operands[1], width), width));
+    operand_write(output, instruction, operands[0], operand_read_expression(instruction, operands[1], width), width);
     return;
   }
   if (mnemonic == "movzx") {
@@ -838,7 +884,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     const auto widened = source_width == 1
         ? "static_cast<std::uint64_t>(static_cast<std::uint8_t>(" + source + "))"
         : "static_cast<std::uint64_t>(static_cast<std::uint16_t>(" + source + "))";
-    emit(operand_write_statement(instruction, operands[0], widened, destination_width));
+    operand_write(output, instruction, operands[0], widened, destination_width);
     return;
   }
   if (mnemonic == "movsx" || mnemonic == "movsxd") {
@@ -850,12 +896,12 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         : source_width == 2
             ? "static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int16_t>(" + source + ")))"
             : "static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(" + source + ")))";
-    emit(operand_write_statement(instruction, operands[0], widened, destination_width));
+    operand_write(output, instruction, operands[0], widened, destination_width);
     return;
   }
   if (mnemonic == "lea") {
     const auto width = operand_width(operands[0], 8);
-    emit(operand_write_statement(instruction, operands[0], effective_address_expression(instruction, operands[1]), width));
+    operand_write(output, instruction, operands[0], effective_address_expression(instruction, operands[1]), width);
     return;
   }
   if (mnemonic == "xchg") {
@@ -870,11 +916,11 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
 
   if (arithmetic_helpers().count(mnemonic) != 0 && operands.size() == 2) {
     const auto width = operand_width(operands[1], 8);
-    emit(operand_write_statement(
+    operand_write(output,
         instruction, operands[0],
         arithmetic_helpers().at(mnemonic) + "(context, " + operand_read_expression(instruction, operands[0], width) +
             ", " + operand_read_expression(instruction, operands[1], width) + ", " + std::to_string(width) + ")",
-        width));
+        width);
     return;
   }
   if (mnemonic == "cmp") {
@@ -899,29 +945,29 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         ? helper + "(" + operand_read_expression(instruction, operands[0], width) + ", " + std::to_string(width) + ")"
         : helper + "(context, " + operand_read_expression(instruction, operands[0], width) + ", " +
               std::to_string(width) + ")";
-    emit(operand_write_statement(instruction, operands[0], call, width));
+    operand_write(output, instruction, operands[0], call, width);
     return;
   }
 
   if ((mnemonic == "shrd" || mnemonic == "shld") && operands.size() == 3) {
     const auto width = operand_width(operands[0], 8);
     const std::string helper = mnemonic == "shrd" ? "shift_right_double" : "shift_left_double";
-    emit(operand_write_statement(instruction, operands[0],
+    operand_write(output, instruction, operands[0],
                                  helper + "(context, " + operand_read_expression(instruction, operands[0], width) +
                                      ", " + operand_read_expression(instruction, operands[1], width) + ", " +
                                      operand_read_expression(instruction, operands[2], 1) + ", " +
                                      std::to_string(width) + ")",
-                                 width));
+                                 width);
     return;
   }
   if (shift_helpers().count(mnemonic) != 0) {
     const auto width = operand_width(operands[0], 8);
     const auto count = operands.size() > 1 ? operand_read_expression(instruction, operands[1], 1) : "1ull";
-    emit(operand_write_statement(instruction, operands[0],
+    operand_write(output, instruction, operands[0],
                                  shift_helpers().at(mnemonic) + "(context, " +
                                      operand_read_expression(instruction, operands[0], width) + ", " + count + ", " +
                                      std::to_string(width) + ")",
-                                 width));
+                                 width);
     return;
   }
 
@@ -934,20 +980,20 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     const auto width = operand_width(operands[0], 8);
     if (operands.size() == 2) {
-      emit(operand_write_statement(instruction, operands[0],
+      operand_write(output, instruction, operands[0],
                                    "signed_multiply_two(context, " +
                                        operand_read_expression(instruction, operands[0], width) + ", " +
                                        operand_read_expression(instruction, operands[1], width) + ", " +
                                        std::to_string(width) + ")",
-                                   width));
+                                   width);
       return;
     }
-    emit(operand_write_statement(instruction, operands[0],
+    operand_write(output, instruction, operands[0],
                                  "signed_multiply_two(context, " +
                                      operand_read_expression(instruction, operands[1], width) + ", " +
                                      operand_read_expression(instruction, operands[2], width) + ", " +
                                      std::to_string(width) + ")",
-                                 width));
+                                 width);
     return;
   }
   if (mnemonic == "mul") {
@@ -971,9 +1017,9 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // TZCNT: trailing zero count, defined for zero input.
   if (mnemonic == "tzcnt" && operands.size() == 2) {
     const auto width = operand_width(operands[0], 8);
-    emit(operand_write_statement(instruction, operands[0],
+    operand_write(output, instruction, operands[0],
          "count_trailing_zeros(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
-             std::to_string(width) + ")", width));
+             std::to_string(width) + ")", width);
     return;
   }
   if (mnemonic == "cdq") {
@@ -1031,7 +1077,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     const auto width = operand_width(operands[0], 8);
     const auto value = width >= 8 ? "pop_guest_stack(context)"
                                   : "static_cast<std::uint32_t>(pop_guest_stack(context))";
-    emit(operand_write_statement(instruction, operands[0], value, width));
+    operand_write(output, instruction, operands[0], value, width);
     return;
   }
   if (mnemonic == "leave") {
@@ -1041,9 +1087,9 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
 
   if (mnemonic.rfind("set", 0) == 0 && condition_codes().count(mnemonic.substr(3)) != 0) {
-    emit(operand_write_statement(instruction, operands[0],
+    operand_write(output, instruction, operands[0],
                                  "evaluate_condition(context, " + condition_codes().at(mnemonic.substr(3)) + ")",
-                                 1));
+                                 1);
     return;
   }
   if (mnemonic.rfind("cmov", 0) == 0 && condition_codes().count(mnemonic.substr(4)) != 0) {
@@ -1271,8 +1317,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     const auto source = operands[1].kind == discovery::Operand::Kind::Memory
         ? "load_guest_float(context, " + effective_address_expression(instruction, operands[1]) + ")"
         : "vector_get_float(context, " + std::to_string(vector_index(operands[1])) + ")";
-    emit(operand_write_statement(instruction, operands[0],
-         "static_cast<std::uint64_t>(static_cast<std::int64_t>(" + source + "))", width));
+    operand_write(output, instruction, operands[0],
+         "static_cast<std::uint64_t>(static_cast<std::int64_t>(" + source + "))", width);
     return;
   }
   if (mnemonic == "cvttsd2si" && operands.size() == 2) {
@@ -1280,8 +1326,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     const auto source = operands[1].kind == discovery::Operand::Kind::Memory
         ? "load_guest_double(context, " + effective_address_expression(instruction, operands[1]) + ")"
         : "vector_get_double(context, " + std::to_string(vector_index(operands[1])) + ")";
-    emit(operand_write_statement(instruction, operands[0],
-         "static_cast<std::uint64_t>(static_cast<std::int64_t>(" + source + "))", width));
+    operand_write(output, instruction, operands[0],
+         "static_cast<std::uint64_t>(static_cast<std::int64_t>(" + source + "))", width);
     return;
   }
   if (mnemonic == "cvtsd2ss" && operands.size() == 2 && is_vector_register(operands[0])) {
@@ -1297,13 +1343,13 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if ((mnemonic == "bsr" || mnemonic == "bsf") && operands.size() == 2) {
     const auto width = operand_width(operands[0], 8);
     if (mnemonic == "bsr") {
-      emit(operand_write_statement(instruction, operands[0],
+      operand_write(output, instruction, operands[0],
            "bit_scan_reverse(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
-               std::to_string(width) + ")", width));
+               std::to_string(width) + ")", width);
     } else {
-      emit(operand_write_statement(instruction, operands[0],
+      operand_write(output, instruction, operands[0],
            "bit_scan_forward(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
-               std::to_string(width) + ")", width));
+               std::to_string(width) + ")", width);
     }
     return;
   }
@@ -1618,9 +1664,9 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
        mnemonic == "lgs") &&
       operands.size() == 2 && operands[1].kind == discovery::Operand::Kind::Memory) {
     const auto width = operand_width(operands[0], 4);
-    emit(operand_write_statement(instruction, operands[0],
+    operand_write(output, instruction, operands[0],
          "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", " +
-             std::to_string(width) + ")", width));
+             std::to_string(width) + ")", width);
     return;
   }
   // Instructions this recompiler does not model and that a flat 32-bit user-mode
@@ -1738,8 +1784,18 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
       label.address_of_instruction = address;
       lifted.statements.push_back(std::move(label));
     }
-    lifted.statements.push_back(ir::Statement::verbatim(
-        "trace_instruction(context, " + format_hex(address) + "); // " + instruction.text, address));
+    {
+      // 48% of the generated statements are this line and its content is a fixed
+      // template, so it is the highest-value single migration. The address and the
+      // disassembly are kept as separate fields rather than as pre-joined text, so
+      // a backend is not required to reproduce the C++ spelling.
+      ir::Statement trace;
+      trace.kind = ir::StatementKind::Trace;
+      trace.instruction_address = format_hex(address);
+      trace.text = instruction.text;
+      trace.address_of_instruction = address;
+      lifted.statements.push_back(std::move(trace));
+    }
     emit_instruction(instruction, function, lifted);
   }
   {

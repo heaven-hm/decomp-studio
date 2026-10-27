@@ -10,7 +10,7 @@ int main() {
   if (!map_guest_memory(kGuestAddressSpaceBytes)) return 1;
   for (const int width : {4, 8}) {
     guest_pointer_width = width;
-    initialize_guest_state(0x100000, 0x70000000);
+    initialize_guest_state(0x400000, 0x100000, 0x70000000);
     GuestContext context{};
     if (!invoke_shared_shim(&context, "kernel32.dll", "GetCommandLineA")) return 2;
     const auto command = context.registers[0];

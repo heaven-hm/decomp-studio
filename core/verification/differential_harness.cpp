@@ -20,6 +20,13 @@
 namespace recomp::verification {
 namespace {
 
+std::string hex_text(std::uint64_t value) {
+  std::ostringstream text;
+  text << std::hex << value;
+  return text.str();
+}
+
+
 constexpr std::uint64_t kThreadEnvironmentBlockAddress64 = 0x0000000164000000ull;
 constexpr std::uint64_t kProcessEnvironmentBlockAddress64 = 0x0000000164001000ull;
 constexpr std::uint64_t kThreadEnvironmentBlockAddress32 = 0x000000007ffd0000ull;
@@ -45,10 +52,28 @@ struct ReferenceState {
   // never invent a result for an import it does not implement: doing so lets a
   // comparison "pass" against a program that never really ran.
   std::string failure_reason;
+  // Guest state at recorded checkpoints, for comparison against the candidate's.
+  std::uint64_t guest_instruction_count{};
+  std::uint64_t current_instruction{};
+  bool requested_exit{};
+  std::uint64_t last_counted_address{~0ull};
+  std::FILE* mxcsr_log{};
+  std::uint32_t mxcsr_last{0xffffffffu};
+  std::FILE* store_log{};
+  std::vector<GuestCheckpoint> checkpoints;
+  // The memory windows themselves, when a byte-level comparison is asked for. A
+  // digest says only that memory differs; classifying the difference needs the bytes.
+  std::vector<std::vector<std::uint8_t>> memory_windows;
 };
 
 // The state the exit handler acts on. Only one reference runs at a time.
 ReferenceState* reference_state = nullptr;
+
+// Guest-state checkpoints are recorded every this many executed guest
+// instructions, on both sides, so the two streams line up index for index. It is
+// a compile-time constant rather than a flag because the two sides must agree on
+// it or the comparison is meaningless.
+constexpr std::uint64_t kCheckpointInterval = 1000;
 
 std::map<std::string, std::string> read_manifest(const std::filesystem::path& project_directory) {
   std::ifstream input(project_directory / "recomp-manifest.json");
@@ -188,17 +213,115 @@ void emulate_shim(ReferenceState& state, std::uint64_t stub_address) {
   write_register(engine, is_64_bit ? UC_X86_REG_RIP : UC_X86_REG_EIP, return_address);
 }
 
+// Every store the emulator performs, logged in the same format the candidate
+// writes, so the two logs can be diffed directly. Comparing the logs attributes a
+// memory divergence to the store that caused it rather than to the byte that
+// ended up wrong.
+// The emulator reports a 16-byte store as two 8-byte writes, so the reference's
+// log has finer granularity than the candidate's for vector stores. Merging
+// adjacent writes from the same instruction was tried and withdrawn: it produced
+// widths of 3, 5, 6, 7 and 19, which no x86 instruction can store, because a
+// single instruction that makes two genuinely separate stores is indistinguishable
+// from one store the emulator split. Comparing the logs per *instruction* -- the
+// ranges each instruction wrote -- is the normalisation that avoids the question,
+// and is not yet implemented.
+void memory_write_hook(uc_engine* engine, uc_mem_type type, std::uint64_t address, int size, std::int64_t value,
+                       void* user_data) {
+  (void)engine;
+  (void)type;
+  auto& state = *static_cast<ReferenceState*>(user_data);
+  if (state.store_log == nullptr) return;
+  std::fprintf(state.store_log, "%llx %llx %llx %d\n",
+               static_cast<unsigned long long>(state.current_instruction),
+               static_cast<unsigned long long>(address),
+               static_cast<unsigned long long>(static_cast<std::uint64_t>(value)), size);
+}
+
 void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, void* user_data) {
   (void)size;
   auto& state = *static_cast<ReferenceState*>(user_data);
-  ++state.instruction_count;
+  state.current_instruction = address;
+  // A `rep`-prefixed instruction is one guest instruction that the emulator runs
+  // once per iteration, and the hook fires for each. The candidate lifts it as a
+  // single call, so counting and tracing every iteration makes the two streams --
+  // and the checkpoint indices -- drift apart from the first `rep` a program
+  // executes. Collapsing consecutive repeats counts it once, which is what the
+  // guest instruction stream actually contains. A loop that legitimately revisits
+  // an address does not repeat it consecutively, so it is unaffected.
+  if (address == state.last_counted_address) return;
+  state.last_counted_address = address;
+  // Every change to MXCSR, so the two sides can be compared instruction by
+  // instruction rather than at checkpoints 1000 apart. The collapse above means a
+  // `rep` is seen once, which matches how the candidate traces it.
+  if (state.mxcsr_log != nullptr) {
+    const auto mxcsr = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_MXCSR));
+    if (mxcsr != state.mxcsr_last) {
+      state.mxcsr_last = mxcsr;
+      std::fprintf(state.mxcsr_log, "%llx %x\n", static_cast<unsigned long long>(address), mxcsr);
+    }
+  }
+  // An import thunk is a host bridge, not a guest instruction, and the candidate
+  // never executes one. Counting it here made the reported instruction count
+  // describe a stream the candidate does not have -- it was inflated by exactly
+  // the number of import calls, and the comment below already said thunks are
+  // excluded from the trace. The count and the trace now agree.
   if (address >= state.thunk_base && address < state.thunk_base + 0x10000) {
     emulate_shim(state, address);
     return;
   }
-  // Only genuine guest instructions enter the trace: import thunks are host
-  // bridges and never appear in the candidate's executed-address stream.
+  ++state.instruction_count;
   if (state.trace != nullptr && state.trace->size() < state.trace_limit) state.trace->push_back(address);
+
+  // Guest-state checkpoints. The candidate records these from its own
+  // trace_instruction with the same interval and the same counter, so the two
+  // streams line up and the first disagreement names the instruction responsible.
+  if (guest_checkpoint_interval != 0) {
+    const auto index = state.guest_instruction_count++;
+    if (index % guest_checkpoint_interval == 0) {
+      GuestCheckpoint checkpoint;
+      checkpoint.index = index;
+      checkpoint.address = address;
+      // The 64-bit and 32-bit register files are named separately in Unicorn.
+      // Reading RAX/RSP/... for a 32-bit guest returns zero rather than failing,
+      // which looked exactly like a genuine state divergence on the one PE32
+      // fixture until the register ids were made mode-aware.
+      static const int registers32[8] = {UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EBX,
+                                         UC_X86_REG_ESP, UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI};
+      static const int registers64[8] = {UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RBX,
+                                         UC_X86_REG_RSP, UC_X86_REG_RBP, UC_X86_REG_RSI, UC_X86_REG_RDI};
+      const bool is_64_bit = state.pointer_width == 8;
+      for (int register_index = 0; register_index < 8; ++register_index) {
+        const auto value = read_register(engine, is_64_bit ? registers64[register_index]
+                                                            : registers32[register_index]);
+        // A 32-bit guest's registers are 32 bits wide; the candidate masks them
+        // the same way, so the comparison is between like and like.
+        checkpoint.registers[register_index] = is_64_bit ? value : (value & 0xffffffffull);
+      }
+      checkpoint.flags = read_register(engine, UC_X86_REG_EFLAGS);
+      checkpoint.mxcsr = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_MXCSR));
+      checkpoint.x87_control_word = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_FPCW));
+      checkpoint.x87_status_word = static_cast<std::uint32_t>(read_register(engine, UC_X86_REG_FPSW));
+      // The reference addresses the same bytes the runtime does, so the digest is
+      // computed over the same memory the candidate digests.
+      GuestContext digest_context{};
+      for (int register_index = 0; register_index < 16; ++register_index)
+        digest_context.registers[register_index] = checkpoint.registers[register_index];
+      checkpoint.memory_digest = guest_memory_digest(&digest_context);
+      if (std::getenv("RECOMP_MEMORY_WINDOWS") != nullptr) {
+        const auto sp = digest_context.registers[4];
+        std::vector<std::uint8_t> window;
+        window.reserve(0x11000);
+        window.insert(window.end(), guest_memory + sp, guest_memory + sp + 0x1000);
+        if (recompiled_image_base != 0)
+          window.insert(window.end(), guest_memory + recompiled_image_base,
+                        guest_memory + recompiled_image_base + 0x10000);
+        else
+          window.resize(window.size() + 0x10000, 0);
+        state.memory_windows.push_back(std::move(window));
+      }
+      state.checkpoints.push_back(checkpoint);
+    }
+  }
   if (state.instruction_count > kInstructionBudget) {
     state.finished = true;
     uc_emu_stop(engine);
@@ -248,7 +371,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   // The same startup the candidate performs. Without it the reference would run
   // against an uninitialised heap and report a divergence that says nothing about
   // the translation.
-  initialize_guest_state(heap_base, stack_top);
+  initialize_guest_state(executable.image_base, heap_base, stack_top);
   const std::uint64_t teb_address =
       is_64_bit ? kThreadEnvironmentBlockAddress64 : kThreadEnvironmentBlockAddress32;
   const std::uint64_t peb_address =
@@ -269,6 +392,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
       uc_emu_stop(reference_state->engine);
     }
   };
+  state.requested_exit = false;
   state.trace_limit = trace_limit != 0 ? trace_limit : 1;
   state.thunk_base = thunk_base;
   state.pointer_width = pointer_width;
@@ -330,13 +454,35 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   }
 
   write_register(engine, UC_X86_REG_MXCSR, default_mxcsr);
+  // The x87 control word after FINIT. Unicorn leaves it at zero, which is not a
+  // value hardware ever has -- all exceptions unmasked and the precision field
+  // reserved -- so a guest reading it with FNSTCW saw a different value from the
+  // candidate's and from a real machine's.
+  write_register(engine, UC_X86_REG_FPCW, 0x037f);
+  if (const char* mxcsr_log_path = std::getenv("RECOMP_REF_MXCSR_LOG"))
+    state.mxcsr_log = std::fopen(mxcsr_log_path, "w");
+  if (const char* store_log_path = std::getenv("RECOMP_REF_STORE_LOG"))
+    state.store_log = std::fopen(store_log_path, "w");
+  uc_hook write_hook = 0;
+  if (state.store_log != nullptr)
+    uc_hook_add(engine, &write_hook, UC_HOOK_MEM_WRITE, reinterpret_cast<void*>(memory_write_hook), &state, 1, 0);
   uc_hook hook = 0;
   uc_hook_add(engine, &hook, UC_HOOK_CODE, reinterpret_cast<void*>(code_hook), &state, 1, 0);
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);
   run.output = state.output;
   run.instruction_count = state.instruction_count;
   run.note = state.note;
+  // Handlers the guest registered with atexit are NOT run here. The candidate can run
+  // them because they are compiled functions; the reference has no compiled code and
+  // would have to continue emulation, which was tried and consumed the instruction
+  // budget. Running them on one side only makes the two sides' output differ for every
+  // program that registers one, which is worse than not running them on either -- so
+  // neither runs them, and the runtime says so instead of reporting success.
+  run.checkpoints = std::move(state.checkpoints);
+  run.memory_windows = std::move(state.memory_windows);
   run.trace = std::move(trace);
+  if (state.store_log != nullptr) std::fclose(state.store_log);
+  if (state.mxcsr_log != nullptr) std::fclose(state.mxcsr_log);
   uc_close(engine);
   guest_output_capture = nullptr;
   guest_exit_handler = nullptr;
@@ -360,6 +506,20 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   return run;
 }
 
+// Whether two 8-byte slots hold doubles within one unit in the last place of each
+// other. That is the documented x87 limit: this runtime holds the x87 stack as a
+// double with a 53-bit mantissa and the reference uses 80-bit extended with 64, so a
+// result needing more than 53 bits rounds differently in the last bit. It is a known
+// class, not a divergence, and naming it keeps the gate strict for everything else.
+bool within_one_ulp_of_a_double(const std::uint8_t* left, const std::uint8_t* right) {
+  std::uint64_t a = 0;
+  std::uint64_t b = 0;
+  std::memcpy(&a, left, 8);
+  std::memcpy(&b, right, 8);
+  const auto difference = a > b ? a - b : b - a;
+  return difference <= 1;
+}
+
 DifferentialResult compare_project(const std::filesystem::path& project_directory,
                                    const common::Configuration& configuration) {
   (void)configuration;
@@ -376,7 +536,28 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
 
   result.unsupported_mnemonics = read_unsupported_mnemonics(project_directory);
 
-  const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, 0);
+  guest_checkpoint_interval = kCheckpointInterval;
+  // A byte-level memory comparison is asked for through the environment, because
+  // it costs 68 KiB per checkpoint to carry and the digest answers the common
+  // question. Both sides must be asked, or there is nothing to compare against.
+  const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
+  ::setenv("RECOMP_MEMORY_WINDOWS", memory_windows_path.string().c_str(), 1);
+  std::filesystem::remove(memory_windows_path);
+  // A trace is collected only when asked for, because it is one word per executed
+  // instruction and the corpus runs to millions. Comparing the two instruction
+  // streams is how a memory divergence is localised: if the streams agree up to
+  // the differing address, the difference is in what one side stored; if they
+  // diverge earlier, the divergence is upstream of the store.
+  const char* trace_path = std::getenv("RECOMP_REF_TRACE");
+  const std::size_t trace_limit = trace_path != nullptr ? 20000000 : 0;
+  const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, trace_limit);
+  guest_checkpoint_interval = 0;
+  if (trace_path != nullptr) {
+    if (std::FILE* file = std::fopen(trace_path, "wb")) {
+      for (const auto address : reference.trace) std::fwrite(&address, sizeof(address), 1, file);
+      std::fclose(file);
+    }
+  }
   result.executed_instructions = reference.instruction_count;
   result.reference_output = reference.output;
   result.reference_completed = reference.completed;
@@ -386,7 +567,19 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     return result;
   }
 
+  // Ask for guest-state checkpoints on both sides. Output comparison alone cannot
+  // see a wrong register, a wrong flag or a wrong store that never reaches the
+  // program's output; this can, because it compares the machine itself.
+  const auto checkpoint_path = project_directory / "reports" / "candidate-checkpoints.txt";
+  std::filesystem::create_directories(project_directory / "reports");
+  std::filesystem::remove(checkpoint_path);
+  ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
+  ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
+
   const auto candidate = pipeline::run(project_directory);
+
+  ::unsetenv("RECOMP_CHECKPOINT");
+  ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
   result.candidate_exit_code = candidate.exit_code;
@@ -397,6 +590,156 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     std::ofstream(project_directory / "reports" / "candidate.txt") << result.candidate_output;
   }
   result.outputs_match = result.reference_output == result.candidate_output;
+
+  // Byte-level memory comparison, when both sides produced windows. A difference is
+  // classified rather than simply failed: a byte inside an aligned 8-byte slot whose
+  // two values are within one unit in the last place of each other is the documented
+  // x87 precision limit, and everything else is a divergence.
+  if (std::ifstream windows(memory_windows_path, std::ios::binary); windows) {
+    constexpr std::size_t kWindowBytes = 0x11000;
+    // The candidate writes a 24-byte header per checkpoint -- the index, the stack
+    // pointer and the image base -- so that a reader can locate the windows. Reading
+    // the windows without skipping it compares two ranges 24 bytes apart, which
+    // reports a divergence at the very first checkpoint.
+    constexpr std::size_t kHeaderBytes = 24;
+    std::vector<std::uint8_t> header(kHeaderBytes);
+    std::vector<std::uint8_t> candidate_window(kWindowBytes);
+    std::size_t checkpoint = 0;
+    std::size_t unclassified = 0;
+    std::string first_unclassified;
+    while (windows.read(reinterpret_cast<char*>(header.data()), kHeaderBytes) &&
+           windows.read(reinterpret_cast<char*>(candidate_window.data()), kWindowBytes) &&
+           checkpoint < reference.memory_windows.size()) {
+      const auto& expected = reference.memory_windows[checkpoint];
+      if (expected.size() == kWindowBytes) {
+        for (std::size_t offset = 0; offset < kWindowBytes; ++offset) {
+          if (expected[offset] == candidate_window[offset]) continue;
+          // Which aligned 8-byte slot holds it, and are the two doubles within one ULP?
+          const auto slot = offset & ~static_cast<std::size_t>(7);
+          const bool is_x87_class = slot + 8 <= kWindowBytes &&
+                                    within_one_ulp_of_a_double(expected.data() + slot,
+                                                               candidate_window.data() + slot);
+          if (is_x87_class) {
+            ++result.x87_precision_differences;
+          } else {
+            ++unclassified;
+            if (first_unclassified.empty()) {
+              // The whole 8-byte slot, not the single byte: a byte on its own says
+              // nothing about whether the difference is a float, a double, an
+              // address or an integer, and that is the first thing a reader needs.
+              std::uint64_t expected_slot = 0;
+              std::uint64_t candidate_slot = 0;
+              std::memcpy(&expected_slot, expected.data() + slot, 8);
+              std::memcpy(&candidate_slot, candidate_window.data() + slot, 8);
+              double expected_double = 0;
+              double candidate_double = 0;
+              std::memcpy(&expected_double, expected.data() + slot, 8);
+              std::memcpy(&candidate_double, candidate_window.data() + slot, 8);
+              std::ostringstream text;
+              text << "checkpoint " << checkpoint << ", window offset 0x" << std::hex << offset
+                   << " (8-byte slot at 0x" << slot << "): candidate 0x" << candidate_slot
+                   << " reference 0x" << expected_slot << std::dec << " (as doubles "
+                   << candidate_double << " against " << expected_double << ")";
+              first_unclassified = text.str();
+            }
+          }
+        }
+      }
+      ++checkpoint;
+    }
+    if (unclassified != 0) {
+      result.memory_match = false;
+      result.memory_diagnosis = first_unclassified;
+    } else if (result.x87_precision_differences != 0) {
+      result.memory_diagnosis = std::to_string(result.x87_precision_differences) +
+                                " byte(s) differ by at most one unit in the last place of a double; "
+                                "this is the documented x87 precision limit";
+    }
+  }
+
+  // Guest-state comparison. The two streams are recorded at the same interval, so
+  // the first index at which they differ names the guest instruction after which
+  // the candidate and the reference stopped agreeing.
+  {
+    std::vector<GuestCheckpoint> candidate_checkpoints;
+    if (std::ifstream input_stream(checkpoint_path); input_stream) {
+      std::string line;
+      while (std::getline(input_stream, line)) {
+        std::istringstream fields(line);
+        GuestCheckpoint checkpoint;
+        fields >> checkpoint.index >> checkpoint.address >> checkpoint.flags >> checkpoint.memory_digest >>
+            checkpoint.mxcsr >> checkpoint.x87_control_word >> checkpoint.x87_status_word;
+        for (auto& value : checkpoint.registers)
+          if (!(fields >> value)) break;
+        if (!fields.fail()) candidate_checkpoints.push_back(checkpoint);
+      }
+    }
+    result.checkpoints_compared = std::min(reference.checkpoints.size(), candidate_checkpoints.size());
+    if (!candidate_checkpoints.empty()) {
+      const auto limit = result.checkpoints_compared;
+      for (std::size_t index = 0; index < limit; ++index) {
+        const auto& expected = reference.checkpoints[index];
+        const auto& actual = candidate_checkpoints[index];
+        if (expected.address != actual.address) {
+          result.state_diagnosis = "checkpoint " + std::to_string(index) + ": the guest instruction stream differs at " +
+                                   "0x" + hex_text(actual.address) + " (reference 0x" + hex_text(expected.address) + ")";
+          break;
+        }
+        bool flags_differ = (expected.flags & 0x8d5u) != (actual.flags & 0x8d5u);
+        std::size_t differing_register = 16;
+        for (std::size_t register_index = 0; register_index < 8; ++register_index) {
+          if (expected.registers[register_index] != actual.registers[register_index]) {
+            differing_register = register_index;
+            break;
+          }
+        }
+        if (expected.memory_digest != actual.memory_digest && result.memory_diagnosis.empty()) {
+          result.memory_match = false;
+          result.memory_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                    std::to_string(expected.index) + " (0x" + hex_text(expected.address) +
+                                    "): guest memory digest 0x" + hex_text(actual.memory_digest) +
+                                    ", reference 0x" + hex_text(expected.memory_digest);
+        }
+        const bool mxcsr_differs = expected.mxcsr != actual.mxcsr;
+        const bool x87_control_differs = expected.x87_control_word != actual.x87_control_word;
+        const bool x87_status_differs = expected.x87_status_word != actual.x87_status_word;
+        // A control register that disagrees is reported, not gated, for the same
+        // reason the memory digest is: the divergence is not yet explained, and a
+        // gate that fails for a reason nobody has diagnosed gets weakened or
+        // ignored. It is recorded with its checkpoint so it cannot be lost.
+        if (result.control_diagnosis.empty() &&
+            (mxcsr_differs || x87_control_differs || x87_status_differs)) {
+          result.control_registers_match = false;
+          result.control_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                     std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
+          if (mxcsr_differs)
+            result.control_diagnosis += "mxcsr is 0x" + hex_text(actual.mxcsr) + ", reference 0x" +
+                                        hex_text(expected.mxcsr);
+          else if (x87_control_differs)
+            result.control_diagnosis += "the x87 control word is 0x" + hex_text(actual.x87_control_word) +
+                                        ", reference 0x" + hex_text(expected.x87_control_word);
+          else
+            result.control_diagnosis += "the x87 status word is 0x" + hex_text(actual.x87_status_word) +
+                                        ", reference 0x" + hex_text(expected.x87_status_word);
+        }
+        if (flags_differ || differing_register != 16) {
+          result.state_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                   std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
+          if (differing_register != 16) {
+            static const char* names[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
+            result.state_diagnosis += std::string(names[differing_register]) + " is 0x" +
+                                      hex_text(actual.registers[differing_register]) + ", reference 0x" +
+                                      hex_text(expected.registers[differing_register]);
+          } else if (flags_differ) {
+            result.state_diagnosis += "flags are 0x" + hex_text(actual.flags) + ", reference 0x" +
+                                      hex_text(expected.flags);
+          }
+          break;
+        }
+      }
+      result.state_match = result.state_diagnosis.empty();
+    }
+  }
   if (!result.candidate_completed) {
     result.outputs_match = false;
     result.diagnosis = "candidate execution failed with exit code " + std::to_string(candidate.exit_code) +

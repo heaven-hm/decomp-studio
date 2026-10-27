@@ -121,10 +121,46 @@ recomp-studio verify    <project>                 Differential verification agai
 recomp-studio repair    <image> --output <dir>    Autonomous translate/build/verify/diagnose/repair loop
 recomp-studio report    <project>                 Generated project manifest
 recomp-studio examples  list                      Bundled example profiles
+recomp-studio capabilities                        Supported and planned capabilities
+recomp-studio detect    <image>                   OS, CPU, binary format and runtime, with evidence
+recomp-studio backends  list                      Registered source, target and reference backends
 ```
 
 Every command accepts `--json` for automation. `translate`, `build` and `repair`
 accept `--config <file>`.
+
+### Options
+
+`recomp-studio --help` prints the full option table, and it is **generated from the
+same declarations the parser validates against**, so an option cannot be documented
+and not accepted, or accepted and not documented. The groups are `--source-os`,
+`--source-arch`, `--source-lang`, `--target-os`, `--target-arch`, `--output-lang`,
+`--mode`, `--fidelity`, `--runtime`, `--emit`, `--optimize`, `--output`, `--verify`,
+`--reference`, `--checkpoints`, `--trace`, `--seed`, `--timeout`, `--source-style`,
+`--recover-types`, `--recover-symbols`, `--preserve-metadata`, `--buildrun`,
+`--repair`, `--dry-run`, `--explain` and `--report-format`.
+
+Three rules are enforced rather than intended:
+
+- An option that is not declared is an **error**, never ignored.
+- A value outside an option's declared set is an **error**, never defaulted.
+- A declared value this build does not implement returns **`UNSUPPORTED`**, naming
+  the option, the value and what is missing — never a silent fallback, and never a
+  report of something unimplemented as supported.
+
+```
+$ recomp-studio translate game.exe --target-os linux --output out/
+error: UNSUPPORTED: --target-os linux is not supported by this build: the target
+triple is declared but the generated project does not build for it
+
+$ recomp-studio capabilities
+80 declared, 36 implemented, 44 planned
+```
+
+`recomp-studio capabilities` lists every declared value with its support state and,
+for a planned one, what is missing. `recomp-studio capabilities --json` returns the
+same as data. `--explain` on any command prints the resolved options — unset ones
+showing their declared default — and the capability behind each choice.
 
 ## Configuration
 

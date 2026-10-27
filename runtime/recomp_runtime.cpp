@@ -127,12 +127,25 @@ void invoke_import_thunk(GuestContext* context, long index, std::uint64_t return
   if (push_return)
     push_guest_stack(context, return_address);
   current_thunk_index = static_cast<std::size_t>(index);
+  // The thunk table calls the shim directly, so the shim marker has to be set
+  // here as well as around invoke_win32_import.
+  guest_in_shim = true;
   import_thunk_functions[static_cast<std::size_t>(index)](context);
+  guest_in_shim = false;
   if (guest_pointer_width < 8) {
     context->registers[4] = mask_guest_address(
         context->registers[4] +
         win32_import_stack_cleanup(import_thunk_libraries[static_cast<std::size_t>(index)].c_str(),
                                    import_thunk_symbols[static_cast<std::size_t>(index)].c_str()));
+  } else if (push_return) {
+    // On x86-64 the arguments are in registers, so the return address is the only
+    // thing a `call` moves and the only thing the shim's `ret` removes. Popping it
+    // leaves the stack pointer exactly where it was, but the push above has now
+    // written the return address to memory the way hardware does -- which is what
+    // the differential reference sees, and what a program that reads its own
+    // stack expects. Skipping the write made the two sides disagree about a slot
+    // that later falls above the stack pointer and becomes live.
+    (void)pop_guest_stack(context);
   }
 }
 
@@ -282,15 +295,22 @@ void win32_write_file(GuestContext* context) {
   const auto written_pointer = import_argument(context, 3);
   if (buffer + length > guest_memory_size) { set_import_result(context, 0); return; }
   const auto descriptor = standard_handle_to_descriptor(handle);
+  // The count reported back is what the host accepted, not what was requested.
+  // Reporting the requested length made a short write -- a full disk, a closed
+  // descriptor -- look like success, and a program that trusts the count would
+  // believe data had been written that had not.
   std::uint64_t written = 0;
   while (written < length) {
-    write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written), static_cast<std::size_t>(length - written));
-    const auto count = static_cast<ssize_t>(length - written);
-    if (count <= 0) break;
-    written += static_cast<std::uint64_t>(count);
+    const auto accepted = write_guest_output(
+        descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written),
+        static_cast<std::size_t>(length - written));
+    if (accepted <= 0) break;
+    written += static_cast<std::uint64_t>(accepted);
   }
   if (written_pointer != 0) store_guest_memory(context, written_pointer, written, 4);
-  set_import_result(context, 1);
+  // WriteFile succeeds when it wrote something; a partial write is still a
+  // success with a short count, which is what the API specifies.
+  set_import_result(context, written != 0 ? 1 : 0);
 }
 void win32_read_file(GuestContext* context) {
   const auto handle = import_argument(context, 0);
@@ -1122,15 +1142,15 @@ void msvcrt_puts(GuestContext* context) {
     text.push_back(byte);
   }
   text.push_back('\n');
-  write_guest_output(1, text.data(), text.size());
-  set_import_result(context, text.size());
+  const auto written = write_guest_output(STDOUT_FILENO, text.data(), text.size());
+  set_import_result(context, written < 0 ? static_cast<std::uint64_t>(-1) : 0);
 }
 
 void msvcrt_putchar(GuestContext* context) {
   const auto character = static_cast<unsigned char>(import_argument(context, 0));
   const char byte = static_cast<char>(character);
-  write_guest_output(1, &byte, 1);
-  set_import_result(context, character);
+  const auto written = write_guest_output(STDOUT_FILENO, &byte, 1);
+  set_import_result(context, written < 0 ? static_cast<std::uint64_t>(-1) : character);
 }
 
 // CRT globals. Each accessor returns the address of a variable in the reserved
@@ -1247,6 +1267,62 @@ void msvcrt_stricmp(GuestContext* context) {
 }
 
 void msvcrt_noop(GuestContext* context) { set_import_result(context, 0); }
+
+// ---- atexit -----------------------------------------------------------------
+// The handlers a guest registers, in registration order. The C runtime runs them in
+// reverse when the process exits. Reporting success without keeping them made a
+// program that registers an exit handler appear to work while the handler never ran,
+// which is the worst of both: no diagnostic and no behaviour.
+std::vector<std::uint64_t> guest_atexit_handlers;
+
+// The live guest context, so the exit path can run the handlers. It is set once, when
+// the guest context is created, and cleared when the image returns.
+GuestContext* guest_context_for_atexit = nullptr;
+
+void run_guest_atexit_handlers(GuestContext* context);
+void report_unrun_atexit_handlers();
+
+const std::vector<std::uint64_t>& registered_atexit_handlers() { return guest_atexit_handlers; }
+
+void msvcrt_cexit(GuestContext* context) {
+  report_unrun_atexit_handlers();
+  set_import_result(context, 0);
+}
+
+void msvcrt_register_atexit(GuestContext* context) {
+  const auto handler = import_argument(context, 0);
+  if (handler != 0) guest_atexit_handlers.push_back(handler);
+  set_import_result(context, 0);
+}
+
+// Names every registered handler that will not run. A guest cannot observe a handler
+// that silently did not run, so the only honest place to report it is here.
+void report_unrun_atexit_handlers() {
+  for (const auto handler : guest_atexit_handlers) {
+    std::fprintf(stderr,
+                 "recomp: the guest registered an atexit handler at 0x%llx, which did not run; "
+                 "exit handlers are registered but not executed\n",
+                 static_cast<unsigned long long>(handler));
+  }
+  guest_atexit_handlers.clear();
+}
+
+void run_guest_atexit_handlers(GuestContext* context) {
+  while (!guest_atexit_handlers.empty()) {
+    const auto handler = guest_atexit_handlers.back();
+    guest_atexit_handlers.pop_back();
+    auto function = lookup_guest_function(handler);
+    if (function == nullptr) {
+      // Fail loudly rather than silently skipping: a handler that did not run is a
+      // behaviour difference, and the guest cannot observe it any other way.
+      std::fprintf(stderr, "recomp: an atexit handler at 0x%llx was not recompiled, so it did not run\n",
+                   static_cast<unsigned long long>(handler));
+      continue;
+    }
+    push_guest_stack(context, 0);
+    function(context);
+  }
+}
 
 // _onexit returns the function pointer it was given (NULL on failure); atexit
 // returns 0. A CRT that stores the return value of _onexit into its exit table
@@ -1887,7 +1963,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_set_invalid_parameter_handler", msvcrt_return_zero},
     {"msvcrt.dll", "_configure_narrow_argv", msvcrt_return_zero},
     {"msvcrt.dll", "_initialize_narrow_environment", msvcrt_return_zero},
-    {"msvcrt.dll", "_crt_atexit", msvcrt_return_zero},
+    {"msvcrt.dll", "_crt_atexit", msvcrt_register_atexit},
     {"msvcrt.dll", "_exit", msvcrt_exit_process},
     {"msvcrt.dll", "__p___argc", msvcrt_p_argc},
     {"msvcrt.dll", "__p___argv", msvcrt_p_argv},
@@ -1905,7 +1981,6 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "system", msvcrt_system},
     {"msvcrt.dll", "time", msvcrt_time},
     {"msvcrt.dll", "_time64", msvcrt_time64},
-    {"msvcrt.dll", "puts", msvcrt_puts},
     {"msvcrt.dll", "putchar", msvcrt_putchar},
     {"msvcrt.dll", "signal", msvcrt_signal},
     {"msvcrt.dll", "strcoll", msvcrt_strcoll},
@@ -1946,13 +2021,14 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "srand", msvcrt_srand},
     {"msvcrt.dll", "rand", msvcrt_rand},
     {"msvcrt.dll", "fwrite", msvcrt_fwrite},
+    {"msvcrt.dll", "puts", msvcrt_puts},
     {"msvcrt.dll", "__set_app_type", msvcrt_noop},
     {"msvcrt.dll", "_set_app_type", msvcrt_noop},
     {"msvcrt.dll", "_fpreset", msvcrt_noop},
     {"msvcrt.dll", "_setmode", msvcrt_noop},
-    {"msvcrt.dll", "atexit", msvcrt_noop},
+    {"msvcrt.dll", "atexit", msvcrt_register_atexit},
     {"msvcrt.dll", "_onexit", msvcrt_onexit},
-    {"msvcrt.dll", "_cexit", msvcrt_noop},
+    {"msvcrt.dll", "_cexit", msvcrt_cexit},
     {"msvcrt.dll", "_getch", msvcrt_noop},
     {"msvcrt.dll", "_kbhit", msvcrt_noop},
     {"msvcrt.dll", "abort", msvcrt_abort},
@@ -2021,6 +2097,10 @@ const ShimDescriptor kShims[] = {
 };
 
 }  // namespace
+
+// External linkage: the differential reference uses this to run the handlers, and it
+// has no compiled code of its own.
+const std::vector<std::uint64_t>& registered_atexit_handlers() { return guest_atexit_handlers; }
 
 // ---- guest memory watchpoint ---------------------------------------------
 std::uint64_t watched_guest_address = 0;
@@ -2251,10 +2331,10 @@ void invoke_guest_indirect(GuestContext* context, std::uint64_t target, std::uin
   }
   const auto thunk = lookup_import_thunk(target);
   if (thunk >= 0) {
-    // Only 32-bit x86 needs the return address pushed: its cleanup pass then
-    // removes the return address and the stdcall arguments. On x86-64 the shim
-    // returns directly and the guest stack must be left untouched.
-    invoke_import_thunk(context, thunk, return_address, guest_pointer_width < 8);
+    // A `call` pushes a return address on both widths. On 32-bit the cleanup pass
+    // then removes it along with the stdcall arguments; on 64-bit the return
+    // address alone is popped. Either way the push is what hardware does.
+    invoke_import_thunk(context, thunk, return_address, true);
     return;
   }
   // A bare target address is not actionable: the caller computed it, so the
@@ -2295,7 +2375,9 @@ void invoke_win32_import_tail(GuestContext* context, const char* library_name, c
                            context->instruction_pointer);
   }
   select_import_convention(library_name, symbol_name);
+  guest_in_shim = true;
   shim->function(context);
+  guest_in_shim = false;
   if (guest_pointer_width >= 8) {
     context->registers[4] = mask_guest_address(context->registers[4] + 8);
     return;
@@ -2315,7 +2397,9 @@ void invoke_win32_import(GuestContext* context, const char* library_name, const 
   }
   select_import_convention(library_name, symbol_name);
   if (guest_pointer_width >= 8) {
+    guest_in_shim = true;
     shim->function(context);
+    guest_in_shim = false;
     return;
   }
   // 32-bit x86: emulate the `call` and the matching `ret`/`ret n` so the guest
@@ -2323,7 +2407,9 @@ void invoke_win32_import(GuestContext* context, const char* library_name, const 
   // arguments for the caller to pop; stdcall pops them in the callee.
   context->registers[4] = mask_guest_address(context->registers[4] - 4);
   store_guest_memory(context, context->registers[4], return_address, 4);
+  guest_in_shim = true;
   shim->function(context);
+  guest_in_shim = false;
   context->registers[4] = mask_guest_address(
       context->registers[4] + win32_import_stack_cleanup(library_name, symbol_name));
 }
@@ -2345,9 +2431,166 @@ void unbound_import_thunk(GuestContext* context) {
 // lets one shim implementation serve both.
 std::string* guest_output_capture = nullptr;
 
+std::uint64_t guest_checkpoint_interval = 0;
+std::vector<GuestCheckpoint> guest_checkpoints;
+static std::uint64_t guest_checkpoint_counter = 0;
+
+// Writes the captured checkpoints where the studio can read them. A generated
+// executable runs as its own process, so the state it recorded has to cross a
+// process boundary; the file is only written when RECOMP_CHECKPOINT names it.
+void write_guest_checkpoints_if_requested() {
+  const char* path = std::getenv("RECOMP_CHECKPOINT");
+  if (path == nullptr || guest_checkpoints.empty()) return;
+  std::FILE* file = std::fopen(path, "wb");
+  if (file == nullptr) return;
+  for (const auto& checkpoint : guest_checkpoints) {
+    std::fprintf(file, "%llu %llu %llu %llu %u %u %u", static_cast<unsigned long long>(checkpoint.index),
+                 static_cast<unsigned long long>(checkpoint.address),
+                 static_cast<unsigned long long>(checkpoint.flags),
+                 static_cast<unsigned long long>(checkpoint.memory_digest),
+                 checkpoint.mxcsr, checkpoint.x87_control_word, checkpoint.x87_status_word);
+    for (const auto value : checkpoint.registers)
+      std::fprintf(file, " %llu", static_cast<unsigned long long>(value));
+    std::fputc('\n', file);
+  }
+  std::fclose(file);
+}
+
+// FNV-1a over a byte range, which is enough to notice a difference and cheap
+// enough to run every thousand instructions.
+std::uint64_t digest_bytes(std::uint64_t seed, std::uint64_t address, std::uint64_t count) {
+  if (guest_memory == nullptr || address >= guest_memory_size) return seed;
+  if (address + count > guest_memory_size) count = guest_memory_size - address;
+  std::uint64_t hash = seed;
+  for (std::uint64_t offset = 0; offset < count; ++offset) {
+    hash ^= guest_memory[address + offset];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+bool guest_store_logging = false;
+static std::FILE* guest_store_log = nullptr;
+
+bool guest_in_shim = false;
+
+void record_guest_store(std::uint64_t instruction_address, std::uint64_t address, std::uint64_t value, int width) {
+  if (guest_store_log == nullptr) return;
+  // A leading 's' marks a store a shim performed. The reference cannot log those --
+  // its shim writes to guest_memory with a host memcpy, which the emulator never
+  // observes -- so the comparison has to tell them apart rather than reading their
+  // absence as a divergence.
+  std::fprintf(guest_store_log, "%s%llx %llx %llx %d\n", guest_in_shim ? "s" : "",
+               static_cast<unsigned long long>(instruction_address),
+               static_cast<unsigned long long>(address), static_cast<unsigned long long>(value), width);
+}
+
+void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t address, int width) {
+  if (guest_store_log == nullptr) return;
+  // The value is a whole register, so the bytes are summarised rather than
+  // printed; what the comparison needs is that a store of this width happened at
+  // this address from this instruction.
+  std::uint64_t digest = 14695981039346656037ull;
+  for (int offset = 0; offset < width && address + offset < guest_memory_size; ++offset) {
+    digest ^= guest_memory[address + offset];
+    digest *= 1099511628211ull;
+  }
+  std::fprintf(guest_store_log, "%llx %llx v%llx %d\n", static_cast<unsigned long long>(instruction_address),
+               static_cast<unsigned long long>(address), static_cast<unsigned long long>(digest), width);
+}
+
+std::FILE* guest_memory_windows = nullptr;
+
+bool guest_mxcsr_logging = false;
+static std::FILE* guest_mxcsr_log = nullptr;
+static std::uint32_t guest_mxcsr_last = 0;
+
+// The address of the instruction that last began, so a change observed at the start
+// of instruction N can be attributed to N-1, which is the one that made it.
+std::uint64_t guest_mxcsr_previous_address = 0;
+
+void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr) {
+  (void)address;
+  if (guest_mxcsr_log == nullptr || mxcsr == guest_mxcsr_last) return;
+  guest_mxcsr_last = mxcsr;
+  // The instruction that caused the change is the one before this call, not this
+  // one: the value is read before the current instruction has run.
+  std::fprintf(guest_mxcsr_log, "%llx %x\n",
+               static_cast<unsigned long long>(guest_mxcsr_previous_address), mxcsr);
+}
+
+void open_guest_mxcsr_log(const char* path) {
+  if (path == nullptr) return;
+  guest_mxcsr_log = std::fopen(path, "w");
+  guest_mxcsr_logging = guest_mxcsr_log != nullptr;
+  // The starting value, so the first line is a change rather than a baseline.
+  guest_mxcsr_last = 0xffffffffu;
+}
+
+void open_guest_memory_windows(const char* path) {
+  if (path == nullptr) return;
+  guest_memory_windows = std::fopen(path, "wb");
+}
+
+void open_guest_store_log(const char* path) {
+  if (path == nullptr) return;
+  guest_store_log = std::fopen(path, "w");
+  guest_store_logging = guest_store_log != nullptr;
+}
+
+std::uint64_t guest_memory_digest(const GuestContext* context) {
+  // The window starts AT the stack pointer, not below it. Memory below the stack
+  // pointer is dead: the program has moved past it and cannot read it again, and
+  // the two sides legitimately differ there -- the first version of this digest
+  // reported a divergence at checkpoint 1 that was four bytes of dead stack, a
+  // return address the reference had popped and the candidate had overwritten.
+  // Nothing a program can observe differed.
+  constexpr std::uint64_t kStackWindow = 0x1000;   // the live stack, from the pointer up
+  constexpr std::uint64_t kDataWindow = 0x10000;   // the image's writable area
+  std::uint64_t hash = 14695981039346656037ull;
+  const auto stack_pointer = context->registers[4];
+  hash = digest_bytes(hash, stack_pointer, kStackWindow);
+  if (recompiled_image_base != 0) hash = digest_bytes(hash, recompiled_image_base, kDataWindow);
+  return hash;
+}
+
+void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
+  const auto index = guest_checkpoint_counter++;
+  if (index % guest_checkpoint_interval != 0) return;
+  GuestCheckpoint checkpoint;
+  checkpoint.index = index;
+  checkpoint.address = address;
+  for (int register_index = 0; register_index < 16; ++register_index)
+    checkpoint.registers[register_index] = context->registers[register_index];
+  checkpoint.flags = eflags_value(context);
+  checkpoint.mxcsr = context->mxcsr;
+  checkpoint.x87_control_word = context->x87_control_word;
+  checkpoint.x87_status_word = x87_status_value(context);
+  checkpoint.memory_digest = guest_memory_digest(context);
+  if (guest_memory_windows != nullptr) {
+    const std::uint64_t header[3] = {index, context->registers[4], recompiled_image_base};
+    std::fwrite(header, sizeof(std::uint64_t), 3, guest_memory_windows);
+    std::fwrite(guest_memory + context->registers[4], 1, 0x1000, guest_memory_windows);
+    if (recompiled_image_base != 0)
+      std::fwrite(guest_memory + recompiled_image_base, 1, 0x10000, guest_memory_windows);
+    else {
+      const std::uint8_t zeros[0x10000] = {};
+      std::fwrite(zeros, 1, 0x10000, guest_memory_windows);
+    }
+  }
+  guest_checkpoints.push_back(checkpoint);
+}
+
 void (*guest_exit_handler)(int code) = nullptr;
 
 void guest_request_exit(int code) {
+  write_guest_checkpoints_if_requested();
+  // Registered handlers do not run. Saying so is the point: the runtime used to accept
+  // the registration and report success, so a program that registered one produced
+  // neither the handler's effect nor any diagnostic. Running them is the next step and
+  // needs the differential reference to run them too, which means continuing emulation
+  // at each handler rather than calling a compiled function.
+  report_unrun_atexit_handlers();
   if (guest_exit_handler != nullptr) {
     guest_exit_handler(code);
     return;
@@ -2356,13 +2599,17 @@ void guest_request_exit(int code) {
   std::exit(code);
 }
 
-void write_guest_output(int descriptor, const char* data, std::size_t size) {
-  if (size == 0) return;
+std::ptrdiff_t write_guest_output(int descriptor, const char* data, std::size_t size) {
+  if (size == 0) return 0;
   if (guest_output_capture != nullptr) {
     guest_output_capture->append(data, size);
-    return;
+    return static_cast<std::ptrdiff_t>(size);
   }
-  (void)::write(descriptor, data, size);
+  // A failed or partial write is reported to the caller. Discarding it made a
+  // closed descriptor indistinguishable from a successful write.
+  const auto accepted = ::write(descriptor, data, size);
+  if (accepted < 0) return 0;
+  return accepted;
 }
 
 // Brings the guest address space to the state a program starts in. The image must
@@ -2372,7 +2619,13 @@ void write_guest_output(int descriptor, const char* data, std::size_t size) {
 // agree. A shim whose result depends on this state -- the heap allocator above
 // all, whose addresses appear in program output -- would otherwise differ between
 // the two sides for a reason that has nothing to do with the translation.
-void initialize_guest_state(std::uint64_t heap_base, std::uint64_t stack_top) {
+std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_width) {
+  const auto pointer = static_cast<std::uint64_t>(pointer_width);
+  return stack_top - pointer;
+}
+
+void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top) {
+  recompiled_image_base = image_base;
   next_heap_address = heap_base;
   heap_initialize(heap_base, stack_top);
   build_environment_blocks();
@@ -2386,7 +2639,9 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
   const auto* shim = find_win32_shim(library_name, symbol_name);
   if (shim == nullptr) return false;
   select_import_convention(library_name, symbol_name);
+  guest_in_shim = true;
   shim->function(context);
+  guest_in_shim = false;
   return true;
 }
 
@@ -2470,7 +2725,14 @@ int run_recompiled_image(const RecompiledImage* image) {
     store_guest_memory(nullptr, teb_address + 0x30, peb_address, 4);
     store_guest_memory(nullptr, peb_address + 0x08, image->image_base, 4);
   }
-  initialize_guest_state(image->heap_base, image->stack_top);
+  initialize_guest_state(image->image_base, image->heap_base, image->stack_top);
+  // The differential comparison asks for guest-state checkpoints at a fixed
+  // interval; the reference uses the same one, so the two streams line up.
+  open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
+  open_guest_memory_windows(std::getenv("RECOMP_MEMORY_WINDOWS"));
+  open_guest_mxcsr_log(std::getenv("RECOMP_MXCSR_LOG"));
+  if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))
+    guest_checkpoint_interval = std::strtoull(interval, nullptr, 0);
   if (const char* watch = std::getenv("RECOMP_WATCH"))
     watched_guest_address = std::strtoull(watch, nullptr, 0);
 
@@ -2478,15 +2740,22 @@ int run_recompiled_image(const RecompiledImage* image) {
   context.registers[kRegisterStackPointer] = image->stack_top;
   context.fs_base = teb_address;
   context.gs_base = teb_address;
-  context.x87_control_word = 0x027f;
+  // The x87 control word after FINIT: all exceptions masked, extended precision
+  // (precision control 0b11), round to nearest. 0x027f was wrong -- it selected
+  // double precision, so a guest that read the control word with FNSTCW saw a
+  // different value from the one hardware would give it, and `x87.exe` does
+  // exactly that.
+  context.x87_control_word = 0x037f;
   context.mxcsr = kMxcsrDefaultValue;
   push_guest_stack(&context, 0);
+  guest_context_for_atexit = &context;
 
   auto entry = lookup_guest_function(image->image_base + image->entry_point_rva);
   if (entry == nullptr)
     terminate_with_message("entry point 0x%" PRIx64 " was not recompiled",
                            image->image_base + image->entry_point_rva);
   entry(&context);
+  guest_context_for_atexit = nullptr;
   std::fflush(stdout);
   if (guest_trace_stream != nullptr) { std::fflush(guest_trace_stream); std::fclose(guest_trace_stream); guest_trace_stream = nullptr; }
   return static_cast<int>(static_cast<std::uint32_t>(context.registers[kRegisterReturnValue]));

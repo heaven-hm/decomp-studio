@@ -8,9 +8,30 @@ void render_statement(const Statement& statement, const CppBackendOptions& optio
     case StatementKind::Comment:
       output += options.indent + "// " + statement.text + "\n";
       return;
-    case StatementKind::Assign:
-      output += options.indent + statement.destination + " = " + statement.expression + ";\n";
+    case StatementKind::Assign: {
+      // Mirrors register_write_statement: a full-width write is an assignment, a
+      // narrower one preserves the bits above the register.
+      const auto index = std::to_string(statement.destination_register);
+      const auto& value = statement.expression;
+      std::string line;
+      if (statement.destination_width == 8) {
+        line = "context->registers[" + index + "] = (" + value + ");";
+      } else if (statement.destination_width == 4) {
+        line = "context->registers[" + index + "] = static_cast<std::uint32_t>(" + value + ");";
+      } else if (statement.destination_width == 2) {
+        line = "context->registers[" + index + "] = (context->registers[" + index +
+               "] & ~0xffffull) | static_cast<std::uint16_t>(" + value + ");";
+      } else if (statement.destination_high_byte_offset != 0) {
+        line = "context->registers[" + index + "] = (context->registers[" + index +
+               "] & ~0xff00ull) | ((static_cast<std::uint64_t>(static_cast<std::uint8_t>(" + value +
+               "))) << 8);";
+      } else {
+        line = "context->registers[" + index + "] = (context->registers[" + index +
+               "] & ~0xffull) | static_cast<std::uint8_t>(" + value + ");";
+      }
+      output += options.indent + line + "\n";
       return;
+    }
     case StatementKind::StoreMemory:
       output += options.indent + "store_guest_memory(context, " + statement.address + ", " +
                 statement.expression + ", " + std::to_string(statement.width) + ");\n";
@@ -39,6 +60,10 @@ void render_statement(const Statement& statement, const CppBackendOptions& optio
       return;
     case StatementKind::Trap:
       output += options.indent + "recomp_trap(context, \"" + statement.text + "\");\n";
+      return;
+    case StatementKind::Trace:
+      output += options.indent + "trace_instruction(context, " + statement.instruction_address +
+                "); // " + statement.text + "\n";
       return;
     case StatementKind::Verbatim:
       // Not yet migrated. Emitted exactly as the lifter produced it, which is

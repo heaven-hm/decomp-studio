@@ -29,15 +29,32 @@ def main():
     for line in BASELINE.read_text().splitlines():
         if not line or line.startswith("#"):
             continue
-        name, digest, size = line.split()
-        expected[name] = (digest, int(size))
+        name, source_digest, digest, size = line.split()
+        expected[name] = (source_digest, digest, int(size))
     if not expected:
         print("FAIL: the golden baseline is empty", file=sys.stderr)
         return 1
 
     checked = 0
+    present = {fixture.name for fixture in (FIXTURES / "bin").glob("*.exe")}
+    # A harness that passes when its inputs are missing is worse than no harness:
+    # an empty bin/ reported "checked 0 fixtures ... 0 passed, 0 failed" and exited
+    # 0, and deleting one fixture reported "21 passed". Both looked green. Every
+    # baseline entry must have a fixture, or this fails.
+    for name in sorted(expected):
+        if name not in present:
+            FAILURES.append(f"{name}: pinned in the baseline but not built; the golden net has a hole")
     for fixture in sorted((FIXTURES / "bin").glob("*.exe")):
         if fixture.name not in expected:
+            continue
+        # Check the input first. A rebuilt fixture changes the generated code for
+        # reasons that have nothing to do with the compiler, and reporting that as
+        # "the generated code changed" sends the reader to the wrong file.
+        source_digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+        if source_digest != expected[fixture.name][0]:
+            FAILURES.append(
+                f"{fixture.name}: the FIXTURE changed, not the compiler. Rebuild the fixtures "
+                "reproducibly and regenerate the baseline.")
             continue
         with tempfile.TemporaryDirectory() as workspace:
             result = subprocess.run(
@@ -49,7 +66,7 @@ def main():
                 continue
             body = guest.read_bytes()
             digest = hashlib.sha256(body).hexdigest()
-            wanted_digest, wanted_size = expected[fixture.name]
+            _, wanted_digest, wanted_size = expected[fixture.name]
             if digest != wanted_digest:
                 FAILURES.append(
                     f"{fixture.name}: generated code changed ({len(body)} bytes, expected {wanted_size}). "
@@ -58,7 +75,9 @@ def main():
                 PASSES.append(f"{fixture.name}: byte-identical")
             checked += 1
 
-    print(f"checked {checked} fixtures against the golden baseline")
+    if checked != len(expected):
+        FAILURES.append(f"checked {checked} of {len(expected)} pinned fixtures")
+    print(f"checked {checked} of {len(expected)} pinned fixtures against the golden baseline")
     for line in PASSES:
         print("PASS " + line)
     for line in FAILURES:

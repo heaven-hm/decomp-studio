@@ -1,5 +1,7 @@
 #include "core/pipeline.hpp"
 
+#include "core/detection/detection.hpp"
+
 #include "core/binary/pe.hpp"
 #include "core/codegen/project_generator.hpp"
 #include "core/common/sha256.hpp"
@@ -96,6 +98,11 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
 
 TranslateReport translate(const std::filesystem::path& input, const std::filesystem::path& output_directory,
                           const common::Configuration& configuration) {
+  // Detect before parsing, so an input this build cannot lift is named for what it
+  // is and for the capability it would need, rather than reported as a parse
+  // failure by the PE reader -- which is the one component guaranteed not to know.
+  const auto detection = detection::detect_file(input.string());
+  if (!detection.is_supported()) throw std::runtime_error(detection.unsupported_reason());
   auto executable = binary::PortableExecutable::parse(input);
   // Fail closed rather than recover functions from bytes that are not the
   // program. UPX leaves whole sections as zero padding, which decodes happily

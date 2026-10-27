@@ -922,3 +922,67 @@ runs them, and the runtime names every handler it did not run.
 return, rather than working around it: it is reachable and recompiled, and a routine
 that is recompiled and does not return is worth understanding on its own terms. Running
 it under the trace log and looking at where it stops would answer it in one run.
+
+
+## Why the handler did not return: it is the exit thunk
+
+The next step after withdrawing the execution attempt was to find out why one handler
+did not return, rather than working around it. Tracing the registration answered it:
+
+```
+ATEXIT registration: handler=0x140001010 from ip=0x1400028e0
+ATEXIT registration: handler=0x1400049a8 from ip=0x1400028e0
+ATEXIT registration: handler=0x0        from ip=0x1400028e0
+ATEXIT registration: handler=0x1400014a0 from ip=0x1400028e0
+ATEXIT registration: handler=0x140001490 from ip=0x1400028e0
+```
+
+Two things are visible at once.
+
+**Every registration comes from one call site**, `0x1400028e0`, including a **null**. A
+site that registers five different addresses including zero is walking a table, not
+calling `atexit` once per handler. So the list this runtime builds is not the list a C
+program's `atexit` calls produce.
+
+**`0x140001010` is the exit thunk:**
+
+```
+0x140001010  xor  ecx, ecx
+0x140001012  jmp  0x1400028a0
+```
+
+That is a call to `exit(0)` with a tail jump. Running it as an exit handler **re-enters
+the exit path**, which is exactly the hang: the handler is a function, it is recompiled,
+and calling it asks the process to exit again from inside its own exit.
+
+**`0x1400049a8` is not code at all.** It is in `.rdata`, which is not executable, and it
+decodes as a run of zeros. It is not in the recovered function list, so the new
+`lea`-target seed did not add it — the guest genuinely passed a data address to the
+registration shim.
+
+So the previous round's diagnosis was half right: the handler is reachable and
+recompiled, and it does not return — because what it does is exit.
+
+## What the diagnostic says now
+
+Both facts are worth being able to see, so every handler that does not run is reported
+with whether it is code:
+
+```
+recomp: the guest registered an atexit handler at 0x140001010 (a recompiled function), which did not run
+recomp: the guest registered an atexit handler at 0x1400049a8 (not a recompiled function), which did not run
+recomp: the guest registered an atexit handler at 0x1400014a0 (a recompiled function), which did not run
+recomp: the guest registered an atexit handler at 0x140001490 (a recompiled function), which did not run
+```
+
+An address that was never recovered cannot be run whatever the exit path does; one that
+was recovered is a different problem, and the two should not read the same.
+
+## What this means for executing them
+
+Executing the handlers needs more than a guard against re-entry. The list contains a
+**non-function** and the **exit thunk**, so "run everything the guest registered" is the
+wrong rule. The rule that would work is: run the handlers that are recovered functions
+and are not the exit path, and report the rest — which needs the runtime to know which
+address is the exit thunk, and needs the registration path to be understood rather than
+assumed. Both are now written down.

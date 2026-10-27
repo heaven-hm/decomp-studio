@@ -401,6 +401,18 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The handler that did not return is **the exit thunk**, and the diagnostic now says
+  whether each unrun handler is code. Tracing the registration showed all five calls
+  coming from **one** call site (`0x1400028e0`), including a **null** — a site that
+  registers five addresses including zero is walking a table, not calling `atexit` once
+  per handler, so the list this runtime builds is not the list a C program's `atexit`
+  calls produce. `0x140001010` is `xor ecx, ecx; jmp 0x1400028a0`, a call to `exit(0)`
+  with a tail jump: running it as an exit handler **re-enters the exit path**, which is
+  the hang. `0x1400049a8` is in `.rdata`, decodes as zeros, and is not in the recovered
+  function list — the guest passed a data address to the shim. Executing handlers
+  therefore needs a rule better than "run everything registered": run the ones that are
+  recovered functions and are not the exit path, and report the rest.
+
 - Attempted to execute the atexit handlers, and **withdrew the attempt** rather than
   landing it half-working. A nested emulation per handler either consumed the run's
   whole instruction budget or did not terminate at all — a 10,000-instruction bound was

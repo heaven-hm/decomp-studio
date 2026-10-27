@@ -1264,10 +1264,18 @@ void msvcrt_register_atexit(GuestContext* context) {
 // that silently did not run, so the only honest place to report it is here.
 void report_unrun_atexit_handlers() {
   for (const auto handler : guest_atexit_handlers) {
+    // Whether the address is code at all is the first thing a reader needs, and it is
+    // not always true: the C runtime's own registration reaches this shim from a single
+    // call site that walks a table, and this program's list contained an address in
+    // .rdata as well as a null. An address that was never recovered cannot be run
+    // whatever the exit path does; one that was recovered is a different problem, and
+    // the two should not read the same.
+    const bool is_code = lookup_guest_function(handler) != nullptr;
     std::fprintf(stderr,
-                 "recomp: the guest registered an atexit handler at 0x%llx, which did not run; "
+                 "recomp: the guest registered an atexit handler at 0x%llx (%s), which did not run; "
                  "exit handlers are registered but not executed\n",
-                 static_cast<unsigned long long>(handler));
+                 static_cast<unsigned long long>(handler),
+                 is_code ? "a recompiled function" : "not a recompiled function");
   }
   guest_atexit_handlers.clear();
 }

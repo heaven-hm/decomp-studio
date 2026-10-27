@@ -161,7 +161,9 @@ Integer and control flow: `mov`/`movabs`, `movzx`/`movsx`/`movsxd`, `lea`,
 `inc`/`dec`/`neg`, `cmp`/`test`, `shl`/`shr`/`sar`/`rol`/`ror`/`rcl`/`rcr`,
 `imul`/`mul`/`div`/`idiv`, `cdq`/`cqo`/`cwde`/`cdqe`, `setcc`, `cmovcc`,
 `bt`/`bts`/`btr`/`btc`, `bsr`/`bsf`, `shld`/`shrd`, `xadd`/`cmpxchg`, `cpuid`,
-`lahf`/`sahf`, `call`/`ret`/`jmp`/`jcc`, string ops with `rep`.
+`lahf`/`sahf`, `bswap`, `cld`/`std`, `call`/`ret`/`jmp`/`jcc`, string ops with
+`rep` (including the `repz`/`repnz` spellings and the `repz ret` padding idiom
+MSVC emits).
 
 SSE/AVX subset: `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`/`movss`/
 `movsd`/`movd`/`movq`, scalar float and double arithmetic, vector bitwise and

@@ -151,13 +151,17 @@ struct ParsedMnemonic {
 
 ParsedMnemonic parse_mnemonic(const std::string& raw) {
   ParsedMnemonic parsed{raw, false};
+  // `repz`/`repnz` are the same prefixes as `repe`/`repne`; MSVC emits the
+  // `repz ret` padding idiom, so both spellings have to reach the same handling.
   if (parsed.mnemonic.compare(0, 4, "rep ") == 0) {
     parsed.mnemonic = parsed.mnemonic.substr(4);
     parsed.has_repeat_prefix = true;
-  } else if (parsed.mnemonic.compare(0, 5, "repe ") == 0) {
+  } else if (parsed.mnemonic.compare(0, 5, "repe ") == 0 ||
+             parsed.mnemonic.compare(0, 5, "repz ") == 0) {
     parsed.mnemonic = parsed.mnemonic.substr(5);
     parsed.has_repeat_prefix = true;
-  } else if (parsed.mnemonic.compare(0, 6, "repne ") == 0) {
+  } else if (parsed.mnemonic.compare(0, 6, "repne ") == 0 ||
+             parsed.mnemonic.compare(0, 6, "repnz ") == 0) {
     parsed.mnemonic = parsed.mnemonic.substr(6);
     parsed.has_repeat_prefix = true;
   }
@@ -692,6 +696,31 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     emit("return;");
     return;
+  }
+
+  // CLD/STD only touch the direction flag, which is guest state: the string
+  // operation helpers already read it, so nothing set it before this. The
+  // context is value-initialised, which matches the architectural DF=0 reset.
+  if (mnemonic == "cld") { emit("context->direction_flag = 0;"); return; }
+  if (mnemonic == "std") { emit("context->direction_flag = 1;"); return; }
+
+  // BSWAP has no memory form and no flags: it reverses the bytes of a 32- or
+  // 64-bit register. A 32-bit write zero-extends into the 64-bit register, which
+  // register_write_statement already models.
+  if (mnemonic == "bswap" && operands.size() == 1 &&
+      operands[0].kind == discovery::Operand::Kind::Register) {
+    const auto width = operand_width(operands[0], 8);
+    const auto& name = operands[0].register_name;
+    if (width == 4) {
+      emit(register_write_statement(
+          name, "byte_swap_32(static_cast<std::uint32_t>(" + register_read_expression(name) + "))"));
+      return;
+    }
+    if (width == 8) {
+      emit(register_write_statement(name, "byte_swap_64(" + register_read_expression(name) + ")"));
+      return;
+    }
+    throw LiftError("unsupported bswap operand width at " + format_hex(instruction.address));
   }
 
   if ((mnemonic == "vpxor" || mnemonic == "vandps" || mnemonic == "vpor") && operands.size() == 3 &&

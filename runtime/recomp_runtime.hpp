@@ -56,6 +56,18 @@ inline std::uint64_t mask_guest_address(std::uint64_t address) {
   return guest_pointer_width >= 8 ? address : (address & 0xffffffffull);
 }
 
+// BSWAP. Written out rather than using a compiler builtin so the generated
+// guest code depends only on the runtime, as every other lifted operation does.
+inline std::uint32_t byte_swap_32(std::uint32_t value) {
+  return ((value & 0x000000ffu) << 24) | ((value & 0x0000ff00u) << 8) |
+         ((value & 0x00ff0000u) >> 8) | ((value & 0xff000000u) >> 24);
+}
+
+inline std::uint64_t byte_swap_64(std::uint64_t value) {
+  return (static_cast<std::uint64_t>(byte_swap_32(static_cast<std::uint32_t>(value))) << 32) |
+         static_cast<std::uint64_t>(byte_swap_32(static_cast<std::uint32_t>(value >> 32)));
+}
+
 void guest_trace_address(std::uint64_t address);
 
 // Records the current instruction pointer; when tracing is enabled every

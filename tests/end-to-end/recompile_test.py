@@ -31,6 +31,7 @@ FIXTURES = [
     ("memory", "memory addressing"),
     ("flagprobe", "per-operation flag semantics"),
     ("wide", "64-bit arithmetic and shifts"),
+    ("byteops", "byte swap and the direction flag"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -50,6 +51,10 @@ EXPECTED_OUTPUT = {
     "memory": ["memory:start", "table_checksum=", "memory:done"],
     "flagprobe": ["add ", "imul ", "shln "],
     "wide": ["wide:start", "roll=", "wide:done"],
+    # Exact values, not just markers: a wrong byte order or an ignored direction
+    # flag changes the printed digits, so the fragments have to pin them.
+    "byteops": ["byteops:start", "bswap32=2018915346", "bswap64=", "bswap64_hi=",
+                "backward=abcdefg", "forward=abcdefg", "byteops:done"],
     "pe32_arith": ["arith:start", "primes<200=46", "fib(20)=6765", "gcd(1071,462)=21", "arith:done"],
     "pe32_abi": ["pe32:start", "cdecl=", "stdcall=", "fastcall=", "thiscall=", "dispatch=",
                  "wrapped=16", "checksum=", "pe32:done"],

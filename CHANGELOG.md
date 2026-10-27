@@ -7,6 +7,14 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Added
 
+- `bswap` (32- and 64-bit, zero-extending), `cld`/`std` (the direction flag is
+  now set, and the runtime's string-operation helpers already honoured it), and
+  the `repz`/`repnz` prefix spellings — including the `repz ret` padding idiom
+  MSVC emits, which alone blocked the first three real applications.
+- `byteops` fixture: BSWAP at both widths plus a backward and a forward
+  `rep movsb` copy, so a direction flag that is ignored or stuck set prints
+  `gfedcba` instead of `abcdefg`. Verified byte-identical against the Unicorn
+  reference; a mutation that makes `cld` a no-op fails verification.
 - `coverage` command: a non-aborting census of every recovered instruction. It
   reports total, lifted and unsupported instruction counts plus a histogram of
   unsupported instruction classes (occurrences, first site, owning function and
@@ -23,6 +31,22 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 - README instruction-coverage list overstated the SSE unpack support as
   `punpck*`; only `punpckldq`/`punpckhdq`/`punpcklqdq`/`punpckhqdq` are lifted.
+- `coverage` classified unsupported instructions by the raw Capstone mnemonic
+  while the lift diagnostic names the prefix-stripped one, so an unsupported
+  `lock bts` would have been reported under a class name its own reason
+  contradicted.
+
+### Verified against real applications
+
+Instruction coverage of the genuine Windows binaries in the mission set, after
+this change (unsupported instructions / distinct classes):
+
+| Application | Format | Before | After |
+| --- | --- | --- | --- |
+| `imgview64.exe` | PE32+ | 10 / 3 | **0 / 0 (100%)** |
+| `Tetris.exe` | PE32 | 14 / 7 | 11 / 6 |
+| `plink.exe` | PE32+ | 2,037 / 82 | 1,927 / 81 |
+| `igi.exe` (final target) | PE32 | 540 / 33 | 536 / 31 |
 
 ## [0.3.0] - 2026-10-27
 

@@ -96,11 +96,13 @@ const std::vector<Capability>& capabilities() {
       {"checkpoints:auto", "--checkpoints", "auto", "registers and flags, with memory reported", Support::Implemented, ""},
       {"checkpoints:output", "--checkpoints", "output", "compare program output only", Support::Planned, "not wired"},
       {"checkpoints:registers", "--checkpoints", "registers", "compare registers and flags", Support::Implemented, ""},
-      {"checkpoints:memory", "--checkpoints", "memory", "compare memory as a gate", Support::Planned,
-       "memory is digested and reported but does not yet gate the verdict; the first comparison "
-       "found an unexplained divergence"},
+      {"checkpoints:memory", "--checkpoints", "memory", "compare memory, classifying the x87 class", Support::Planned,
+       "memory is compared byte by byte and a difference within one unit in the last place of a double "
+       "is named as the documented x87 precision limit. It does not gate the verdict yet: 18 of 22 "
+       "fixtures agree, two simd_convert fixtures differ by more than one ULP, and vex differs for the "
+       "known Unicorn AVX defect"},
       {"checkpoints:full", "--checkpoints", "full", "compare registers, flags and memory", Support::Planned,
-       "memory does not yet gate the verdict"},
+       "memory does not yet gate the verdict; see --checkpoints memory"},
       {"trace:", "--trace", "", "save execution traces", Support::Implemented, ""},
       {"seed:", "--seed", "", "deterministic verification seed", Support::Planned,
        "the reference is deterministic but there is no seed control"},

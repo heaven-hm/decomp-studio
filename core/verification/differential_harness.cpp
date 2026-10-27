@@ -58,6 +58,9 @@ struct ReferenceState {
   std::uint64_t last_counted_address{~0ull};
   std::FILE* store_log{};
   std::vector<GuestCheckpoint> checkpoints;
+  // The memory windows themselves, when a byte-level comparison is asked for. A
+  // digest says only that memory differs; classifying the difference needs the bytes.
+  std::vector<std::vector<std::uint8_t>> memory_windows;
 };
 
 // The state the exit handler acts on. Only one reference runs at a time.
@@ -288,6 +291,18 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
       for (int register_index = 0; register_index < 16; ++register_index)
         digest_context.registers[register_index] = checkpoint.registers[register_index];
       checkpoint.memory_digest = guest_memory_digest(&digest_context);
+      if (std::getenv("RECOMP_MEMORY_WINDOWS") != nullptr) {
+        const auto sp = digest_context.registers[4];
+        std::vector<std::uint8_t> window;
+        window.reserve(0x11000);
+        window.insert(window.end(), guest_memory + sp, guest_memory + sp + 0x1000);
+        if (recompiled_image_base != 0)
+          window.insert(window.end(), guest_memory + recompiled_image_base,
+                        guest_memory + recompiled_image_base + 0x10000);
+        else
+          window.resize(window.size() + 0x10000, 0);
+        state.memory_windows.push_back(std::move(window));
+      }
       state.checkpoints.push_back(checkpoint);
     }
   }
@@ -439,6 +454,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   run.instruction_count = state.instruction_count;
   run.note = state.note;
   run.checkpoints = std::move(state.checkpoints);
+  run.memory_windows = std::move(state.memory_windows);
   run.trace = std::move(trace);
   if (state.store_log != nullptr) std::fclose(state.store_log);
   uc_close(engine);
@@ -464,6 +480,20 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   return run;
 }
 
+// Whether two 8-byte slots hold doubles within one unit in the last place of each
+// other. That is the documented x87 limit: this runtime holds the x87 stack as a
+// double with a 53-bit mantissa and the reference uses 80-bit extended with 64, so a
+// result needing more than 53 bits rounds differently in the last bit. It is a known
+// class, not a divergence, and naming it keeps the gate strict for everything else.
+bool within_one_ulp_of_a_double(const std::uint8_t* left, const std::uint8_t* right) {
+  std::uint64_t a = 0;
+  std::uint64_t b = 0;
+  std::memcpy(&a, left, 8);
+  std::memcpy(&b, right, 8);
+  const auto difference = a > b ? a - b : b - a;
+  return difference <= 1;
+}
+
 DifferentialResult compare_project(const std::filesystem::path& project_directory,
                                    const common::Configuration& configuration) {
   (void)configuration;
@@ -481,6 +511,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.unsupported_mnemonics = read_unsupported_mnemonics(project_directory);
 
   guest_checkpoint_interval = kCheckpointInterval;
+  // A byte-level memory comparison is asked for through the environment, because
+  // it costs 68 KiB per checkpoint to carry and the digest answers the common
+  // question. Both sides must be asked, or there is nothing to compare against.
+  const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
+  ::setenv("RECOMP_MEMORY_WINDOWS", memory_windows_path.string().c_str(), 1);
+  std::filesystem::remove(memory_windows_path);
   // A trace is collected only when asked for, because it is one word per executed
   // instruction and the corpus runs to millions. Comparing the two instruction
   // streams is how a memory divergence is localised: if the streams agree up to
@@ -528,6 +564,58 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     std::ofstream(project_directory / "reports" / "candidate.txt") << result.candidate_output;
   }
   result.outputs_match = result.reference_output == result.candidate_output;
+
+  // Byte-level memory comparison, when both sides produced windows. A difference is
+  // classified rather than simply failed: a byte inside an aligned 8-byte slot whose
+  // two values are within one unit in the last place of each other is the documented
+  // x87 precision limit, and everything else is a divergence.
+  if (std::ifstream windows(memory_windows_path, std::ios::binary); windows) {
+    constexpr std::size_t kWindowBytes = 0x11000;
+    // The candidate writes a 24-byte header per checkpoint -- the index, the stack
+    // pointer and the image base -- so that a reader can locate the windows. Reading
+    // the windows without skipping it compares two ranges 24 bytes apart, which
+    // reports a divergence at the very first checkpoint.
+    constexpr std::size_t kHeaderBytes = 24;
+    std::vector<std::uint8_t> header(kHeaderBytes);
+    std::vector<std::uint8_t> candidate_window(kWindowBytes);
+    std::size_t checkpoint = 0;
+    std::size_t unclassified = 0;
+    std::string first_unclassified;
+    while (windows.read(reinterpret_cast<char*>(header.data()), kHeaderBytes) &&
+           windows.read(reinterpret_cast<char*>(candidate_window.data()), kWindowBytes) &&
+           checkpoint < reference.memory_windows.size()) {
+      const auto& expected = reference.memory_windows[checkpoint];
+      if (expected.size() == kWindowBytes) {
+        for (std::size_t offset = 0; offset < kWindowBytes; ++offset) {
+          if (expected[offset] == candidate_window[offset]) continue;
+          // Which aligned 8-byte slot holds it, and are the two doubles within one ULP?
+          const auto slot = offset & ~static_cast<std::size_t>(7);
+          const bool is_x87_class = slot + 8 <= kWindowBytes &&
+                                    within_one_ulp_of_a_double(expected.data() + slot,
+                                                               candidate_window.data() + slot);
+          if (is_x87_class) {
+            ++result.x87_precision_differences;
+          } else {
+            ++unclassified;
+            if (first_unclassified.empty())
+              first_unclassified = "checkpoint " + std::to_string(checkpoint) + ", window offset 0x" +
+                                   hex_text(offset) + ": candidate 0x" +
+                                   hex_text(candidate_window[offset]) + ", reference 0x" +
+                                   hex_text(expected[offset]);
+          }
+        }
+      }
+      ++checkpoint;
+    }
+    if (unclassified != 0) {
+      result.memory_match = false;
+      result.memory_diagnosis = first_unclassified;
+    } else if (result.x87_precision_differences != 0) {
+      result.memory_diagnosis = std::to_string(result.x87_precision_differences) +
+                                " byte(s) differ by at most one unit in the last place of a double; "
+                                "this is the documented x87 precision limit";
+    }
+  }
 
   // Guest-state comparison. The two streams are recorded at the same interval, so
   // the first index at which they differ names the guest instruction after which

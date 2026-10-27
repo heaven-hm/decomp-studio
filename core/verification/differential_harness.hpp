@@ -23,6 +23,7 @@ struct ReferenceRun {
   // Guest state recorded at the same checkpoints the candidate records, so the
   // two can be compared directly.
   std::vector<GuestCheckpoint> checkpoints;
+  std::vector<std::vector<std::uint8_t>> memory_windows;
 };
 
 struct DifferentialResult {
@@ -43,6 +44,12 @@ struct DifferentialResult {
   // weakened or gets ignored, and both are worse than an honest diagnostic.
   bool memory_match{true};
   std::string memory_diagnosis;
+  // A difference classified as the documented x87 precision limit -- one unit in
+  // the last place of a double -- rather than as an unexplained divergence. A gate
+  // that cannot tell those apart either fails on every program that uses x87 or has
+  // to be loosened until it catches nothing, and both are worse than naming the
+  // class.
+  std::size_t x87_precision_differences{};
   int candidate_exit_code{};
   std::string reference_output;
   std::string candidate_output;

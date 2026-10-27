@@ -446,9 +446,47 @@ other, report it as the known x87 precision class rather than as a divergence. T
 keeps the gate strict for everything else, which is where a real divergence would
 appear.
 
+## Implemented: the classification, and what it shows
+
+The comparison is now byte by byte, with a difference classified rather than simply
+failed. A byte inside an aligned 8-byte slot whose two values are within one unit in
+the last place of each other is the documented x87 class; anything else is a
+divergence. The candidate exports the windows (`RECOMP_MEMORY_WINDOWS`) because a
+digest says only *that* memory differs and classifying it needs the bytes.
+
+`x87.exe` now passes with a named exception rather than a silent tolerance:
+
+```
+status: pass | state: True | memory: True
+2 byte(s) differ by at most one unit in the last place of a double;
+this is the documented x87 precision limit
+```
+
+Across the corpus:
+
+```
+memory gate passes: 18   fails: 3
+  pe32_simd_convert.exe: checkpoint 12, window offset 0x84: candidate 0xa0, reference 0x80
+  simd_convert.exe:      checkpoint 7,  window offset 0xcc: candidate 0xa0, reference 0x80
+  vex.exe:               checkpoint 2,  window offset 0x4c: candidate 0x1,  reference 0x2d
+```
+
+`vex` is the known Unicorn AVX defect, documented in the fixture and already excluded
+from the differential suite. The two `simd_convert` differences are single bytes
+differing by more than one unit in the last place, so they are not the x87 class as
+defined and are not yet explained.
+
+**So `--checkpoints memory` still does not gate the verdict**, and the reason is now
+narrow and named: two `simd_convert` fixtures and one known emulator defect, against
+18 that agree. Making it a gate needs either those two explained or a tolerance that
+is justified rather than chosen.
+
 ## Not established
 
-Nothing about the cause: it is measured. What remains is the classification rule
+The two `simd_convert` differences: whether they are the same precision limit at a
+greater distance -- a float-to-double conversion amplifies a one-bit difference -- or
+something else. Logging the *instruction* that wrote the differing byte, rather than
+the byte, is what would settle it, and that is the method that found the control word. What remains is the classification rule
 above, and whether any *other* program in the corpus diverges for a different reason
 once the x87 class is separated out. (`0x1400010a5`), and the two
 floating-point fixtures at checkpoints 12 and 7. Whether these are further x87

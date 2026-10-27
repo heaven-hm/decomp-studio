@@ -401,6 +401,18 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- Guest memory is now compared **byte by byte, with the difference classified**. A
+  byte inside an aligned 8-byte slot whose two values are within one unit in the last
+  place of each other is named as the documented x87 precision limit; anything else is
+  a divergence. The candidate exports the windows (`RECOMP_MEMORY_WINDOWS`) because a
+  digest says only *that* memory differs and classifying it needs the bytes.
+  `x87.exe` now passes with a named exception rather than a silent tolerance: *"2
+  byte(s) differ by at most one unit in the last place of a double; this is the
+  documented x87 precision limit"*. 18 of 22 fixtures agree. `--checkpoints memory`
+  still does not gate the verdict, and the reason is now narrow: two `simd_convert`
+  fixtures differ by more than one ULP, and `vex` differs for the known Unicorn AVX
+  defect.
+
 - The three floating-point memory divergences are **one unit in the last place of a
   double**, which is the documented x87 precision limit and not a defect. The
   remaining difference at `x87.exe`'s checkpoint 8 is a single byte: the reference

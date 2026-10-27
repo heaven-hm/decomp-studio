@@ -2346,6 +2346,13 @@ void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t 
                static_cast<unsigned long long>(address), static_cast<unsigned long long>(digest), width);
 }
 
+std::FILE* guest_memory_windows = nullptr;
+
+void open_guest_memory_windows(const char* path) {
+  if (path == nullptr) return;
+  guest_memory_windows = std::fopen(path, "wb");
+}
+
 void open_guest_store_log(const char* path) {
   if (path == nullptr) return;
   guest_store_log = std::fopen(path, "w");
@@ -2378,6 +2385,17 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
     checkpoint.registers[register_index] = context->registers[register_index];
   checkpoint.flags = eflags_value(context);
   checkpoint.memory_digest = guest_memory_digest(context);
+  if (guest_memory_windows != nullptr) {
+    const std::uint64_t header[3] = {index, context->registers[4], recompiled_image_base};
+    std::fwrite(header, sizeof(std::uint64_t), 3, guest_memory_windows);
+    std::fwrite(guest_memory + context->registers[4], 1, 0x1000, guest_memory_windows);
+    if (recompiled_image_base != 0)
+      std::fwrite(guest_memory + recompiled_image_base, 1, 0x10000, guest_memory_windows);
+    else {
+      const std::uint8_t zeros[0x10000] = {};
+      std::fwrite(zeros, 1, 0x10000, guest_memory_windows);
+    }
+  }
   guest_checkpoints.push_back(checkpoint);
 }
 
@@ -2521,6 +2539,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   // The differential comparison asks for guest-state checkpoints at a fixed
   // interval; the reference uses the same one, so the two streams line up.
   open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
+  open_guest_memory_windows(std::getenv("RECOMP_MEMORY_WINDOWS"));
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))
     guest_checkpoint_interval = std::strtoull(interval, nullptr, 0);
   if (const char* watch = std::getenv("RECOMP_WATCH"))

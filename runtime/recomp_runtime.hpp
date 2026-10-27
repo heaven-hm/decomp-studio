@@ -171,6 +171,13 @@ void write_guest_checkpoints_if_requested();
 // Opens the store log named by the environment, when one is asked for.
 void open_guest_store_log(const char* path);
 
+// Opens the memory-window export named by the environment, when one is asked for.
+// A digest says only *that* memory differs; classifying the difference -- the x87
+// precision class is one unit in the last place of a double, which is a known and
+// documented limit -- needs the bytes. The windows are written per checkpoint,
+// with the stack pointer and image base that locate them.
+void open_guest_memory_windows(const char* path);
+
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
   context->instruction_pointer = address;
   if (guest_checkpoint_interval != 0) capture_guest_checkpoint(context, address);

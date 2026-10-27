@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace recomp {
 
@@ -266,6 +268,23 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "LoadLibraryW", 1, true},
     {"kernel32.dll", "FreeLibrary", 1, true},
 };
+
+// The distinct library names the table knows, in declaration order.
+//
+// Used when a guest asks for a symbol without naming a module -- GetProcAddress
+// with a NULL handle, which means "search what the process already has". The
+// table's own order is the only search order that cannot drift: a separate list
+// would silently stop including the next library somebody implements.
+inline std::vector<const char*> win32_known_libraries() {
+  std::vector<const char*> libraries;
+  for (const auto& entry : kWin32ImportAbiTable) {
+    bool seen = false;
+    for (const auto* known : libraries)
+      if (std::strcmp(known, entry.library_name) == 0) { seen = true; break; }
+    if (!seen) libraries.push_back(entry.library_name);
+  }
+  return libraries;
+}
 
 // The Universal CRT is shipped as API sets, one per area, but the symbols are the
 // standard C library functions under their usual names. A program built against

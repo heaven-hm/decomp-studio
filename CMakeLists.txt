@@ -81,6 +81,14 @@ target_compile_features(runtime_time_test PRIVATE cxx_std_20)
 target_include_directories(runtime_time_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME runtime_time COMMAND runtime_time_test)
 
+# The app-directory policy, checked without a guest in the way. Every file-facing
+# shim resolves through it, so the escape that matters is the quiet one: a path
+# above the app directory that is served anyway.
+add_executable(guest_file_system_test tests/compat/guest_file_system_test.cpp)
+target_compile_features(guest_file_system_test PRIVATE cxx_std_20)
+target_include_directories(guest_file_system_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME guest_file_system COMMAND guest_file_system_test)
+
 add_test(NAME preflight_prerequisites
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/preflight/prerequisites_test.py
           $<TARGET_FILE:recomp-studio>)

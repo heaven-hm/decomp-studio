@@ -1,4 +1,5 @@
 #include "recomp_runtime.hpp"
+#include "guest_file_system.hpp"
 #include "win32_abi.hpp"
 
 #include <cerrno>
@@ -7,6 +8,7 @@
 #include <cstdio>
 #include <cctype>
 #include <cstdlib>
+#include <array>
 #include <sstream>
 #include <fcntl.h>
 #include <system_error>
@@ -158,12 +160,46 @@ std::string read_guest_string(std::uint64_t address) {
   return value;
 }
 
+// ---- Win32 last-error -----------------------------------------------------
+// The guest's only channel for asking why a call failed, so a shim that reports a
+// failure without recording one here has told the program nothing. A constant 0
+// (the previous behaviour) means a program that checks GetLastError on the error
+// path -- which is most programs, on the error path -- concludes the call worked
+// and carries on with a handle that is NULL.
+std::uint32_t guest_last_error = 0;
+
+// Only the codes a shim actually produces are named. The values are the ones in
+// winerror.h, because the guest compares against them.
+enum Win32ErrorCode : std::uint32_t {
+  kErrorInvalidFunction = 1,
+  kErrorFileNotFound = 2,
+  kErrorPathNotFound = 3,
+  kErrorAccessDenied = 5,
+  kErrorInvalidHandle = 6,
+  kErrorNotEnoughMemory = 8,
+  kErrorSharingViolation = 32,
+  kErrorNotSupported = 50,
+  kErrorInvalidParameter = 87,
+  kErrorCallNotImplemented = 120,
+  kErrorProcNotFound = 127,
+  kErrorModNotFound = 126,
+  kErrorDirectoryNotSupported = 267,
+};
+
+void set_guest_last_error(std::uint32_t code) { guest_last_error = code; }
+void clear_guest_last_error() { guest_last_error = 0; }
+
 // ---- Win32 handle table ---------------------------------------------------
-// Handles are opaque to the guest, but GetFileType, CloseHandle and the file and
-// mutex shims have to agree about what a handle refers to. The three standard
+// Handles are opaque to the guest, but every shim that accepts one has to agree
+// with the shim that produced it about what it refers to. The three standard
 // handles keep the values the reference also returns for GetStdHandle (10, 11,
-// 12), so introducing the table does not change anything a differential
-// comparison can observe; the table simply knows what those values mean.
+// 12), so the table does not change anything a differential comparison can
+// observe; it simply knows what those values mean.
+//
+// A handle carries its type. The type is what makes a wrong handle a diagnosable
+// mistake rather than a corrupt one: passing a find handle to ReadFile, or a
+// closed file to WriteFile, is reported as an invalid handle, and a host pointer
+// never appears here at all.
 enum GuestHandleType {
   kGuestHandleFree = 0,
   kGuestHandleStandard = 1,
@@ -176,14 +212,20 @@ enum GuestHandleType {
 struct GuestHandle {
   int type{kGuestHandleFree};
   int host_descriptor{-1};
+  // The access the handle was opened with, so a read through a write-only handle
+  // fails the way Windows fails it instead of succeeding wrongly.
+  bool may_read{false};
+  bool may_write{false};
+  // The guest path it was opened through, for diagnostics that name the file.
+  std::string path;
 };
 
 constexpr std::uint32_t kGuestHandleBase = 0x1000;
 constexpr std::uint32_t kGuestHandleCount = 1024;
 GuestHandle guest_handles[kGuestHandleCount];
-GuestHandle standard_handles[3] = {{kGuestHandleStandard, STDIN_FILENO},
-                                   {kGuestHandleStandard, STDOUT_FILENO},
-                                   {kGuestHandleStandard, STDERR_FILENO}};
+GuestHandle standard_handles[3] = {{kGuestHandleStandard, STDIN_FILENO, true, false, "<stdin>"},
+                                   {kGuestHandleStandard, STDOUT_FILENO, false, true, "<stdout>"},
+                                   {kGuestHandleStandard, STDERR_FILENO, false, true, "<stderr>"}};
 
 GuestHandle* guest_handle_lookup(std::uint64_t handle) {
   if (handle == 10) return &standard_handles[0];
@@ -199,6 +241,7 @@ GuestHandle* guest_handle_lookup(std::uint64_t handle) {
 std::uint64_t guest_handle_new(int type, int descriptor = -1) {
   for (std::uint32_t index = 1; index < kGuestHandleCount; ++index) {
     if (guest_handles[index].type == kGuestHandleFree) {
+      guest_handles[index] = GuestHandle{};
       guest_handles[index].type = type;
       guest_handles[index].host_descriptor = descriptor;
       return kGuestHandleBase + index * 4u;
@@ -207,12 +250,55 @@ std::uint64_t guest_handle_new(int type, int descriptor = -1) {
   return 0;  // exhausted; the shim reports the failure
 }
 
+// Opens a host file and hands back the guest handle for it, recording which way
+// the handle is allowed to be used.
+std::uint64_t guest_file_handle_new(int descriptor, bool may_read, bool may_write, const std::string& path) {
+  const auto handle = guest_handle_new(kGuestHandleFile, descriptor);
+  if (handle == 0) return 0;
+  const auto index = static_cast<std::uint32_t>((handle - kGuestHandleBase) / 4u);
+  guest_handles[index].may_read = may_read;
+  guest_handles[index].may_write = may_write;
+  guest_handles[index].path = path;
+  return handle;
+}
+
 void guest_handle_close(std::uint64_t handle) {
   auto* entry = guest_handle_lookup(handle);
   if (entry == nullptr || entry->type == kGuestHandleStandard) return;
   if (entry->host_descriptor >= 0) ::close(entry->host_descriptor);
   entry->type = kGuestHandleFree;
   entry->host_descriptor = -1;
+  entry->may_read = false;
+  entry->may_write = false;
+  entry->path.clear();
+}
+
+// The descriptor behind a handle, checked for the access the caller wants. An
+// invalid handle or a read through a write-only handle both report the Windows
+// error and give back -1, so the shim's failure path is one path.
+int guest_handle_descriptor(std::uint64_t handle, bool for_write, GuestContext* context) {
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    // An invalid handle is a normal Windows error, not a missing capability, so
+    // the guest is not stopped. But it is nearly always a bug in the guest -- a
+    // double close, or a handle used after CloseHandle -- and the alternative to
+    // naming it here is a program that silently does nothing to the wrong object.
+    if (context != nullptr) {
+      std::fprintf(stderr, "recomp: invalid handle 0x%" PRIx64 " passed to %s (ip=0x%" PRIx64 ")\n",
+                   handle, for_write ? "a write" : "a read", context->instruction_pointer);
+    }
+    return -1;
+  }
+  if (for_write && !entry->may_write) {
+    set_guest_last_error(kErrorAccessDenied);
+    return -1;
+  }
+  if (!for_write && !entry->may_read) {
+    set_guest_last_error(kErrorAccessDenied);
+    return -1;
+  }
+  return entry->host_descriptor;
 }
 
 int standard_handle_to_descriptor(std::uint64_t handle) {
@@ -293,35 +379,67 @@ void win32_write_file(GuestContext* context) {
   const auto buffer = import_argument(context, 1);
   const auto length = import_argument(context, 2);
   const auto written_pointer = import_argument(context, 3);
-  if (buffer + length > guest_memory_size) { set_import_result(context, 0); return; }
-  const auto descriptor = standard_handle_to_descriptor(handle);
+  if (buffer + length > guest_memory_size) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  // Resolved through the handle table rather than defaulting to stdout. A file
+  // handle used to fall through to STDOUT_FILENO, so a program that opened a
+  // file and wrote to it wrote to the terminal and was told it had succeeded.
+  const auto* entry = guest_handle_lookup(handle);
+  const auto descriptor = guest_handle_descriptor(handle, true, context);
+  if (descriptor < 0) { set_import_result(context, 0); return; }
   // The count reported back is what the host accepted, not what was requested.
   // Reporting the requested length made a short write -- a full disk, a closed
   // descriptor -- look like success, and a program that trusts the count would
   // believe data had been written that had not.
   std::uint64_t written = 0;
   while (written < length) {
-    const auto accepted = write_guest_output(
-        descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written),
-        static_cast<std::size_t>(length - written));
+    // The standard handles go through the output writer, which is what the
+    // differential reference captures; a real file is written straight to its own
+    // descriptor, because a file's bytes are not program output.
+    const auto accepted = entry != nullptr && entry->type == kGuestHandleStandard
+        ? write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer + written),
+                             static_cast<std::size_t>(length - written))
+        : ::write(descriptor, guest_memory + buffer + written, static_cast<std::size_t>(length - written));
     if (accepted <= 0) break;
     written += static_cast<std::uint64_t>(accepted);
   }
   if (written_pointer != 0) store_guest_memory(context, written_pointer, written, 4);
-  // WriteFile succeeds when it wrote something; a partial write is still a
-  // success with a short count, which is what the API specifies.
-  set_import_result(context, written != 0 ? 1 : 0);
+  if (written == 0 && length != 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    // WriteFile succeeds when it wrote something; a partial write is still a
+    // success with a short count, which is what the API specifies.
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
 }
 void win32_read_file(GuestContext* context) {
   const auto handle = import_argument(context, 0);
   const auto buffer = import_argument(context, 1);
   const auto length = import_argument(context, 2);
   const auto read_pointer = import_argument(context, 3);
-  if (buffer + length > guest_memory_size) { set_import_result(context, 0); return; }
-  const auto descriptor = standard_handle_to_descriptor(handle);
+  if (buffer + length > guest_memory_size) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto descriptor = guest_handle_descriptor(handle, false, context);
+  if (descriptor < 0) { set_import_result(context, 0); return; }
   auto count = ::read(descriptor, guest_memory + buffer, static_cast<std::size_t>(length));
-  if (count < 0) count = 0;
+  if (count < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    if (read_pointer != 0) store_guest_memory(context, read_pointer, 0, 4);
+    set_import_result(context, 0);
+    return;
+  }
   if (read_pointer != 0) store_guest_memory(context, read_pointer, static_cast<std::uint64_t>(count), 4);
+  // A read of zero bytes at end of file is a successful read of nothing; the
+  // guest distinguishes EOF from failure by the count, exactly as on Windows.
+  clear_guest_last_error();
   set_import_result(context, 1);
 }
 void win32_exit_process(GuestContext* context) {
@@ -335,11 +453,18 @@ void win32_terminate_process(GuestContext* context) {
 void win32_zero(GuestContext* context) { set_import_result(context, 0); }
 void win32_ignore(GuestContext* context) { (void)context; }
 void win32_one(GuestContext* context) { set_import_result(context, 1); }
+// GetLastError is the guest's only way to ask why something failed, so it reports
+// what the failing shim recorded rather than a constant that says "nothing went
+// wrong". SetLastError is a real store, because programs set it to 0 before a call
+// whose failure they want to distinguish from a previous one.
+void win32_get_last_error(GuestContext* context) { set_import_result(context, guest_last_error); }
+void win32_set_last_error(GuestContext* context) {
+  set_guest_last_error(static_cast<std::uint32_t>(import_argument(context, 0)));
+}
 void win32_current_process_id(GuestContext* context) { set_import_result(context, 4321); }
 void win32_current_thread_id(GuestContext* context) { set_import_result(context, 4321); }
 void win32_current_process(GuestContext* context) { set_import_result(context, static_cast<std::uint64_t>(-1)); }
 void win32_current_thread(GuestContext* context) { set_import_result(context, static_cast<std::uint64_t>(-2)); }
-void win32_module_handle(GuestContext* context) { set_import_result(context, recompiled_image_base); }
 void win32_is_processor_feature_present(GuestContext* context) { set_import_result(context, 0); }
 void win32_get_version(GuestContext* context) { set_import_result(context, 0x0a000000); }
 void win32_code_page(GuestContext* context) { set_import_result(context, 65001); }
@@ -756,6 +881,8 @@ void win32_lc_map_string_w(GuestContext* context) {
 // Defined with the kernel32 directory shims; a Windows path has no meaning on the
 // host, so it is translated in one place and used by every file-facing shim.
 std::string guest_path_to_host(std::string path);
+// Resolves through the app-directory policy and reports why a path was refused.
+bool guest_path_resolve(const std::string& guest_path, std::string& host_path, bool for_creation);
 
 constexpr std::uint64_t kCxxStringBytes = 24;
 constexpr std::uint64_t kCxxStringLocalCapacity = 15;
@@ -949,13 +1076,15 @@ constexpr std::uint64_t kCxxOfstreamBytes = 256;
 // libstdc++ openmode bits: app 1, ate 2, binary 4, in 8, out 16, trunc 32.
 void cxx_file_stream_construct(GuestContext* context, bool for_output) {
   const auto object = import_argument(context, 0);
-  const auto path = guest_path_to_host(read_guest_string(import_argument(context, 1)));
+  const auto requested = read_guest_string(import_argument(context, 1));
+  std::string path;
+  const auto resolved = guest_path_resolve(requested, path, true);
   const auto mode = import_argument(context, 2);
   const auto bytes = for_output ? kCxxOfstreamBytes : kCxxIfstreamBytes;
   if (object + bytes <= guest_memory_size) std::memset(guest_memory + object, 0, bytes);
   auto flags = for_output ? (O_WRONLY | O_CREAT) : O_RDONLY;
   if ((mode & 1u) != 0 || (mode & 2u) != 0) flags |= O_APPEND; else if (for_output) flags |= O_TRUNC;
-  const auto descriptor = ::open(path.c_str(), flags, 0644);
+  const auto descriptor = resolved ? ::open(path.c_str(), flags, 0644) : -1;
   if (descriptor < 0) {
     guest_streams.erase(object);  // is_open() reports false, as it should
   } else {
@@ -1413,13 +1542,37 @@ bool guest_glob_matches(const std::string& pattern, const std::string& name) {
   return p == pattern.size();
 }
 
+// Resolves a guest path through the app-directory policy. Returns false and
+// records a Windows error code when the path is refused, so every file-facing
+// shim has one failure path and the guest can ask what happened.
+bool guest_path_resolve(const std::string& guest_path, std::string& host_path, bool for_creation) {
+  const auto resolution = guest_file_sandbox().resolve(guest_path);
+  if (resolution.allowed()) {
+    host_path = resolution.host_path;
+    return true;
+  }
+  // A path that resolves inside the sandbox but names nothing is a missing file;
+  // a path the policy refused is a refusal. Reporting both as ERROR_FILE_NOT_FOUND
+  // would send the reader to look for a file that was never allowed to exist.
+  set_guest_last_error(resolution.status == GuestPathStatus::OutsideSandbox && !for_creation
+                           ? kErrorPathNotFound
+                           : kErrorAccessDenied);
+  // Named once per distinct path. A guest that probes optional files would
+  // otherwise bury its own output in repeats of the same line.
+  static std::vector<std::string> reported;
+  if (std::find(reported.begin(), reported.end(), guest_path) == reported.end()) {
+    reported.push_back(guest_path);
+    std::fprintf(stderr, "recomp: %s path '%s' (%s)\n",
+                 for_creation ? "refused creating" : "refused", guest_path.c_str(),
+                 resolution.reason.c_str());
+  }
+  return false;
+}
+
 std::string guest_path_to_host(std::string path) {
-  for (auto& character : path)
-    if (character == '\\') character = '/';
-  // A drive-qualified path has no meaning on the host; the rest of it is still
-  // the best interpretation available, and a relative path is used as given.
-  if (path.size() >= 2 && path[1] == ':') path.erase(0, 2);
-  return path.empty() ? std::string(".") : path;
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) return {};
+  return host_path;
 }
 
 void guest_fill_find_data(GuestContext* context, std::uint64_t address, const std::string& name,
@@ -1442,7 +1595,11 @@ void guest_fill_find_data(GuestContext* context, std::uint64_t address, const st
 void win32_find_first_file_a(GuestContext* context) {
   const auto pattern = read_guest_string(import_argument(context, 0));
   const auto output = import_argument(context, 1);
-  const auto host = guest_path_to_host(pattern);
+  std::string host;
+  if (!guest_path_resolve(pattern, host, false)) {
+    set_import_result(context, 0xffffffffull);  // INVALID_HANDLE_VALUE
+    return;
+  }
   const auto separator = host.find_last_of('/');
   const auto directory = separator == std::string::npos ? std::string(".") : host.substr(0, separator);
   const auto leaf = separator == std::string::npos ? host : host.substr(separator + 1);
@@ -1849,16 +2006,181 @@ void win32_lstrcpy_a(GuestContext* context) {
   }
   set_import_result(context, destination);
 }
+// ---- Win32 module table ---------------------------------------------------
+// A module handle stands for a DLL, and GetProcAddress means "the export of the
+// DLL I handed you". Resolving every name against one hard-coded library is not
+// a simplification: it reports a symbol as missing when the guest named a library
+// that does have it, and -- worse -- reports it as found with the wrong
+// implementation when two libraries export the same name. Delay-loaded DLLs,
+// plugins, and every `GetProcAddress` a game uses to probe for an optional
+// feature all arrive through here.
+std::map<std::uint64_t, std::string> guest_modules;              // handle -> library name
+std::map<std::string, std::uint64_t> guest_module_handles;       // library name -> handle
+
+std::string normalize_library_name(std::string name) {
+  for (auto& character : name)
+    character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  // A path names the same library however it is spelled, and an explicit .dll
+  // suffix is the same library as the bare name.
+  const auto slash = name.find_last_of("/\\");
+  if (slash != std::string::npos) name = name.substr(slash + 1);
+  if (name.size() > 4 && name.compare(name.size() - 4, 4, ".dll") == 0) name.erase(name.size() - 4);
+  return name;
+}
+
+// The handle for a library name, creating it on first use. The same name always
+// gives the same handle, which is what a program that loads a DLL twice expects.
+std::uint64_t guest_module_handle_for(const std::string& library_name) {
+  if (library_name.empty()) return recompiled_image_base;
+  const auto normalized = normalize_library_name(library_name);
+  const auto found = guest_module_handles.find(normalized);
+  if (found != guest_module_handles.end()) return found->second;
+  static std::uint64_t next_handle = 0;
+  if (next_handle == 0) next_handle = import_thunk_base() + 0x00020000;
+  const auto handle = next_handle;
+  next_handle += 0x10;
+  guest_module_handles[normalized] = handle;
+  guest_modules[handle] = normalized;
+  return handle;
+}
+
+// Reads a library name from the guest, widening a UTF-16 one to bytes. The wide
+// forms are not optional: an installer or a shell extension built with Unicode
+// everywhere names its DLLs only in the W variants.
+std::string read_guest_wide_string(std::uint64_t address) {
+  std::string text;
+  for (std::uint64_t index = 0; index < 512; ++index) {
+    if (address + index * 2 + 1 >= guest_memory_size) break;
+    const auto unit = load_guest_memory(nullptr, address + index * 2, 2);
+    if (unit == 0) break;
+    text.push_back(static_cast<char>(unit & 0xffu));
+  }
+  return text;
+}
+
+// Which library a module handle refers to. nullptr means "not one this runtime
+// handed out", and the caller decides whether that is a search-everything case
+// (Windows' NULL, meaning the default search order) or a genuine bad handle.
+const char* guest_module_library(std::uint64_t handle) {
+  const auto found = guest_modules.find(handle);
+  return found == guest_modules.end() ? nullptr : found->second.c_str();
+}
+
+void win32_get_module_handle(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  if (argument == 0) {
+    // NULL asks for the module the program was started from, which is the image
+    // the recompiler translated.
+    set_import_result(context, recompiled_image_base);
+    return;
+  }
+  const auto name = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  set_import_result(context, guest_module_handle_for(name));
+}
+
+void win32_load_library(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  if (argument == 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto name = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  if (name.empty()) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  // A DLL this runtime has no providers for still gets a handle, because
+  // LoadLibrary succeeds for any module the loader can find and the program's own
+  // next move is the informative one: it calls GetProcAddress, and *that* is where
+  // a missing capability has to be named. Failing here would hide which symbol the
+  // program was really after.
+  const auto handle = guest_module_handle_for(name);
+  clear_guest_last_error();
+  set_import_result(context, handle);
+}
+
+void win32_free_library(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  if (handle == recompiled_image_base) {
+    // Windows refuses to unmap the image the process started from.
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto* library_name = guest_module_library(handle);
+  if (library_name == nullptr) {
+    set_guest_last_error(kErrorModNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  guest_module_handles.erase(normalize_library_name(library_name));
+  guest_modules.erase(handle);
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_get_module_handle_a(GuestContext* context) { win32_get_module_handle(context, false); }
+void win32_get_module_handle_w(GuestContext* context) { win32_get_module_handle(context, true); }
+void win32_load_library_a(GuestContext* context) { win32_load_library(context, false); }
+void win32_load_library_w(GuestContext* context) { win32_load_library(context, true); }
+
 void win32_get_proc_address(GuestContext* context) {
-  const auto name = read_guest_string(import_argument(context, 1));
+  const auto module_handle = import_argument(context, 0);
+  const auto name_argument = import_argument(context, 1);
+  // MAKEINTRESOURCE(n) is a value that is not a pointer: anything below the first
+  // mapped page is an ordinal, not a name to read out of guest memory.
+  if (name_argument < 0x10000) {
+    const auto ordinal = static_cast<std::uint32_t>(name_argument);
+    const auto* library = module_handle == 0 ? "?" : guest_module_library(module_handle);
+    std::fprintf(stderr,
+                 "recomp: GetProcAddress(ordinal %u of %s) is not mapped to a name; "
+                 "returning NULL\n",
+                 ordinal, library != nullptr ? library : "an unknown module");
+    set_guest_last_error(kErrorProcNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto name = read_guest_string(name_argument);
   void (*function)(GuestContext*) = nullptr;
-  if (!lookup_win32_import("kernel32.dll", name.c_str(), &function)) {
+  std::string resolved_library;
+  if (module_handle != 0 && module_handle != recompiled_image_base) {
+    const auto* library = guest_module_library(module_handle);
+    if (library == nullptr) {
+      // A handle this runtime did not hand out. Returning NULL is what Windows
+      // does for a module it does not know, and the program's own error path is
+      // more informative than a guess would be.
+      std::fprintf(stderr, "recomp: GetProcAddress(\"%s\") given unknown module handle 0x%" PRIx64 "\n",
+                   name.c_str(), module_handle);
+      set_guest_last_error(kErrorInvalidHandle);
+      set_import_result(context, 0);
+      return;
+    }
+    // guest_module_library hands back the normalized name, which has no suffix;
+    // the shim table is keyed on the name with it.
+    resolved_library = std::string(library) + ".dll";
+    lookup_win32_import(resolved_library.c_str(), name.c_str(), &function);
+  } else {
+    // NULL or the image itself: search the libraries a process already has. The
+    // list comes from the shim table itself, so the day a user32 provider lands,
+    // a probe for a user32 symbol starts resolving without anything else having
+    // to be edited to allow it.
+    for (const auto* library : win32_known_libraries()) {
+      if (lookup_win32_import(library, name.c_str(), &function)) {
+        resolved_library = library;
+        break;
+      }
+    }
+  }
+  if (function == nullptr) {
     // The real API returns NULL for a name it cannot resolve, and programs probe
     // for optional symbols precisely because that is allowed. Terminating here
     // turned a routine negative probe into a hard failure -- and a program that
     // genuinely needs the symbol still fails, at the call through the null it
     // was given, which is what Windows does too.
     std::fprintf(stderr, "recomp: GetProcAddress(\"%s\") not provided; returning NULL\n", name.c_str());
+    set_guest_last_error(kErrorProcNotFound);
     set_import_result(context, 0);
     return;
   }
@@ -1866,7 +2188,7 @@ void win32_get_proc_address(GuestContext* context) {
   if (next_thunk == 0) next_thunk = import_thunk_base() + 0x00010000;
   const auto address = next_thunk;
   next_thunk += 0x10;
-  register_import_thunk(address, function, "kernel32.dll", name.c_str());
+  register_import_thunk(address, function, resolved_library.c_str(), name.c_str());
   set_import_result(context, address);
 }
 
@@ -1882,15 +2204,15 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "ReadFile", win32_read_file},
     {"kernel32.dll", "ExitProcess", win32_exit_process},
     {"kernel32.dll", "TerminateProcess", win32_terminate_process},
-    {"kernel32.dll", "GetLastError", win32_zero},
-    {"kernel32.dll", "SetLastError", win32_ignore},
+    {"kernel32.dll", "GetLastError", win32_get_last_error},
+    {"kernel32.dll", "SetLastError", win32_set_last_error},
     {"kernel32.dll", "GetCurrentProcessId", win32_current_process_id},
     {"kernel32.dll", "GetCurrentThreadId", win32_current_thread_id},
     {"kernel32.dll", "GetCurrentProcess", win32_current_process},
     {"kernel32.dll", "GetCurrentThread", win32_current_thread},
     {"kernel32.dll", "IsDebuggerPresent", win32_zero},
-    {"kernel32.dll", "GetModuleHandleA", win32_module_handle},
-    {"kernel32.dll", "GetModuleHandleW", win32_module_handle},
+    {"kernel32.dll", "GetModuleHandleA", win32_get_module_handle_a},
+    {"kernel32.dll", "GetModuleHandleW", win32_get_module_handle_w},
     {"kernel32.dll", "GetModuleFileNameA", win32_zero},
     {"kernel32.dll", "SetUnhandledExceptionFilter", win32_zero},
     {"kernel32.dll", "UnhandledExceptionFilter", win32_one},
@@ -2099,9 +2421,9 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "WideCharToMultiByte", win32_zero},
     {"kernel32.dll", "MultiByteToWideChar", win32_zero},
     {"kernel32.dll", "GetProcAddress", win32_get_proc_address},
-    {"kernel32.dll", "LoadLibraryA", win32_module_handle},
-    {"kernel32.dll", "LoadLibraryW", win32_module_handle},
-    {"kernel32.dll", "FreeLibrary", win32_one},
+    {"kernel32.dll", "LoadLibraryA", win32_load_library_a},
+    {"kernel32.dll", "LoadLibraryW", win32_load_library_w},
+    {"kernel32.dll", "FreeLibrary", win32_free_library},
 };
 
 }  // namespace
@@ -2632,10 +2954,33 @@ std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_w
   return stack_top - pointer;
 }
 
+// Chooses the directory a recompiled app is allowed to touch. The explicit
+// choice wins, then the directory the generator recorded for the input image,
+// then the host working directory -- which is what an un-bundled app expects,
+// because a Windows program reads its data files from next to itself.
+//
+// Something always has to be chosen. Leaving the sandbox unarmed would refuse
+// every path, and the refusal would look like a missing file rather than like a
+// policy that was never told where the app lives.
+void arm_guest_file_sandbox() {
+  auto& sandbox = guest_file_sandbox();
+  if (const char* explicit_root = std::getenv("RECOMP_APP_DIR")) {
+    if (explicit_root[0] != '\0') {
+      sandbox.set_root(explicit_root);
+      return;
+    }
+  }
+  if (!sandbox.armed()) {
+    std::array<char, 4096> buffer{};
+    if (::getcwd(buffer.data(), buffer.size()) != nullptr) sandbox.set_root(buffer.data());
+  }
+}
+
 void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top) {
   recompiled_image_base = image_base;
   next_heap_address = heap_base;
   heap_initialize(heap_base, stack_top);
+  arm_guest_file_sandbox();
   build_environment_blocks();
   const char* command_line = "recomp-guest";
   std::memcpy(guest_memory + guest_reserved_top() - 0x500000, command_line, std::strlen(command_line) + 1);

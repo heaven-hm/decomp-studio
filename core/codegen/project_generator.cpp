@@ -55,6 +55,7 @@ std::uint64_t choose_stack_top(const binary::PortableExecutable& executable,
 
 std::string read_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("cannot read " + path.string() + ": it is not present");
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
@@ -119,11 +120,13 @@ GeneratedProject ProjectGenerator::generate(const std::filesystem::path& output_
   }
 
   const auto runtime_directory = configuration_.runtime_directory;
-  for (const auto name : {"recomp_runtime.hpp", "recomp_runtime.cpp", "win32_abi.hpp", "upstream_scanf.c",
+  for (const auto name : {"recomp_runtime.hpp", "recomp_runtime.cpp", "win32_abi.hpp",
+                          "guest_file_system.hpp", "upstream_scanf.c",
                           "scanf.h", "hisahi-scanf-LICENSE"}) {
     const auto source = runtime_directory / name;
     const auto destination = output_directory / name;
     std::ofstream output(destination, std::ios::binary);
+    if (!output) throw std::runtime_error("cannot write " + destination.string());
     output << read_file(source);
     project.runtime_sources.push_back(destination);
   }

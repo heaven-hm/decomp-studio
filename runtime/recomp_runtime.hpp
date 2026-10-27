@@ -77,6 +77,13 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
 // they begin from the same state rather than from two lists that happen to agree.
 void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top);
 
+// Chooses the directory the recompiled app may open files in. RECOMP_APP_DIR wins;
+// otherwise the host working directory is used. Called from
+// initialize_guest_state, so both the generated executable and the differential
+// reference resolve guest paths against the same root -- two different answers to
+// "which file did the guest open" would be a comparison that measures the harness.
+void arm_guest_file_sandbox();
+
 // The stack pointer a guest starts with, and the address a sentinel return is
 // written to. A guest entry point is entered as if called, so a return address is
 // on the stack; placing a zero there means the entry point's `ret` terminates

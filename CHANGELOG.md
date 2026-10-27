@@ -401,6 +401,17 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The three floating-point divergences are the **x87 status word**, and the store
+  that exposed them is an ordinary one. The differing slot is written by
+  `mov word ptr [rsp+0x3c], ax` — a plain 2-byte store of AX, not an x87
+  instruction — so the memory difference is a symptom: AX itself differs between the
+  two sides at that point, and because the divergence falls *between* checkpoints
+  the register comparison never saw it. The two values are status words agreeing on
+  TOP, C2 and C3 and differing in the **exception-flag field** (candidate `0x3f`,
+  reference `0x00`) and in **C1**. The concrete site is `x87_round_to_float`, which
+  sets `kX87PrecisionFlag` when a double does not round-trip through `float`; that
+  is one of the six flags. The other five are not yet traced.
+
 - The three floating-point memory divergences are **x87 environment state**, and the
   `WriteFile` hypothesis is refuted. Dumping the memory at the divergent checkpoint
   and diffing it localises the difference to four bytes at `ESP+332`: the reference

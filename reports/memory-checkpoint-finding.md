@@ -326,9 +326,52 @@ register tags, no full environment model), and it is now specific: `x87.exe`,
 `fnstenv`/`fnsave`, and the divergence is in the environment those instructions
 write.
 
+## Resolved: it is the x87 status word, and the store is an ordinary one
+
+The differing slot is written by `0x1400015b3`:
+
+```
+0x1400015b3  mov   word ptr [rsp + 0x3c], ax
+0x1400015b8  fldcw word ptr [rsp + 0x3c]
+```
+
+That is an **ordinary 2-byte store of AX**, not an x87 instruction. So the memory
+difference is a symptom: **AX itself differs between the two sides at that point**,
+and because the divergence is between checkpoints — the registers are only compared
+every 1000 instructions — the register comparison never saw it.
+
+The two values are x87 status words:
+
+| | value | TOP | C3 | C2 | C1 | C0 | exception flags |
+|---|---|---|---|---|---|---|---|
+| candidate | `0x0e7f` | 1 | 0 | 1 | 1 | 0 | `0x3f` |
+| reference | `0x0c00` | 1 | 0 | 1 | 0 | 0 | `0x00` |
+
+They agree on TOP and on C2 and C3, and differ in the **exception-flag field** — the
+candidate reports all six exception flags pending where the reference reports none —
+and in **C1**.
+
+So the divergence is the **x87 status word**, which is exactly where the documented
+modelling limit lives: the x87 stack is held as `double`, so precision is lost and
+the flags that record it are set differently. The concrete site is
+`x87_round_to_float` in `runtime/recomp_runtime.hpp`, which sets
+`kX87PrecisionFlag` whenever a double does not round-trip through `float`:
+
+```cpp
+inline float x87_round_to_float(GuestContext* context, double value) {
+  const auto nearest = static_cast<float>(value);
+  if (static_cast<double>(nearest) == value) return nearest;
+  context->x87_status_word |= kX87PrecisionFlag;
+```
+
+That accounts for one of the six flags. The other five are not yet traced.
+
 ## Not established
 
-Whether the candidate or the reference is right about the x87 environment, and
+Whether the candidate or the reference is right about the x87 status word, and where
+the other five exception flags are set. The next step is to log the x87 status word
+on both sides at `0x1400015b3` and trace it back to the operation that set each bit,
+rather than reading the memory it was eventually stored to., and
 whether closing it means modelling the x87 tag word and the 80-bit register file.
 The next step is to log the x87 state at that instruction on both sides -- the
 control word, the status word and the tag word -- rather than the memory they were

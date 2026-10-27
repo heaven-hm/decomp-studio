@@ -4,6 +4,11 @@ Recomp Studio does not vendor or redistribute third-party source code. It links
 against or invokes the following components, and it was designed by studying the
 listed open-source recompilation projects.
 
+`runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
+[hisahi/scanf](https://github.com/hisahi/scanf) at commit
+`9acf085770db2a7319cdb2d7498e855d5edba9ab`, copyright 2021 Sampo Hippeläinen.
+Its MIT license is reproduced in [third_party/hisahi-scanf-LICENSE](third_party/hisahi-scanf-LICENSE).
+
 ## Build and runtime dependencies
 
 | Component | License | Use |

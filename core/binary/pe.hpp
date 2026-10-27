@@ -81,7 +81,32 @@ class PortableExecutable {
   bool is_managed() const { return !managed_reason.empty(); }
 
   std::string format_name() const { return is_64_bit ? "PE32+" : "PE32"; }
-  std::string architecture_name() const { return is_64_bit ? "x86_64" : "x86"; }
+  // The architecture comes from the COFF machine field, not from the bitness. Deriving
+  // it from `is_64_bit` alone reported every 64-bit image as x86_64 -- including an
+  // AArch64 PE32+, which was then decoded as x86-64 machine code and given a census of
+  // 43,367 invented instructions. This project's stated goal is to detect the CPU
+  // architecture; reporting the wrong one is worse than reporting none.
+  std::string architecture_name() const {
+    switch (machine) {
+      case 0x014c: return "x86";
+      case 0x8664: return "x86_64";
+      case 0xaa64: return "arm64";
+      case 0x01c0:
+      case 0x01c4: return "arm";
+      case 0x0200: return "ia64";
+      case 0x5032: return "riscv32";
+      case 0x5064: return "riscv64";
+      case 0x5128: return "riscv128";
+      case 0x0166: return "mips";
+      case 0x01f0: return "powerpc";
+      case 0x01f1: return "powerpc_fp";
+      default: return is_64_bit ? "x86_64" : "x86";
+    }
+  }
+
+  // Whether this build can read the image at all. The MVP reads Intel x86 and x86-64;
+  // anything else must be refused by name rather than decoded as something it is not.
+  bool is_supported_architecture() const { return machine == 0x014c || machine == 0x8664; }
 
   const Section* section_containing(std::uint32_t rva) const;
   std::optional<std::uint32_t> file_offset_for_rva(std::uint32_t rva) const;

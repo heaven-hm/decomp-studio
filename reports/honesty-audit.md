@@ -1119,3 +1119,52 @@ Two things are worth keeping from this:
   suite has no fixture large or varied enough to notice.
 - **"It fixed the symptom I was looking at" is not evidence that a heuristic is sound.**
   The seed did fix the atexit fixture. It was still wrong.
+
+
+## The architecture name came from the bitness, not the machine field
+
+The independent catalogue found that an **AArch64 PE32+** was reported as `x86_64`. It is
+one file, but it is the architecture this branch is named for, and the tool's stated goal
+is to detect the CPU architecture.
+
+The cause is one line:
+
+```cpp
+// core/binary/pe.hpp, before
+std::string architecture_name() const { return is_64_bit ? "x86_64" : "x86"; }
+```
+
+The architecture was derived from **bitness alone**, ignoring the COFF machine field. So
+every 64-bit PE was called x86_64 — including `0xAA64` (ARM64) — and every 32-bit PE was
+called x86, including `0x01C0` (ARM). `inspect` then reported `PE32+ (x86_64)` and
+`coverage` decoded 43,367 ARM64 instructions as x86-64, producing a census of
+instructions that do not exist; `translate` refused with `unsupported instruction 'sti'`,
+naming a mnemonic the program never contained.
+
+`architecture_name()` now switches on the machine field and names arm64, arm, ia64,
+riscv32/64/128, mips and powerpc, and `parse` **refuses** an architecture this build
+cannot read, by name:
+
+```
+error: input is a Windows PE image for arm64; this build reads Windows PE32 (x86) and
+PE32+ (x86-64) input only
+```
+
+**The detection module had it right all along.** `core/detection/detection.cpp` uses
+`architecture_for_pe_machine(machine)`; `detect` has always reported `arm64` for this
+file. Only `PortableExecutable::architecture_name()`, which is what `inspect`,
+`translate` and `coverage` print, was wrong.
+
+That is the **third instance of the same class** in this audit:
+
+| fact | computed in two places | which was wrong |
+|---|---|---|
+| whether an import is implemented | `imports` command vs the runtime | the command |
+| a PE's architecture | `detect` vs `PortableExecutable` | `PortableExecutable` |
+| a PE's format string | `format_name()` and `architecture_name()` | both derived from bitness |
+
+In every case the wrong one is the one the **CLI prints**, and in every case the correct
+rule already existed somewhere else in the same repository. That is a pattern worth
+naming: the duplication is not the bug, but it is why the bug survived — a fact computed
+twice will eventually be computed two ways, and the copy nobody runs is the one that
+stays correct.

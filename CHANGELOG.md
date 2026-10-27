@@ -401,6 +401,18 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **The PE architecture came from the bitness, not the COFF machine field.**
+  `architecture_name()` returned `is_64_bit ? "x86_64" : "x86"`, so an **AArch64 PE32+**
+  was reported as `x86_64`, its 43,367 ARM64 instructions were decoded as x86-64, and
+  `translate` refused it with `unsupported instruction 'sti'` — a mnemonic the program
+  never contained. It now switches on the machine field and names arm64, arm, ia64,
+  riscv32/64/128, mips and powerpc, and `parse` **refuses** an architecture this build
+  cannot read, by name: *"input is a Windows PE image for arm64; this build reads
+  Windows PE32 (x86) and PE32+ (x86-64) input only"*. The detection module had it right
+  all along — `detect` always reported `arm64`; only the accessor the CLI prints was
+  wrong. That is the third instance of one fact computed in two places where the copy
+  the CLI uses is the wrong one, after the import report and the format string.
+
 - **Removed a discovery seed that was a regression.** A `lea reg, [rip + disp]` whose
   target lands on code was taken as a function entry, gated only by "eight instructions
   decode here". Measured on one real application by disabling just that seed: 9,061

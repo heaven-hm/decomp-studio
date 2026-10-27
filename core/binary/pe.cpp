@@ -214,6 +214,14 @@ PortableExecutable PortableExecutable::parse(const std::filesystem::path& path) 
     throw ParseError("machine/optional-header mismatch (x86 with PE32+)");
   if (executable.machine == 0x8664 && !executable.is_64_bit)
     throw ParseError("machine/optional-header mismatch (x64 with PE32)");
+  // Refuse an architecture this build cannot read, BY NAME. Decoding AArch64 machine
+  // code as x86-64 produces a plausible-looking census of instructions that do not
+  // exist, and a refusal reason naming a mnemonic the program never contained is worse
+  // than no answer.
+  if (!executable.is_supported_architecture()) {
+    throw ParseError("input is a Windows PE image for " + executable.architecture_name() +
+                     "; this build reads Windows PE32 (x86) and PE32+ (x86-64) input only");
+  }
 
   executable.entry_point_rva = read_little_u32(bytes, optional_offset + 16);
   executable.subsystem = read_little_u16(bytes, optional_offset + 68);

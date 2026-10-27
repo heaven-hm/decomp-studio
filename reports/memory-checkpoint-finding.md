@@ -161,9 +161,50 @@ here as the next thing to check rather than as a conclusion.
 `--checkpoints memory` therefore stays declared **planned**, but the reason is now
 specific and small: three floating-point fixtures, not the whole corpus.
 
+## Established since: the two sides disagreed about what an instruction is
+
+Comparing the streams for `x87.exe` showed the reference **repeating the same
+address** while the candidate advanced:
+
+```
+9253: ref=0x140001909 cand=0x140001909
+9254: ref=0x140001909 cand=0x140001909
+9255: ref=0x140001909 cand=0x14000190b   <-- first difference
+```
+
+`0x140001909` is `rep movsb`. A `rep`-prefixed instruction is **one guest
+instruction** that the emulator runs once per iteration, and Unicorn fires the code
+hook for each; the candidate lifts it as a single `string_move` call and traces it
+once. So the reference's stream, its instruction count and its checkpoint indices
+all advanced once per byte copied.
+
+That is a defect in the **harness**, not in the translation, and it is not confined
+to this fixture: every program that executes a string instruction had the two sides
+counting different things from that point on. The hook now collapses consecutive
+repeats, which counts a `rep` once — what the guest instruction stream actually
+contains. A loop that revisits an address does not repeat it consecutively, so it is
+unaffected.
+
+With that fixed, the streams for `x87.exe` are identical: 9948 addresses each.
+
 ## Not established
 
-Whether the x87 precision limit explains the three remaining fixtures. Either
+The three floating-point fixtures still disagree on memory at the same checkpoints
+after the `rep` fix, so that divergence is **separate** from the `rep` counting and
+is not explained by it:
+
+```
+memory agrees: 19   disagrees: 3
+  pe32_simd_convert.exe: checkpoint 12 at 0x401048
+  simd_convert.exe:      checkpoint 7  at 0x140001039
+  x87.exe:               checkpoint 3  at 0x1400010a8
+```
+
+All three are floating-point, which is consistent with the documented x87 limit, but
+that is still a hypothesis. The store log is the instrument that will settle it: it
+records the **width** of every store, so an 80-bit (`tbyte`) store that differs on
+the two sides would be visible directly. The next step is to diff the store logs for
+`x87.exe` and look for a width-10 store rather than a width-8 one. Either
 
 - the candidate writes `1` into a slot where the reference's frame still holds the
   return address of the `call rbx` at `0x140001076`, which would mean the

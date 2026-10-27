@@ -401,6 +401,20 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **The reference counted a `rep` instruction once per iteration.** A `rep`-prefixed
+  instruction is one guest instruction that the emulator runs once per iteration,
+  and Unicorn fires the code hook for each; the candidate lifts it as a single
+  `string_move` and traces it once. So the reference's executed-address stream, its
+  instruction count and its checkpoint indices all advanced once per byte copied —
+  meaning the two sides were comparing **different points in execution** from the
+  first `rep` a program ran. That is a defect in the harness, not the translation,
+  and it affected every program using a string instruction. The hook now collapses
+  consecutive repeats, which counts a `rep` once, as the guest instruction stream
+  does; a loop that revisits an address is unaffected because it does not repeat
+  consecutively. Found by comparing the streams for `x87.exe`, where the reference
+  repeated `0x140001909` — `rep movsb` — while the candidate advanced. With it
+  fixed those streams are identical, 9948 addresses each.
+
 - The guest-memory digest compared **dead stack**. It covered
   `[ESP - 0x1000, ESP)`, but memory below the stack pointer is memory the program
   has moved past and cannot read again, and the two sides legitimately differ

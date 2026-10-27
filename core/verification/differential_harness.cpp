@@ -55,6 +55,7 @@ struct ReferenceState {
   // Guest state at recorded checkpoints, for comparison against the candidate's.
   std::uint64_t guest_instruction_count{};
   std::uint64_t current_instruction{};
+  std::uint64_t last_counted_address{~0ull};
   std::FILE* store_log{};
   std::vector<GuestCheckpoint> checkpoints;
 };
@@ -226,6 +227,15 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
   (void)size;
   auto& state = *static_cast<ReferenceState*>(user_data);
   state.current_instruction = address;
+  // A `rep`-prefixed instruction is one guest instruction that the emulator runs
+  // once per iteration, and the hook fires for each. The candidate lifts it as a
+  // single call, so counting and tracing every iteration makes the two streams --
+  // and the checkpoint indices -- drift apart from the first `rep` a program
+  // executes. Collapsing consecutive repeats counts it once, which is what the
+  // guest instruction stream actually contains. A loop that legitimately revisits
+  // an address does not repeat it consecutively, so it is unaffected.
+  if (address == state.last_counted_address) return;
+  state.last_counted_address = address;
   // An import thunk is a host bridge, not a guest instruction, and the candidate
   // never executes one. Counting it here made the reported instruction count
   // describe a stream the candidate does not have -- it was inflated by exactly

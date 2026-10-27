@@ -10,7 +10,7 @@ not a claim about every copy of a binary in the corpus.
 | --- | --- | --- | --- | --- | --- |
 | blackbox | `win32/blackbox.exe` | Passed | Exit 3 | Failed | Baseline `c14ef07`; at `4e9d7dc` it reaches missing `InitCommonControls` |
 | fifteensolver | `win32/fifteensolver.exe` | Passed | Exit 1, no stdout | Failed; reference completed, candidate did not | `autorecomp` with `--autorepair --buildrun`, baseline at `c14ef07` |
-| plink | `win64/plink.exe` | Not reached | Not reached | Not reached | Before `374664f`, translation stopped on memory-source `pshufd`; after `0ffb4de`, it stops on `punpcklwd` |
+| plink | `win64/plink.exe` | Not reached | Not reached | Not reached | Before `374664f`, translation stopped on memory-source `pshufd`; after `3c90f4d`, it stops on `aeskeygenassist` |
 
 **Applications newly verified by this work: 0.** The audit and fixes are still
 in progress. The other corpus locations have not yet been fully run and cannot
@@ -20,9 +20,12 @@ be counted as passing.
 | --- | ---: | ---: | ---: | --- |
 | `win64/*.exe` | 52 | 0 | 52 | Sweep used per-app output directories; builds changed during the run, so this is a mixed-revision observation, not a single-version benchmark. |
 
-A recursive signature inventory found 489 MZ files, 10 Mach-O/fat files and
-8 ELF files among 13,810 files. These are file counts, including copies and
-libraries, not unique applications or successful recompilations. The project
+A recursive signature inventory found 489 valid PE files, 10 Mach-O/fat files and
+8 ELF files among 13,810 files. The PE files have 303 distinct SHA-256 hashes;
+152 hashes are associated with images without the PE DLL flag. These are input
+counts, including copies and images not necessarily runnable as applications,
+not successful recompilations. A run of executable paths outside `win32` and
+`win64` is in progress. The project
 currently accepts Windows PE input, so the non-PE inputs need separate support
 and must not be counted as running on the basis of their presence.
 
@@ -33,6 +36,7 @@ and must not be counted as running on the basis of their presence.
 | Implement the DBCS lead-byte probe for the runtime's UTF-8 ANSI code page | The runtime test checks ASCII and high-byte inputs on both guest widths. `blackbox.exe` then advances to the unimplemented `comctl32.dll!InitCommonControls`; it still fails and is not counted as an app fixed. | `4e9d7dc` |
 | Lift memory-source `pshufd` | A PE fixture failed at this instruction before the fix; afterward `pshufd_mem_ok=1`, native run exited 0, and 1,548 output bytes matched the reference. `plink.exe` advances to `shufps` but remains unsupported. | `374664f` |
 | Lift register and memory forms of `shufps` | The PE fixture failed before the fix; afterward both `shufps_reg_ok=1` and `shufps_mem_ok=1`, and 1,582 output bytes matched the reference. `plink.exe` advances to `punpcklwd` and remains unsupported. | `0ffb4de` |
+| Lift memory-source packed unpack forms | A PE fixture first failed on `punpcklbw`; after the fix all eight byte/word/dword/qword low/high checks equal 1. Both PE32 and PE32+ runs produced 1,718 bytes matching their references. `plink.exe` advances to `aeskeygenassist` and remains unsupported. | `3c90f4d` |
 
 The observed input SHA-256 values are `7773fa08db2ab5a620a4ef4391a5f0fbd1af73474589128c6d0ef46f1c0b2d6e`
 for `win32/blackbox.exe` and `47b443772e36be8a8cf8c45fe80951a466264f370fa28a4851ea57b5c1f17d95`

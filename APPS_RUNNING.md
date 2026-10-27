@@ -11,7 +11,7 @@ not a claim about every copy of a binary in the corpus.
 | blackbox | `win32/blackbox.exe` | Passed | Exit 3 | Failed | Baseline `c14ef07`; at `4e9d7dc` it reaches missing `InitCommonControls` |
 | fifteensolver | `win32/fifteensolver.exe` | Passed | Exit 1, no stdout | Failed; reference completed, candidate did not | `autorecomp` with `--autorepair --buildrun`, baseline at `c14ef07` |
 | plink | `win64/plink.exe` | Not reached | Not reached | Not reached | Before `374664f`, translation stopped on memory-source `pshufd`; after `3c90f4d`, it stops on `aeskeygenassist` |
-| game2048 | `windows/x64/games/game2048.exe` | Passed | EOF: exit 0 and 347 bytes; `q`: exit 3 | EOF: passed; interactive path not verified | After `5fe2627`, EOF output matches the reference. Piping `q` reaches an unresolved indirect jump at `0x140002daf`, so the game is not yet counted as fixed. |
+| game2048 | `windows/x64/games/game2048.exe` | Passed | EOF: exit 0 and 347 bytes; `q`: exit 3 | EOF comparison passed; repair unresolved; interactive path not verified | At `0be6c42`, EOF output matched, but the repair pass did not verify and three registered exit handlers did not run. Earlier `q` input reached an unresolved indirect jump at `0x140002daf`. The game is not counted as fixed. |
 | arith-calc | `windows/x64/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `bb67ed0c581a1a00cfce9fd324c4003a970d4869829bb472e5f91b4ee476be3c` |
 | arith-calc | `windows/x86/apps/arith-calc.exe` | Passed | Exit 0; 172 bytes | Passed | Corpus audit; SHA-256 `9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6` |
 
@@ -22,12 +22,26 @@ corpus locations have not yet been fully run and cannot be counted as passing.
 
 | Corpus slice | Commands completed | Exit 0 | Exit nonzero | Notes |
 | --- | ---: | ---: | ---: | --- |
-| `win32/*.exe` | 74 | 1 | 73 | Requested shared-output loop. `fillingsolver.exe` reported verification with zero output bytes; this does not demonstrate interactive use. The binary was rebuilt during the loop, so results span revisions. |
-| `win64/*.exe` | 52 | 0 | 52 | Sweep used per-app output directories; builds changed during the run, so this is a mixed-revision observation, not a single-version benchmark. |
-| `win64/*.exe` rerun | 52 | 0 | 52 | Per-app output sweep after `5fe2627`; all returned nonzero before the later `ac4a69c` change. |
+| `win32/*.exe` | 74 | 1 | 73 | Historical shared-output loop. `fillingsolver.exe` reported verification with zero output bytes; this does not demonstrate interactive use. Builds changed during the run. The then-unrecognized `--autorepair` was silently ignored, so repair did not run. |
+| `win64/*.exe` | 52 | 0 | 52 | Historical per-app output sweep; revisions changed during the run and `--autorepair` was silently ignored. |
+| `win64/*.exe` rerun | 52 | 0 | 52 | Per-app output sweep after `5fe2627`; all returned nonzero before `ac4a69c`. `--autorepair` was silently ignored. |
 
-The feature branch's architecture-neutral IR updates were merged at `53f773e`;
-observations made before that merge need to be rerun on the integrated revision.
+The feature branch's architecture-neutral IR updates were merged at `53f773e`
+and its subsequent verification and discovery updates at `c9b4d81`. The
+`--autorepair` spelling is accepted and enables repair starting at `0be6c42`;
+the exact requested win32 loop is being rerun. Observations made before these
+changes need to be rerun on the integrated revision. Temporary logs from the
+earlier sweeps were removed by the host; the counts above are the recorded
+observations, not a retained per-app log archive.
+
+## Open-issue priority
+
+| Issue | Priority for running apps | Reason |
+| --- | --- | --- |
+| [#4 Wine-derived compatibility](https://github.com/heaven-hm/recomp-studio/issues/4) | Highest | The GUI corpus reaches missing `comctl32`, `user32`, and `gdi32` APIs; reusable compatibility code addresses that broad blocker. |
+| [#5 Remill or similar semantics](https://github.com/heaven-hm/recomp-studio/issues/5) | High | Missing instruction and discovery coverage blocks many x64 programs; integration must retain the current verification gate. |
+| [#6 OSS integration policy](https://github.com/heaven-hm/recomp-studio/issues/6) | Supporting | Document source provenance and licensing. The issue's proposed no-copy policy conflicts with the requested source reuse and does not govern this audit. |
+| [#3 semantic names](https://github.com/heaven-hm/recomp-studio/issues/3) | Later | Improves readability but does not itself make an executable run. |
 
 Ghidra 12.2 headless imported `game2048.exe` and ran its supplied
 `FixSwitchStatementsWithDecompiler.java` and `FindUnrecoveredSwitchesScript.java`

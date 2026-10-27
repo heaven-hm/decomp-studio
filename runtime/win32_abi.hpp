@@ -138,6 +138,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "__p___argc", 0, false},
     {"msvcrt.dll", "__p___argv", 0, false},
     {"msvcrt.dll", "__p__commode", 0, false},
+    {"msvcrt.dll", "__p__acmdln", 0, false},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Register", 1, false},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Unregister", 1, false},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Resume", 1, false},

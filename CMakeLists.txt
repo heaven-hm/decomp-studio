@@ -72,6 +72,11 @@ target_compile_options(recomp-studio PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(recomp-studio PRIVATE
   RECOMP_DEFAULT_RUNTIME_DIR="${CMAKE_CURRENT_SOURCE_DIR}/runtime")
 
+add_executable(runtime_command_line_test tests/compat/runtime_command_line_test.cpp runtime/recomp_runtime.cpp)
+target_compile_features(runtime_command_line_test PRIVATE cxx_std_20)
+target_include_directories(runtime_command_line_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME runtime_command_line COMMAND runtime_command_line_test)
+
 add_test(NAME preflight_prerequisites
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/preflight/prerequisites_test.py
           $<TARGET_FILE:recomp-studio>)

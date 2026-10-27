@@ -60,6 +60,11 @@ constexpr int kRegisterArgument2 = 8;
 constexpr int kRegisterArgument3 = 9;
 
 constexpr std::uint64_t kGuestMemoryBytes = 0x200000000ull;
+// Runtime-owned blocks must be addressable by the guest, including PE32 images
+// whose pointers cannot represent the upper half of the mapped address space.
+std::uint64_t guest_reserved_top() {
+  return guest_pointer_width >= 8 ? guest_memory_size : std::min(guest_memory_size, 0x100000000ull);
+}
 constexpr std::uint64_t kThreadEnvironmentBlockAddress64 = 0x0000000164000000ull;
 constexpr std::uint64_t kProcessEnvironmentBlockAddress64 = 0x0000000164001000ull;
 constexpr std::uint64_t kThreadEnvironmentBlockAddress32 = 0x000000007ffd0000ull;
@@ -546,13 +551,7 @@ void win32_get_startup_info(GuestContext* context) {
   if (out != 0 && out + 68 <= guest_memory_size) std::memset(guest_memory + out, 0, 68);
 }
 void win32_get_command_line(GuestContext* context) {
-  static std::uint64_t offset = 0;
-  if (offset == 0) {
-    offset = guest_memory_size - 0x100000;
-    const char* command_line = "recomp-guest";
-    std::memcpy(guest_memory + offset, command_line, std::strlen(command_line) + 1);
-  }
-  set_import_result(context, offset);
+  set_import_result(context, guest_reserved_top() - 0x500000);
 }
 // Environment blocks. Windows hands the guest a double-NUL-terminated block of
 // "NAME=value" strings; the ANSI and wide shims must describe the same content.
@@ -564,8 +563,8 @@ void build_environment_blocks() {
   environment_block_a = 0;
   environment_block_w = 0;
   if (guest_memory == nullptr || guest_memory_size < 0x300000) return;
-  environment_block_a = guest_memory_size - 0x200000;
-  environment_block_w = guest_memory_size - 0x100000;
+  environment_block_a = guest_reserved_top() - 0x200000;
+  environment_block_w = guest_reserved_top() - 0x100000;
   std::memset(guest_memory + environment_block_a, 0, 0x100000);
   std::memset(guest_memory + environment_block_w, 0, 0x100000);
   std::uint64_t ansi = 0;
@@ -967,8 +966,8 @@ void cxx_initialize() {
   cxx_cout = 0;
   cxx_cin = 0;
   if (guest_memory == nullptr || guest_memory_size < 0x500000) return;
-  cxx_cout = guest_memory_size - 0x400000;
-  cxx_cin = guest_memory_size - 0x400000 + 0x100;
+  cxx_cout = guest_reserved_top() - 0x400000;
+  cxx_cin = guest_reserved_top() - 0x400000 + 0x100;
   std::memset(guest_memory + cxx_cout, 0, 0x200);
   guest_streams[cxx_cout] = GuestStreamState{STDOUT_FILENO, true};
   guest_streams[cxx_cin] = GuestStreamState{STDIN_FILENO, false};
@@ -992,7 +991,7 @@ constexpr std::uint64_t kMsvcrtFileCount = 3;  // stdin, stdout, stderr
 void msvcrt_initialize() {
   msvcrt_data_block = 0;
   if (guest_memory == nullptr || guest_memory_size < 0x400000) return;
-  msvcrt_data_block = guest_memory_size - 0x300000;
+  msvcrt_data_block = guest_reserved_top() - 0x300000;
   std::memset(guest_memory + msvcrt_data_block, 0, 0x1000);
   msvcrt_environment_pointer = msvcrt_data_block + 0x100;
   msvcrt_file_mode_pointer = msvcrt_data_block + 0x110;
@@ -1004,6 +1003,7 @@ void msvcrt_initialize() {
   std::memcpy(guest_memory + msvcrt_file_mode_pointer, &mode, 4);
   const std::uint32_t mb_cur_max = 1;
   std::memcpy(guest_memory + msvcrt_data_block + 0x320, &mb_cur_max, 4);
+  store_guest_memory(nullptr, msvcrt_data_block + 0x430, guest_reserved_top() - 0x500000, guest_pointer_width);
 }
 
 std::uint64_t msvcrt_stream_index(std::uint64_t stream) {
@@ -1637,6 +1637,7 @@ void msvcrt_crt_global(GuestContext* context, std::uint64_t offset) {
 void msvcrt_p_argc(GuestContext* context) { msvcrt_crt_global(context, 0x400); }
 void msvcrt_p_argv(GuestContext* context) { msvcrt_crt_global(context, 0x410); }
 void msvcrt_p_commode(GuestContext* context) { msvcrt_crt_global(context, 0x420); }
+void msvcrt_p_acmdln(GuestContext* context) { msvcrt_crt_global(context, 0x430); }
 
 // C++ static-destruction and exception bookkeeping for the SJLJ unwinder. The
 // registration calls are pure bookkeeping and have no observable effect here;
@@ -1753,7 +1754,7 @@ void win32_compare_file_time(GuestContext* context) {
 }
 
 void win32_get_environment_strings(GuestContext* context) {
-  set_import_result(context, guest_memory_size - 0x200000);
+  set_import_result(context, environment_block_a);
 }
 void win32_get_system_info(GuestContext* context) {
   const auto out = import_argument(context, 0);
@@ -1906,6 +1907,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__p___argc", msvcrt_p_argc},
     {"msvcrt.dll", "__p___argv", msvcrt_p_argv},
     {"msvcrt.dll", "__p__commode", msvcrt_p_commode},
+    {"msvcrt.dll", "__p__acmdln", msvcrt_p_acmdln},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Register", msvcrt_unwind_register},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Unregister", msvcrt_unwind_register},
     {"libgcc_s_sjlj-1.dll", "_Unwind_SjLj_Resume", cxx_exception_trap},
@@ -2557,6 +2559,8 @@ void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, s
   next_heap_address = heap_base;
   heap_initialize(heap_base, stack_top);
   build_environment_blocks();
+  const char* command_line = "recomp-guest";
+  std::memcpy(guest_memory + guest_reserved_top() - 0x500000, command_line, std::strlen(command_line) + 1);
   msvcrt_initialize();
   cxx_initialize();
 }

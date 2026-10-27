@@ -401,6 +401,36 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- **The `imports` report contradicted the runtime, by a factor of four.** It reported 10
+  of 42 implemented (23.81%) for a binary the runtime resolved 41 of, because
+  `is_shimmed_import` matched library and symbol directly while the runtime resolves a
+  symbol imported from a universal CRT library (`api-ms-win-crt-*`) against the
+  `msvcrt.dll` table — the UCRT re-exports the same functions under new library names.
+  The correct rule already existed in `win32_abi.hpp` as `win32_import_abi` and the
+  report was not using it; it is now, so there is one rule rather than two. The fixture
+  moves to 41 of 42 (97.62%) and `igi.exe` from 48 of 128 to **58 of 128**. The project's
+  rule is that unsupported programs produce accurate diagnostics, and this one
+  understated the tool by a factor of four on the class of binary the MVP targets.
+  `tests/verification/atexit_test.py` now requires the report and the runtime to agree
+  on the count.
+- Corrected a wrong reading from the previous round: `0x1400028e0` is an **import
+  thunk** (`jmp qword ptr [rip + 0x5a62]`), and six identical thunks share one IAT slot.
+  The runtime logs the thunk's address while a shim runs, so five calls through the same
+  import all print the same address. It is one thunk called five times, not one site
+  walking a table.
+
+- The handler that did not return is **the exit thunk**, and the diagnostic now says
+  whether each unrun handler is code. Tracing the registration showed all five calls
+  coming from **one** call site (`0x1400028e0`), including a **null** — a site that
+  registers five addresses including zero is walking a table, not calling `atexit` once
+  per handler, so the list this runtime builds is not the list a C program's `atexit`
+  calls produce. `0x140001010` is `xor ecx, ecx; jmp 0x1400028a0`, a call to `exit(0)`
+  with a tail jump: running it as an exit handler **re-enters the exit path**, which is
+  the hang. `0x1400049a8` is in `.rdata`, decodes as zeros, and is not in the recovered
+  function list — the guest passed a data address to the shim. Executing handlers
+  therefore needs a rule better than "run everything registered": run the ones that are
+  recovered functions and are not the exit path, and report the rest.
+
 - Attempted to execute the atexit handlers, and **withdrew the attempt** rather than
   landing it half-working. A nested emulation per handler either consumed the run's
   whole instruction budget or did not terminate at all — a 10,000-instruction bound was

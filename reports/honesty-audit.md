@@ -922,3 +922,125 @@ runs them, and the runtime names every handler it did not run.
 return, rather than working around it: it is reachable and recompiled, and a routine
 that is recompiled and does not return is worth understanding on its own terms. Running
 it under the trace log and looking at where it stops would answer it in one run.
+
+
+## Why the handler did not return: it is the exit thunk
+
+The next step after withdrawing the execution attempt was to find out why one handler
+did not return, rather than working around it. Tracing the registration answered it:
+
+```
+ATEXIT registration: handler=0x140001010 from ip=0x1400028e0
+ATEXIT registration: handler=0x1400049a8 from ip=0x1400028e0
+ATEXIT registration: handler=0x0        from ip=0x1400028e0
+ATEXIT registration: handler=0x1400014a0 from ip=0x1400028e0
+ATEXIT registration: handler=0x140001490 from ip=0x1400028e0
+```
+
+Two things are visible at once.
+
+**Every registration comes from one call site**, `0x1400028e0`, including a **null**. A
+site that registers five different addresses including zero is walking a table, not
+calling `atexit` once per handler. So the list this runtime builds is not the list a C
+program's `atexit` calls produce.
+
+**`0x140001010` is the exit thunk:**
+
+```
+0x140001010  xor  ecx, ecx
+0x140001012  jmp  0x1400028a0
+```
+
+That is a call to `exit(0)` with a tail jump. Running it as an exit handler **re-enters
+the exit path**, which is exactly the hang: the handler is a function, it is recompiled,
+and calling it asks the process to exit again from inside its own exit.
+
+**`0x1400049a8` is not code at all.** It is in `.rdata`, which is not executable, and it
+decodes as a run of zeros. It is not in the recovered function list, so the new
+`lea`-target seed did not add it — the guest genuinely passed a data address to the
+registration shim.
+
+So the previous round's diagnosis was half right: the handler is reachable and
+recompiled, and it does not return — because what it does is exit.
+
+## What the diagnostic says now
+
+Both facts are worth being able to see, so every handler that does not run is reported
+with whether it is code:
+
+```
+recomp: the guest registered an atexit handler at 0x140001010 (a recompiled function), which did not run
+recomp: the guest registered an atexit handler at 0x1400049a8 (not a recompiled function), which did not run
+recomp: the guest registered an atexit handler at 0x1400014a0 (a recompiled function), which did not run
+recomp: the guest registered an atexit handler at 0x140001490 (a recompiled function), which did not run
+```
+
+An address that was never recovered cannot be run whatever the exit path does; one that
+was recovered is a different problem, and the two should not read the same.
+
+## What this means for executing them
+
+Executing the handlers needs more than a guard against re-entry. The list contains a
+**non-function** and the **exit thunk**, so "run everything the guest registered" is the
+wrong rule. The rule that would work is: run the handlers that are recovered functions
+and are not the exit path, and report the rest — which needs the runtime to know which
+address is the exit thunk, and needs the registration path to be understood rather than
+assumed. Both are now written down.
+
+
+## The import report contradicted the runtime, by a factor of four
+
+Looking for the registration path turned up something else, and a worse one.
+
+The `imports` command reported **10 of 42 implemented (23.81%)** for the fixture, while
+the runtime reported **41/42 imports implemented** for the same binary. Both cannot be
+right, and the reason is that they used different rules:
+
+```cpp
+// apps/cli/main.cpp, before
+bool is_shimmed_import(const std::string& library, const std::string& symbol) {
+  for (const auto& shim : recomp::kWin32ImportAbiTable) {
+    if (library == shim.library_name && symbol == shim.symbol_name) return true;
+  }
+  return false;
+}
+```
+
+That matches library and symbol **directly**. The runtime does not: a symbol imported
+from a universal CRT library (`api-ms-win-crt-*`) resolves against the `msvcrt.dll`
+table, because the UCRT re-exports the same functions under new library names. The
+correct rule already existed in `win32_abi.hpp` as `win32_import_abi`, and the report
+was not using it.
+
+The report now calls that helper, so there is one rule rather than two:
+
+```
+imports:        42
+implemented:    41 (97.62%)     (was 10, 23.81%)
+```
+
+`igi.exe` moves from 48 of 128 to **58 of 128**, because it imports some UCRT symbols
+too. Every modern MSVC binary is affected, which is most of them.
+
+**Why this mattered more than it looks.** The project's own rule is that unsupported
+programs must produce accurate diagnostics. This diagnostic did not overstate the tool
+— it **understated** it, by a factor of four, on the class of binary the MVP is aimed
+at. A user running `imports` on a real MSVC executable would have concluded the program
+was three-quarters unsupported when the runtime could resolve 98% of it. An inaccurate
+diagnostic that errs toward pessimism is still inaccurate, and it is believed just as
+readily.
+
+`tests/verification/atexit_test.py` now requires the report and the runtime to agree on
+the count, which is the check that would have caught it.
+
+## The registration path, corrected
+
+The previous round read the trace as "one call site registers five addresses including a
+null" and concluded the site was walking a table. That was wrong. `0x1400028e0` is an
+**import thunk** — `jmp qword ptr [rip + 0x5a62]` — and there are six identical thunks in
+a row sharing one IAT slot. The runtime logs the thunk's address as the instruction
+pointer while a shim runs, so five calls through the same import all print the same
+address. It is one thunk called five times, not one site walking a table.
+
+The five addresses are still odd — one is in `.rdata` and one is null — but the reading
+of why is now correct, and the earlier claim is retracted rather than left standing.

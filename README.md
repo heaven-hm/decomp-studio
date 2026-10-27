@@ -1,261 +1,90 @@
-<p align="center">
-  <img src="assets/recomp-studio-logo.png" alt="Recomp Studio: executable blocks transform into a native-output arrow" width="260">
-</p>
-
 # Recomp Studio
 
-Recomp Studio is a static recompilation studio. It reads a guest executable,
-recovers its functions, translates the original machine code into
-architecture-neutral C++, and compiles that C++ into a native program for a
-chosen host target. The translated program keeps the guest's own CPU state,
-address space and operating-system shims, so it runs as an ordinary native
-process with no emulator in the loop.
+Recomp Studio is an experimental, open-source static recompilation CLI for
+legally obtained Windows executables. Its verified MVP accepts genuine PE32
+(x86) and PE32+ (x64) machine code and produces a native macOS ARM64 host
+program for a deliberately small, tested instruction subset.
 
-This is not a wrapper around an interpreter. Real x86-64 instructions are
-decoded, lifted and re-emitted; the resulting binary is a genuine native
-executable that is then checked, instruction by instruction, against the
-original code.
-
-Two guest architectures are supported: **Windows x86-64 (PE32+)** and
-**Windows x86 (PE32)**, both → **native macOS ARM64**. The translation core is
-shared; only the decoder mode, the guest pointer width and the emulated
-calling convention differ. Linux x86-64/ARM64 and wasm32 are wired through the
-target table.
-
-## Proof
-
-Eleven real Windows programs (nine PE32+ and two PE32) are compiled with
-mingw-w64, recompiled to native ARM64, executed, and verified against the
-original x86-64 / x86-32 code running under Unicorn. The output is
-byte-identical. The set covers register aliasing, EFLAGS, calling conventions
-(cdecl/stdcall/fastcall/thiscall), indirect dispatch, memory addressing and
-64-bit arithmetic.
-
-![arith](assets/screenshots/arith.png)
-
-![tictactoe](assets/screenshots/tictactoe.png)
-
-![snake](assets/screenshots/snake.png)
-
-`tictactoe` plays a full nine-move minimax game and ends in a draw; the reference
-execution runs 108,108,079 x86-64 instructions and the native ARM64 candidate
-produces exactly the same 117 bytes of output.
+The project is intentionally fail-closed: unsupported formats, instructions,
+imports, and runtime behavior report errors rather than fabricated success.
 
 ## Status
 
 | Capability | Status |
 | --- | --- |
-| PE32/PE32+ parsing (sections, imports, exports, relocations, TLS) | Implemented |
-| Recursive-descent function recovery and CFG | Implemented |
-| Instruction coverage census for unsupported programs | Implemented |
-| Import compatibility report (implemented vs missing shims) | Implemented |
-| `autorecomp` end-to-end pipeline with progress, logs and repair loop | Implemented |
-| x86-64 (PE32+) → C++ lifter with exact EFLAGS semantics | Implemented, verified |
-| x86 (PE32) → C++ lifter, 32-bit address wrapping | Implemented, verified |
-| 32-bit calling conventions for imports (stdcall stack cleanup) | Implemented, verified |
-| Native macOS ARM64 code generation and execution | Implemented, verified |
-| Guest runtime: memory, CPU context, dispatch, import thunks | Implemented |
-| Win32 compatibility shims (kernel32 subset) | Implemented subset |
-| Differential verification (program output + instruction trace) | Implemented |
-| Autonomous translate/build/verify/repair harness | Implemented |
-| Config-driven stubs, native overrides, instruction patches | Implemented |
-| Linux / WebAssembly targets | Targets wired, platform runtimes pending |
-| x87, graphics (ddraw/d3d), DirectInput/DirectSound, .NET | Not implemented |
-| Full commercial-game portability | Not claimed |
+| PE32/x86 and PE32+/x64 structural inspection | Supported |
+| Entry-reachable instruction analysis and canonical IR | Supported subset |
+| macOS ARM64 generated-host build and execution | Supported subset |
+| Differential reference-vs-native verification | Supported subset |
+| Windows imports, memory, calls, branches, graphics, x87/SSE | Not implemented |
+| Linux, WebAssembly, .NET, and full-game portability | Not implemented |
 
-Anything not supported fails closed: unsupported instructions, unresolved
-indirect targets and unimplemented imports report an explicit diagnostic instead
-of pretending to work.
+The working subset includes immediate register `mov`, `add`, `sub`, `nop`, and
+`ret`. Other decoded instructions are not automatically safe to lower yet.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Windows PE32 / PE32+ binary] --> B[PE parser]
+    B --> C[Entry analysis and CFG]
+    C --> D[Canonical semantic IR]
+    D --> E[C++20 host generator]
+    E --> F[CMake + Ninja]
+    F --> G[Native macOS ARM64 executable]
+    A --> H[Reference interpreter]
+    G --> I[Differential verifier]
+    H --> I
+    I --> J[PASS / FAIL evidence]
+```
+
+The parser and analyzer retain guest RVAs rather than treating guest addresses
+as host pointers. The verifier independently evaluates the supported original
+instruction stream before comparing it with the generated native executable.
 
 ## Quick start
 
-Requirements: macOS on Apple Silicon, a C++20 compiler, CMake 3.26+, Ninja, and
-[Capstone](https://github.com/capstone-engine/capstone). Unicorn
-(`brew install unicorn`) enables the verification backend. `mingw-w64` builds the
-fixture executables (`brew install mingw-w64`).
+Requirements: macOS on Apple Silicon, CMake 3.26+, Ninja, a C++20 compiler,
+and Python 3. The test fixtures are generated locally and do not contain game
+assets.
 
 ```sh
 git clone https://github.com/heaven-hm/recomp-studio.git
 cd recomp-studio
-./scripts/test.sh                     # configure, build, and run the regression suite
+./scripts/test.sh
 ```
 
-Recompile and verify the bundled fixtures by hand:
+## CLI workflow
 
 ```sh
-# 64-bit guest (PE32+)
-./build/recomp-studio translate tests/fixtures/apps/bin/tictactoe.exe \
-    --target macos-arm64 --output out/tictactoe
-./build/recomp-studio build out/tictactoe
-./build/recomp-studio run   out/tictactoe
-./build/recomp-studio verify out/tictactoe      # PASS: byte-identical to the x86-64 reference
+# Build the CLI
+./scripts/build.sh
 
-# 32-bit guest (PE32) — exercising cdecl/stdcall/fastcall/thiscall
-./build/recomp-studio translate tests/fixtures/apps/bin/pe32_abi.exe \
-    --target macos-arm64 --output out/pe32abi
-./build/recomp-studio build out/pe32abi && ./build/recomp-studio verify out/pe32abi
+# Inspect, analyze, and lift a user-supplied PE executable
+build/recomp-studio inspect game.exe --json
+build/recomp-studio analyze game.exe --json
+build/recomp-studio lift game.exe --json
+
+# Generate, build, run, and verify a supported macOS ARM64 project
+build/recomp-studio translate game.exe --target macos-arm64 --output out/game
+build/recomp-studio build out/game
+build/recomp-studio run out/game
+build/recomp-studio verify out/game --json
+
+# See demonstrator and public-profile status
+build/recomp-studio examples list
 ```
 
-## CLI
-
-Full documentation, with a worked example for every command and every supported
-operating system and processor, is in [MANUAL.md](MANUAL.md).
-
-```
-recomp-studio autorecomp <image> [--output <dir>] [--target <t>] [--buildrun] [--repair]
-                                                  Run the whole pipeline with progress and logs
-recomp-studio doctor                              Host and toolchain capability
-recomp-studio inspect   <image>                   PE structure, imports, hashes
-recomp-studio analyze   <image>                   Functions and instruction counts
-recomp-studio coverage  <image>                   Instruction coverage and unsupported classes
-recomp-studio imports   <image>                   Import compatibility and missing shims
-recomp-studio functions <image>                   Recovered function candidates
-recomp-studio cfg       <image> --address <hex>   Function CFG as Graphviz DOT
-recomp-studio translate <image> --output <dir>    Recompile to a host project
-recomp-studio build     <project>                 Build the generated project
-recomp-studio run       <project>                 Run the generated project
-recomp-studio verify    <project>                 Differential verification against the reference
-recomp-studio repair    <image> --output <dir>    Autonomous translate/build/verify/diagnose/repair loop
-recomp-studio report    <project>                 Generated project manifest
-recomp-studio examples  list                      Bundled example profiles
-recomp-studio capabilities                        Supported and planned capabilities
-recomp-studio detect    <image>                   OS, CPU, binary format and runtime, with evidence
-recomp-studio backends  list                      Registered source, target and reference backends
-```
-
-Every command accepts `--json` for automation. `translate`, `build` and `repair`
-accept `--config <file>`.
-
-### Options
-
-`recomp-studio --help` prints the full option table, and it is **generated from the
-same declarations the parser validates against**, so an option cannot be documented
-and not accepted, or accepted and not documented. The groups are `--source-os`,
-`--source-arch`, `--source-lang`, `--target-os`, `--target-arch`, `--output-lang`,
-`--mode`, `--fidelity`, `--runtime`, `--emit`, `--optimize`, `--output`, `--verify`,
-`--reference`, `--checkpoints`, `--trace`, `--seed`, `--timeout`, `--source-style`,
-`--recover-types`, `--recover-symbols`, `--preserve-metadata`, `--buildrun`,
-`--repair`, `--dry-run`, `--explain` and `--report-format`.
-
-Three rules are enforced rather than intended:
-
-- An option that is not declared is an **error**, never ignored.
-- A value outside an option's declared set is an **error**, never defaulted.
-- A declared value this build does not implement returns **`UNSUPPORTED`**, naming
-  the option, the value and what is missing — never a silent fallback, and never a
-  report of something unimplemented as supported.
-
-```
-$ recomp-studio translate game.exe --target-os linux --output out/
-error: UNSUPPORTED: --target-os linux is not supported by this build: the target
-triple is declared but the generated project does not build for it
-
-$ recomp-studio capabilities
-80 declared, 36 implemented, 44 planned
-```
-
-`recomp-studio capabilities` lists every declared value with its support state and,
-for a planned one, what is missing. `recomp-studio capabilities --json` returns the
-same as data. `--explain` on any command prints the resolved options — unset ones
-showing their declared default — and the capability behind each choice.
-
-## Configuration
-
-A project is described by a small configuration file; see
-[`tests/fixtures/apps/recomp.toml`](tests/fixtures/apps/recomp.toml). Beyond the
-basics (target, entry point, stack/heap placement, compiler, flags) it exposes
-the advanced controls that mature recompilers rely on:
-
-```toml
-stub_function     = [0x140001000]              # replace with a returning no-op
-native_override   = ["0x140001530: my_impl"]   # HLE: hand-written host function
-instruction_patch = ["0x140001001: b9 f4 ff ff ff"]
-extra_sources     = ["src/my_impl.cpp"]
-```
-
-## Verification and the repair harness
-
-Verification is first-class and runs the original x86-64 code under Unicorn with
-the same shim semantics as the runtime — for the four imports the reference
-models (`GetStdHandle`, `WriteFile`, `ReadFile`, `ExitProcess`); the runtime
-implements 63, and the reference now stops with
-`reference does not model <library>!<symbol>` rather than inventing a result for
-the rest:
-
-- **Program level** — bytes written to standard output must match exactly.
-- **Trace level** — the executed guest address sequence is compared and the
-  first divergence identifies the responsible instruction. This is currently a
-  *diagnostic run after a failure*, not a pass/fail gate: `verified()` is
-  output-only, so a change that alters control flow but reconverges to identical
-  output is not caught by the suite. Promoting it to a gate is tracked work.
-
-The repair harness automates the loop: translate, build, verify, localise the
-first divergence to an instruction, write a structured report per iteration, and
-— when given an external agent command — hand the diagnosis over, rebuild and
-retry. It never marks a translation verified merely because it compiled.
-
-## Architecture
-
-See [MANUAL.md](MANUAL.md) for the complete command reference and platform
-support table, and [ARCHITECTURE.md](ARCHITECTURE.md) for the layer map, the
-guest execution model, extension points, and the advanced roadmap (flag liveness, jump-table
-recovery, x87/SSE, hash-guarded native replacement, relocatable overlays, an
-interpreter fallback, and more targets).
-
-## Instruction coverage
-
-Integer and control flow: `mov`/`movabs`, `movzx`/`movsx`/`movsxd`, `lea`,
-`xchg`, `push`/`pop`, `leave`, `add`/`sub`/`adc`/`sbb`, `and`/`or`/`xor`/`not`,
-`inc`/`dec`/`neg`, `cmp`/`test`, `shl`/`shr`/`sar`/`rol`/`ror`/`rcl`/`rcr`,
-`imul`/`mul`/`div`/`idiv`, `cdq`/`cqo`/`cwde`/`cdqe`, `setcc`, `cmovcc`,
-`bt`/`bts`/`btr`/`btc`, `bsr`/`bsf`, `shld`/`shrd`, `xadd`/`cmpxchg`, `cpuid`,
-`lahf`/`sahf`, `bswap`, `cld`/`std`, `call`/`ret`/`jmp`/`jcc`, string ops with
-`rep` (including the `repz`/`repnz` spellings and the `repz ret` padding idiom
-MSVC emits).
-
-SSE/AVX subset: `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`/`movss`/
-`movsd`/`movd`/`movq`, scalar float and double arithmetic, vector bitwise and
-integer add/sub/compare, `pshufd`, `punpckldq`/`punpckhdq`/`punpcklqdq`/
-`punpckhqdq`, `vpxor`/`vandps`/`vpor`,
-`cvtdq2ps` (packed dword → float, honouring the MXCSR rounding mode),
-`cvtsi2sd`/`cvttsd2si`/`cvtsd2ss`/`cvtss2sd`, `ldmxcsr`/`stmxcsr` (MXCSR is
-modelled as guest state), prefetch hints. `lock` and `rep` prefixes are handled.
-
-VEX (AVX) encodings: a two-operand VEX instruction is mapped onto the SSE form
-with the same operands, and a three-operand one onto `dst = src1` followed by
-that same operation, so `vmovdqa`/`vmovdqu`/`vmovapd`/`vmovd`/`vmovq`/`vmovsd`,
-`vpand`/`vpor`/`vpxor`/`vandps`/`vxorpd`, `vaddsd`/`vsubsd`/`vmulsd`/`vdivsd` and
-the `ss` forms, plus the VEX conversions, all lift. 256-bit `ymm` operands are
-not modelled yet. VEX code cannot be differentially verified with Unicorn 2.1.4,
-which does not emulate AVX faithfully (unicorn issues #1074, #1658), so the VEX
-fixture is checked by value instead; see `tests/vex/vex_test.py`.
-
-x87: `fld`/`fild`, `fst`/`fstp`/`fist`/`fistp`, `fadd`/`fsub`/`fsubr`/`fmul`/
-`fdiv`/`fdivr` and their pop forms, `fcom`/`fcomp`/`fcompp`/`fucom*`/`ftst`,
-`fsqrt`/`fabs`/`fchs`/`fsin`/`fcos`/`fpatan`/`fyl2x`/`frndint`, the `fld*`
-constants, `fxch`, and `fldcw`/`fnstcw`/`fnstsw`. The x87 stack, control word and
-status word are guest state. Arithmetic is modelled with `double`: on arm64
-`long double` is 64-bit, so results needing more than 53 mantissa bits can differ
-from true 80-bit extended precision - a documented limit, not a silent precision
-drop.
-
-Everything else is reported explicitly and names the offending instruction and
-address. Run `recomp-studio coverage <image>` for the complete set of
-unsupported classes in a given binary, ranked by how often they occur.
+JSON output is clean for automation; normal output includes compact progress
+logs (`loading`, `working`, `idle`, and `complete`).
 
 ## Legal and security
 
-Recomp Studio is distributed under the **Apache License 2.0**. It permits
-commercial and noncommercial use, modification, and redistribution, and includes
-an express contributor patent grant. The license does not grant trademark rights
-or permission to use third-party game code or assets.
-
 Use only executables and assets you are authorized to analyze. Recomp Studio
-includes no commercial game files and claims no compatibility beyond the
-documented, verified subset. Third-party components and design references are
-listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). See
-[SECURITY.md](SECURITY.md) for reporting security issues and [LICENSE](LICENSE)
-for the binding terms.
+does not include commercial game files and makes no claim of compatibility with
+any game or application beyond the documented, verified subset. Do not run
+untrusted generated projects. See [SECURITY.md](SECURITY.md) for reporting
+security issues and [LICENSE](LICENSE) for licensing terms.
 
 ## Contributing
 

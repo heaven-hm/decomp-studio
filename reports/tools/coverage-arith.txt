@@ -1,6 +1,0 @@
-architecture:   x86_64
-functions:      5
-instructions:   688
-lifted:         688 (100.00%)
-unsupported:    0
-coverage:       complete — every recovered instruction lifts

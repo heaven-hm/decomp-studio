@@ -172,6 +172,21 @@ def check_argument_handling() -> None:
             check("args/autorepair-alias", False, f"alias was rejected: {alias.stderr.strip()}")
 
 
+def check_repair_diagnosis(executable: Path, root: Path) -> None:
+    output = root / "repair-unimplemented-import"
+    result = run_cli(["autorecomp", str(executable), "--output", str(output), "--autorepair", "--buildrun",
+                      "--budget", "1", "--json"])
+    report = output / "reports" / "harness" / "iteration-1.json"
+    check("repair/fails", result.returncode != 0, "unsupported import must not be verified")
+    if not report.exists():
+        check("repair/report", False, "repair did not write an iteration report")
+        return
+    payload = json.loads(report.read_text())
+    check("repair/no-fake-divergence", payload["diverged"] is False and
+          "first control-flow divergence" not in payload["diagnosis"], payload["diagnosis"])
+    check("repair/actual-diagnosis", "user32.dll!MessageBoxA" in payload["diagnosis"], payload["diagnosis"])
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -187,6 +202,7 @@ def main() -> int:
             FAILURES.append(f"{GOOD_FIXTURE}: fixture was not built")
         if failing.exists():
             check_failure_is_reported(failing, root)
+            check_repair_diagnosis(failing, root)
         else:
             FAILURES.append(f"{FAILING_FIXTURE}: fixture was not built")
         check_argument_handling()

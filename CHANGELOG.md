@@ -304,6 +304,13 @@ All notable changes to Recomp Studio are documented here. This project follows
 
 ### Fixed
 
+- The golden test pinned the generated code but not the input, so a rebuilt fixture
+  was reported as a changed compiler — a misdiagnosis in the one test whose whole
+  job is to tell those two apart, and it happened: the fixtures were rebuilt 25
+  minutes after the baseline was captured and all 22 entries failed as though the
+  lifter had changed. The fixture digest is pinned alongside the output now, and a
+  changed input is reported as a changed input.
+
 - The reported reference instruction count included import thunks. The counter was
   incremented before the thunk check, so `executed instructions (reference)`
   described a stream the candidate does not have — inflated by exactly the number

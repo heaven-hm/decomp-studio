@@ -29,8 +29,8 @@ def main():
     for line in BASELINE.read_text().splitlines():
         if not line or line.startswith("#"):
             continue
-        name, digest, size = line.split()
-        expected[name] = (digest, int(size))
+        name, source_digest, digest, size = line.split()
+        expected[name] = (source_digest, digest, int(size))
     if not expected:
         print("FAIL: the golden baseline is empty", file=sys.stderr)
         return 1
@@ -38,6 +38,15 @@ def main():
     checked = 0
     for fixture in sorted((FIXTURES / "bin").glob("*.exe")):
         if fixture.name not in expected:
+            continue
+        # Check the input first. A rebuilt fixture changes the generated code for
+        # reasons that have nothing to do with the compiler, and reporting that as
+        # "the generated code changed" sends the reader to the wrong file.
+        source_digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+        if source_digest != expected[fixture.name][0]:
+            FAILURES.append(
+                f"{fixture.name}: the FIXTURE changed, not the compiler. Rebuild the fixtures "
+                "reproducibly and regenerate the baseline.")
             continue
         with tempfile.TemporaryDirectory() as workspace:
             result = subprocess.run(
@@ -49,7 +58,7 @@ def main():
                 continue
             body = guest.read_bytes()
             digest = hashlib.sha256(body).hexdigest()
-            wanted_digest, wanted_size = expected[fixture.name]
+            _, wanted_digest, wanted_size = expected[fixture.name]
             if digest != wanted_digest:
                 FAILURES.append(
                     f"{fixture.name}: generated code changed ({len(body)} bytes, expected {wanted_size}). "

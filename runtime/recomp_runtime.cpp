@@ -4593,6 +4593,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "FlsFree", win32_one},
     {"kernel32.dll", "FlsSetValue", win32_one},
     {"kernel32.dll", "FlsGetValue", win32_zero},
+    {"kernel32.dll", "FlsGetValue2", win32_zero},
     {"kernel32.dll", "TlsAlloc", win32_zero},
     {"kernel32.dll", "TlsFree", win32_one},
     {"kernel32.dll", "TlsSetValue", win32_one},

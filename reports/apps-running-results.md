@@ -11,6 +11,73 @@
 - 21 runs reported full autorecomp completion, 137 failed, 7 ended before a pipeline summary, and 1 (`tetris-classic.exe`) was interrupted after it emitted 3.2 MB during verification. Six failed runs hit the guest timeout. “Complete” means the tool's build/run/differential pipeline returned success; it does not guarantee meaningful behavior for every input. `fillingsolver.exe` is a no-output smoke case and is not counted as a useful app result.
 - The input is machine code, so a C/C++/Rust label describes how a sample was authored only when known; the PE itself does not reliably retain its source language. The pipeline translates supported native x86/x64 instructions to generated C++ and links a native macOS arm64 executable.
 
+## Audit dashboard
+
+This page separates the executive result from the complete evidence ledger. The
+full 166-row matrix is preserved below so no attempted application disappears,
+while this dashboard makes the current state readable at a glance.
+
+| Measure | Result |
+| --- | ---: |
+| Canonical Windows PE inputs attempted | **166** |
+| Complete native build/run/differential passes | **21** |
+| Pass rate across attempted canonical inputs | **12.7%** |
+| x86 passes | **12** |
+| x86-64 passes | **9** |
+| Windows ARM64 inputs | **1** (rejected: guest decoder absent) |
+| Captured successful-run screenshots | **20** |
+| External unique payloads attempted | **7** |
+
+“Pass” means the generated macOS arm64 program built, ran to completion, and
+matched the differential reference for the recorded input. It does not mean
+that every possible interaction path or GUI surface is implemented.
+
+### What is working
+
+- Native PE32 (x86) and PE32+ (x86-64) console samples can reach a verified
+  native macOS arm64 executable.
+- The verified set includes arithmetic, Base64, Hangman, 2048, Snake, Tetris,
+  Tic-Tac-Toe, and a prime generator. The screenshot gallery below links only
+  to captures that exist in this repository.
+- The reference/native differential checker is part of the pass criterion; a
+  successful build without a matching reference is not counted as a pass.
+
+### Why the remaining inputs fail
+
+| Root cause | Typical evidence | Scope |
+| --- | --- | --- |
+| Missing Win32/CRT imports | `110–125` missing imports in the legacy puzzle GUI group | Runtime surface, not instruction lifting |
+| Unsupported x86/x64 instructions | `pinsrw`, `bnd jae`, `cmpltss`, and scalar/vector conversions | Lifter coverage |
+| Managed binaries | C#/.NET IL examples rejected before native lifting | CLR frontend/runtime integration absent |
+| Guest lifecycle differences | unresolved `atexit` handlers, timeouts, or differential mismatch | Runtime semantics and test input |
+| Unsupported guest format | Windows ARM64 PE, ELF, Mach-O, and JVM probes rejected | Frontend scope |
+
+### Verified screenshot gallery
+
+These are repository-local captures of completed native runs. The complete row
+for each result, including its log path, is in the appendix.
+
+| x86 | x86-64 |
+| --- | --- |
+| ![Prime generator](../apps-running-screenshots/prime_gen_x86.png) | ![Arithmetic calculator](../apps-running-screenshots/arith_calc_x64.png) |
+| ![Base64 tool](../apps-running-screenshots/base64_x86.png) | ![Base64 tool](../apps-running-screenshots/base64_x64.png) |
+| ![Hangman](../apps-running-screenshots/hangman_x86_terminal.png) | ![Hangman](../apps-running-screenshots/hangman_x64_terminal.png) |
+| ![Snake](../apps-running-screenshots/snake_x86.png) | ![Snake](../apps-running-screenshots/snake_x64.png) |
+| ![Tetris](../apps-running-screenshots/tetris_x86_terminal.png) | ![Tetris](../apps-running-screenshots/tetris_x64.png) |
+| ![Tic-Tac-Toe](../apps-running-screenshots/tictactoe_x86_terminal.png) | ![Tic-Tac-Toe](../apps-running-screenshots/tictactoe_x64.png) |
+
+The pass table contains one additional no-output smoke pass,
+`fillingsolver.exe`; it intentionally has no screenshot because there was no
+visible application output to capture.
+
+### Navigation
+
+- [Format, architecture, and language/runtime matrix](#format-architecture-and-language-runtime-matrix)
+- [Post-runtime retests](#post-runtime-update-retests)
+- [Complete 166-input appendix](#complete-appendix-windows-pe-files-tested)
+- [External unique payloads](#external-unique-windows-pe-payloads)
+- [Validation and known limitations](#project-validation)
+
 ## Format, architecture, and language/runtime matrix
 
 | Input / runtime | Tested result on this host | What it means |
@@ -40,7 +107,7 @@ Runtime and non-PE inspection output is saved at `$TMPDIR/recomp-runtime-matrix/
 
 The host only permits a macOS arm64 execution result here. Windows-host execution and macOS x86-64-host execution were not available in this run.
 
-## Windows PE files tested
+## Complete appendix: Windows PE files tested
 
 “Pass” below means `AUTORECOMP COMPLETE`, native exit 0, and differential verification reported yes. Every other result is a failure/incomplete pipeline outcome, even when instruction coverage is 100%.
 

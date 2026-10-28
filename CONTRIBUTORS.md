@@ -11,4 +11,8 @@ documentation.
 
 Codex changes are reviewed and committed under the repository maintainer's
 GitHub identity, with signed commits identifying the work in the commit
-history.
+history. New Codex-authored commits also include this visible message trailer:
+
+```text
+Signed-off-by: Codex <codex@openai.com>
+```

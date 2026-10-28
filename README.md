@@ -37,6 +37,8 @@ Use the [verified-port inventory](reports/ported-apps.md) as the skip list for
 new compatibility work; it contains only end-to-end verified native ports.
 The generated [shim inventory](SHIM_INVENTORY.md) lists every unresolved import
 in the supplied corpus and is the prioritized source for new shim work.
+The [runtime provider backlog](RUNTIME_PROVIDER_BACKLOG.md) maps those imports
+to the reviewed open-source provider files and their license boundaries.
 See [DESIGN.md](DESIGN.md) for the external-project integration policy and
 deferred Wine/Remill/runtime backlog.
 

@@ -902,6 +902,7 @@ void win32_wait_for_multiple_objects(GuestContext* context) {
 
 void win32_get_process_heap(GuestContext* context) { set_import_result(context, 0x1000); }
 void win32_heap_create(GuestContext* context) { set_import_result(context, 0x1000); }
+std::uint32_t heap_block_size(std::uint64_t pointer);
 // Returns the guest pointer for a new block, or 0 when the region is exhausted.
 std::uint64_t heap_allocate(std::uint64_t requested) {
   const auto payload = (requested == 0 ? kHeapAlignment : (requested + kHeapAlignment - 1) & ~(kHeapAlignment - 1));
@@ -974,6 +975,16 @@ void heap_release(GuestContext* context, std::uint64_t pointer) {
 void win32_heap_free(GuestContext* context) {
   heap_release(context, import_argument(context, 2));
   set_import_result(context, 1);
+}
+
+// Adapted from project-igi-browser/host/kernel32.c HeapSize (MIT).  The
+// runtime's allocator owns the block headers, so querying that allocator is
+// more faithful than returning a requested size cached by an individual API.
+void win32_heap_size(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  const auto size = heap_block_size(import_argument(context, 2));
+  set_import_result(context, size == 0 ? 0xffffffffu : size);
 }
 
 void win32_get_tick_count(GuestContext* context) {
@@ -2796,6 +2807,90 @@ void msvcrt_setlocale(GuestContext* context) {
 void win32_console_success(GuestContext* context) {
   for (int index = 0; index < 4; ++index) (void)import_argument(context, index);
   set_import_result(context, 1);
+}
+
+// Adapted from project-igi-browser/host/kernel32.c (MIT): the original
+// adapter reports that its headless guest has no console, accepts mode changes,
+// and copies console writes to the host diagnostic stream.  Recomp Studio
+// writes through its output-capture path instead, so differential verification
+// observes the same bytes as WriteFile on a standard handle.
+void win32_get_console_mode(GuestContext* context) {
+  (void)import_argument(context, 0);
+  const auto mode = import_argument(context, 1);
+  if (mode != 0) store_guest_memory(context, mode, 0, 4);
+  set_import_result(context, 0);  // no Windows console is attached to a native port
+}
+
+void win32_set_console_mode(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, 1);
+}
+
+bool write_console_bytes(GuestContext* context, std::uint64_t buffer, std::uint64_t length,
+                         std::uint64_t written_pointer) {
+  if (buffer > guest_memory_size || length > guest_memory_size - buffer) {
+    set_guest_last_error(kErrorInvalidParameter);
+    if (written_pointer != 0) store_guest_memory(context, written_pointer, 0, 4);
+    set_import_result(context, 0);
+    return false;
+  }
+  const auto accepted = write_guest_output(STDOUT_FILENO,
+                                           reinterpret_cast<const char*>(guest_memory + buffer),
+                                           static_cast<std::size_t>(length));
+  const auto written = accepted < 0 ? 0u : static_cast<std::uint64_t>(accepted);
+  if (written_pointer != 0) store_guest_memory(context, written_pointer, written, 4);
+  set_import_result(context, (accepted < 0 || written != length) ? 0 : 1);
+  return accepted >= 0 && written == length;
+}
+
+void win32_write_console_a(GuestContext* context) {
+  (void)import_argument(context, 0);
+  write_console_bytes(context, import_argument(context, 1), import_argument(context, 2),
+                      import_argument(context, 3));
+}
+
+void win32_write_console_w(GuestContext* context) {
+  (void)import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto units = import_argument(context, 2);
+  const auto written_pointer = import_argument(context, 3);
+  if (buffer > guest_memory_size || units > (guest_memory_size - buffer) / 2) {
+    set_guest_last_error(kErrorInvalidParameter);
+    if (written_pointer != 0) store_guest_memory(context, written_pointer, 0, 4);
+    set_import_result(context, 0);
+    return;
+  }
+  std::string utf8;
+  utf8.reserve(static_cast<std::size_t>(units));
+  for (std::uint64_t index = 0; index < units; ++index) {
+    std::uint32_t codepoint = static_cast<std::uint32_t>(load_guest_memory(context, buffer + index * 2, 2));
+    if (codepoint >= 0xd800u && codepoint <= 0xdbffu && index + 1 < units) {
+      const auto low = static_cast<std::uint32_t>(load_guest_memory(context, buffer + (index + 1) * 2, 2));
+      if (low >= 0xdc00u && low <= 0xdfffu) {
+        codepoint = 0x10000u + ((codepoint - 0xd800u) << 10) + (low - 0xdc00u);
+        ++index;
+      }
+    }
+    if (codepoint <= 0x7fu) utf8.push_back(static_cast<char>(codepoint));
+    else if (codepoint <= 0x7ffu) {
+      utf8.push_back(static_cast<char>(0xc0u | (codepoint >> 6)));
+      utf8.push_back(static_cast<char>(0x80u | (codepoint & 0x3fu)));
+    } else if (codepoint <= 0xffffu) {
+      utf8.push_back(static_cast<char>(0xe0u | (codepoint >> 12)));
+      utf8.push_back(static_cast<char>(0x80u | ((codepoint >> 6) & 0x3fu)));
+      utf8.push_back(static_cast<char>(0x80u | (codepoint & 0x3fu)));
+    } else {
+      utf8.push_back(static_cast<char>(0xf0u | (codepoint >> 18)));
+      utf8.push_back(static_cast<char>(0x80u | ((codepoint >> 12) & 0x3fu)));
+      utf8.push_back(static_cast<char>(0x80u | ((codepoint >> 6) & 0x3fu)));
+      utf8.push_back(static_cast<char>(0x80u | (codepoint & 0x3fu)));
+    }
+  }
+  const auto accepted = write_guest_output(STDOUT_FILENO, utf8.data(), utf8.size());
+  if (written_pointer != 0) store_guest_memory(context, written_pointer,
+                                                accepted < 0 ? 0 : units, 4);
+  set_import_result(context, accepted < 0 ? 0 : 1);
 }
 
 // Directory enumeration. The guest sees a Win32 find handle and a
@@ -4784,6 +4879,12 @@ void win32_output_debug_string_a(GuestContext* context) {
   (void)import_argument(context, 0);
   set_import_result(context, 0);
 }
+void win32_output_debug_string_w(GuestContext* context) {
+  // Same debugger-only contract as OutputDebugStringA.  Do not leak it into
+  // captured stdout, which would make a native port disagree with the guest.
+  (void)import_argument(context, 0);
+  set_import_result(context, 0);
+}
 void win32_get_drive_type_a(GuestContext* context) {
   const auto root = import_argument(context, 0);
   std::uint64_t type = 1;  // DRIVE_NO_ROOT_DIR
@@ -5212,6 +5313,10 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "SetConsoleCursorPosition", win32_console_success},
     {"kernel32.dll", "SetConsoleTextAttribute", win32_console_success},
     {"kernel32.dll", "SetConsoleCursorInfo", win32_console_success},
+    {"kernel32.dll", "GetConsoleMode", win32_get_console_mode},
+    {"kernel32.dll", "SetConsoleMode", win32_set_console_mode},
+    {"kernel32.dll", "WriteConsoleA", win32_write_console_a},
+    {"kernel32.dll", "WriteConsoleW", win32_write_console_w},
     {"kernel32.dll", "FindFirstFileA", win32_find_first_file_a},
     {"kernel32.dll", "FindNextFileA", win32_find_next_file_a},
     {"kernel32.dll", "FindClose", win32_find_close},
@@ -5220,6 +5325,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "GetFileType", win32_get_file_type},
     {"kernel32.dll", "GetEnvironmentStringsW", win32_get_environment_strings_w},
     {"kernel32.dll", "HeapReAlloc", win32_heap_realloc},
+    {"kernel32.dll", "HeapSize", win32_heap_size},
     {"kernel32.dll", "DebugBreak", win32_debug_break},
     {"kernel32.dll", "GetStringTypeA", win32_get_string_type_a},
     {"kernel32.dll", "GetStringTypeW", win32_get_string_type_w},
@@ -5542,6 +5648,7 @@ const ShimDescriptor kShims[] = {
     {"ole32.dll", "CoInitialize", win32_co_initialize},
     {"ole32.dll", "CoUninitialize", win32_co_uninitialize},
     {"kernel32.dll", "OutputDebugStringA", win32_output_debug_string_a},
+    {"kernel32.dll", "OutputDebugStringW", win32_output_debug_string_w},
     {"kernel32.dll", "GetDriveTypeA", win32_get_drive_type_a},
     {"kernel32.dll", "CompareFileTime", win32_compare_file_time},
     {"kernel32.dll", "CloseHandle", win32_close_handle},

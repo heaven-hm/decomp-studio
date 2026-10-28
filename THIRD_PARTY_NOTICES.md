@@ -11,6 +11,14 @@ Several Win32 shims in `runtime/recomp_runtime.cpp` are adapted from
 HenryKun55. The `GetLocalTime` adaptation comes from commit
 `278eaf6394f7f42c7de6cffef2cf982154f59899`. The MIT license is reproduced in
 [third_party/igi-recomp-LICENSE](third_party/igi-recomp-LICENSE).
+
+The `GetConsoleMode`, `SetConsoleMode`, `WriteConsoleA/W`, and `HeapSize`
+runtime adapters use the corresponding behavior in
+`host/kernel32.c` from the locally audited
+[project-igi-browser](https://github.com/Dhaiwat10/project-igi-browser) source
+(copyright 2026 Dhaiwat Pandya and Sagar Joshi, MIT). The adapter is translated
+to Recomp Studio's `GuestContext` ABI; the original project license is
+reproduced in [third_party/project-igi-browser-LICENSE](third_party/project-igi-browser-LICENSE).
 The function-entry jump in `core/semantics/x86_64_lifter.cpp` is also adapted
 from `tools/recomp/gen.py` in the same project at that revision.
 

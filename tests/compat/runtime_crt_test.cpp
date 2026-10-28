@@ -71,6 +71,22 @@ std::uint64_t call(const char* symbol, std::uint64_t a = 0, std::uint64_t b = 0,
   return context.registers[0];
 }
 
+std::uint64_t call_kernel32(const char* symbol, std::uint64_t a = 0, std::uint64_t b = 0,
+                            std::uint64_t c = 0, std::uint64_t d = 0) {
+  recomp::GuestContext context{};
+  context.registers[4] = 0x700000;
+  context.registers[1] = a;
+  context.registers[2] = b;
+  context.registers[8] = c;
+  context.registers[9] = d;
+  recomp::store_guest_memory(&context, context.registers[4] + 4, a, 4);
+  recomp::store_guest_memory(&context, context.registers[4] + 8, b, 4);
+  recomp::store_guest_memory(&context, context.registers[4] + 12, c, 4);
+  recomp::store_guest_memory(&context, context.registers[4] + 16, d, 4);
+  recomp::invoke_shared_shim(&context, "kernel32.dll", symbol);
+  return context.registers[0];
+}
+
 }  // namespace
 
 int main() {
@@ -78,6 +94,33 @@ int main() {
   if (!map_guest_memory(kGuestAddressSpaceBytes)) return 1;
   guest_pointer_width = 8;
   initialize_guest_state(0x100000, 0x70000000, 0x7fff0000);
+
+  // The console/heap adapter is derived from project-igi-browser's MIT
+  // kernel32 provider.  Verify the guest ABI, not merely its table presence.
+  {
+    const auto block = call_kernel32("HeapAlloc", 0x1000, 0, 37);
+    check(block != 0, "HeapAlloc returned a guest block for HeapSize");
+    check(call_kernel32("HeapSize", 0x1000, 0, block) >= 37,
+          "HeapSize reports the runtime allocator's full guest block size");
+    check(call_kernel32("HeapSize", 0x1000, 0, 0x1234) == 0xffffffffu,
+          "HeapSize reports -1 for an invalid guest block");
+    check(call_kernel32("HeapFree", 0x1000, 0, block) == 1,
+          "HeapFree accepts the block queried by HeapSize");
+
+    const auto text = put_string(0x230000, "console A");
+    std::string captured;
+    guest_output_capture = &captured;
+    check(call_kernel32("WriteConsoleA", 11, text, 9, 0) == 1,
+          "WriteConsoleA reports a complete output write");
+    check(captured == "console A", "WriteConsoleA writes through the captured output path");
+    captured.clear();
+    store_guest_memory(nullptr, 0x231000, 'A', 2);
+    store_guest_memory(nullptr, 0x231002, 0x03a9, 2);
+    check(call_kernel32("WriteConsoleW", 11, 0x231000, 2, 0) == 1,
+          "WriteConsoleW reports a complete UTF-16 output write");
+    guest_output_capture = nullptr;
+    check(captured == "A\xce\xa9", "WriteConsoleW converts UTF-16 guest text to UTF-8 host output");
+  }
 
   // wctype returns a descriptor that is consumed by iswctype; keep the descriptor
   // opaque and verify the pair against the host CRT implementation.

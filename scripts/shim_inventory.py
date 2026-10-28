@@ -37,6 +37,7 @@ def main() -> int:
     parser.add_argument("--cli", type=Path, required=True, help="built recomp-studio executable")
     parser.add_argument("--corpus", type=Path, required=True, help="directory containing .exe inputs")
     parser.add_argument("--output", type=Path, default=Path("SHIM_INVENTORY.md"))
+    parser.add_argument("--quiet", action="store_true", help="suppress per-input progress")
     arguments = parser.parse_args()
 
     executables = sorted(path for path in arguments.corpus.rglob("*")
@@ -53,7 +54,8 @@ def main() -> int:
     for index, executable in enumerate(executables, start=1):
         result, diagnostic = inspect(arguments.cli, executable)
         relative = executable.relative_to(arguments.corpus).as_posix()
-        print(f"[{index}/{len(executables)}] {relative}", flush=True)
+        if not arguments.quiet:
+            print(f"[{index}/{len(executables)}] {relative}", flush=True)
         if result is None:
             refused.append((executable, diagnostic))
             continue

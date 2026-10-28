@@ -797,6 +797,75 @@ inline void vector_square_root_doubles_memory(GuestContext* context, int destina
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
 
+// The 256-bit forms. `vector_registers` is [16][32] -- 32 bytes, 256 bits -- and the
+// 32-byte load and store already existed, so the state was there all along and these are
+// ordinary operations over it rather than a change to how vectors are held. An earlier
+// note in this session described 256-bit support as needing new architecture; that was
+// WRONG, and the register width is the evidence.
+constexpr int kYmmBytes = 32;
+constexpr int kYmmSingles = 8;
+constexpr int kYmmDoubles = 4;
+
+// VBLENDVPS/VBLENDVPD select per lane from two sources using the HIGH BIT of a third
+// register's corresponding lane. The mask register is a real operand, not an immediate,
+// which is what distinguishes these from `blendps`.
+inline void vector_blend_variable_floats(GuestContext* context, int destination, int source,
+                                         int mask) {
+  for (int lane = 0; lane < kYmmSingles; ++lane) {
+    const auto selector = vector_get_float_lane(context, mask, lane);
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &selector, sizeof(bits));
+    vector_set_float_lane(context, destination, lane,
+                          (bits & 0x80000000u) != 0 ? vector_get_float_lane(context, source, lane)
+                                                    : vector_get_float_lane(context, destination, lane));
+  }
+}
+inline void vector_blend_variable_doubles(GuestContext* context, int destination, int source,
+                                          int mask) {
+  for (int lane = 0; lane < kYmmDoubles; ++lane) {
+    const auto selector = vector_get_double_lane(context, mask, lane);
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &selector, sizeof(bits));
+    vector_set_double_lane(context, destination, lane,
+                           (bits & 0x8000000000000000ull) != 0
+                               ? vector_get_double_lane(context, source, lane)
+                               : vector_get_double_lane(context, destination, lane));
+  }
+}
+
+// VBROADCASTSS repeats one 32-bit lane into all eight. Reading the source's LOW lane and
+// writing every lane is the whole operation.
+inline void vector_broadcast_float(GuestContext* context, int destination, int source) {
+  const auto value = vector_get_float_lane(context, source, 0);
+  for (int lane = 0; lane < kYmmSingles; ++lane) vector_set_float_lane(context, destination, lane, value);
+}
+inline void vector_broadcast_float_memory(GuestContext* context, int destination, std::uint64_t address) {
+  const auto value = load_guest_float(context, address);
+  for (int lane = 0; lane < kYmmSingles; ++lane) vector_set_float_lane(context, destination, lane, value);
+}
+
+// VINSERTF128/EXTRACTF128 move the UPPER 128 bits. The low half is untouched by an
+// insert, which is what makes it an insert rather than an assignment.
+inline void vector_insert_upper_128(GuestContext* context, int destination, int source, int immediate) {
+  const int offset = (immediate & 1) != 0 ? 16 : 0;
+  std::memcpy(context->vector_registers[destination] + 16, context->vector_registers[source] + offset, 16);
+}
+inline void vector_extract_upper_128(GuestContext* context, int destination, int source, int immediate) {
+  const int offset = (immediate & 1) != 0 ? 16 : 0;
+  std::memcpy(context->vector_registers[destination], context->vector_registers[source] + offset, 16);
+  std::memset(context->vector_registers[destination] + 16, 0, 16);
+}
+
+// VPEXTRW reads one 16-bit lane out into a general register, zero-extended. The immediate
+// selects the lane; an index past the register is undefined on hardware and is clamped
+// here rather than reading past the array.
+inline std::uint64_t vector_extract_word(const GuestContext* context, int vector_index, int immediate) {
+  const int lane = immediate & 7;
+  std::uint16_t value = 0;
+  std::memcpy(&value, context->vector_registers[vector_index] + lane * 2, 2);
+  return value;
+}
+
 // PMULLD: four 32-bit lanes, each multiplied, keeping only the LOW 32 bits of each
 // product. Taking the full 64-bit product would put every result in the wrong lane.
 inline void vector_multiply_low_dwords(GuestContext* context, int destination, int source) {

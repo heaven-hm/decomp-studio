@@ -1258,6 +1258,45 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     return;
   }
+  // The 256-bit and variable-blend forms. `vblendvps` was the single largest unsupported
+  // class on a real application (905 occurrences).
+  if ((mnemonic == "vblendvps" || mnemonic == "vblendvpd") && operands.size() == 4 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      is_vector_register(operands[3])) {
+    emit(std::string(mnemonic == "vblendvps" ? "vector_blend_variable_floats"
+                                             : "vector_blend_variable_doubles") +
+         "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " + std::to_string(vector_index(operands[3])) + ");");
+    return;
+  }
+  if (mnemonic == "vbroadcastss" && operands.size() == 2 && is_vector_register(operands[0])) {
+    if (is_vector_register(operands[1])) {
+      emit("vector_broadcast_float(context, " + std::to_string(vector_index(operands[0])) + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+    } else if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_broadcast_float_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+    }
+    return;
+  }
+  if ((mnemonic == "vinsertf128" || mnemonic == "vextractf128") && operands.size() == 3 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    emit(std::string(mnemonic == "vinsertf128" ? "vector_insert_upper_128" : "vector_extract_upper_128") +
+         "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  if (mnemonic == "vpextrw" && operands.size() == 3 &&
+      operands[0].kind == discovery::Operand::Kind::Register && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    operand_write(output, instruction, operands[0],
+                  "vector_extract_word(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                      std::to_string(operands[2].immediate_value & 0xff) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
   // The BMI2 variable shifts. Their count comes from a general register, not CL, and
   // they leave the flags ALONE -- which is the whole reason a compiler emits them in
   // preference to `shl`/`shr` when it needs the flags preserved.

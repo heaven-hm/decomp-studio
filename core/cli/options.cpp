@@ -47,7 +47,7 @@ const std::vector<OptionSpec>& specs() {
        {"auto", "output", "registers", "memory", "full"}, "auto", "Verification Options", true},
       {"--trace", "", "Save execution traces", ValueKind::Flag, {}, "", "Verification Options", false},
       {"--seed", "<number>", "Deterministic verification seed", ValueKind::Integer, {}, "", "Verification Options", true},
-      {"--timeout", "<seconds>", "Execution timeout", ValueKind::Integer, {}, "", "Verification Options", true},
+      {"--timeout", "<seconds>", "Execution timeout", ValueKind::Integer, {}, "", "Verification Options", false},
 
       // --- Source Generation ----------------------------------------------
       {"--source-style", "<style>", "Source style", ValueKind::Enum,

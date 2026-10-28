@@ -3756,7 +3756,6 @@ void msvcrt_snprintf(GuestContext* context) {
 // a no-op where the concept does not exist here, and a real value where the guest
 // reads one.
 void msvcrt_iob_func(GuestContext* context) { set_import_result(context, msvcrt_iob); }
-void msvcrt_fmode(GuestContext* context) { (void)context; }
 void msvcrt_lconv_init(GuestContext* context) { set_import_result(context, 0); }
 void msvcrt_lock(GuestContext* context) { (void)context; }
 void msvcrt_unlock(GuestContext* context) { (void)context; }
@@ -4408,7 +4407,6 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_snprintf", msvcrt_snprintf},
     {"msvcrt.dll", "_iob_func", msvcrt_iob_func},
     {"msvcrt.dll", "__iob_func", msvcrt_iob_func},
-    {"msvcrt.dll", "_fmode", msvcrt_fmode},
     {"msvcrt.dll", "__lconv_init", msvcrt_lconv_init},
     {"msvcrt.dll", "_lock", msvcrt_lock},
     {"msvcrt.dll", "_unlock", msvcrt_unlock},
@@ -5302,14 +5300,20 @@ int run_recompiled_image(const RecompiledImage* image) {
   std::string unsupported;
   for (std::uint32_t index = 0; index < image->import_count; ++index) {
     const auto& imported = image->imports[index];
+    const bool is_fmode_data = std::strcmp(imported.library_name, "msvcrt.dll") == 0 &&
+                               std::strcmp(imported.symbol_name, "_fmode") == 0;
     void (*function)(GuestContext*) = nullptr;
     const auto found = lookup_win32_import(imported.library_name, imported.symbol_name, &function);
-    const auto thunk_address = import_thunk_base() + static_cast<std::uint64_t>(index) * 0x10;
-    register_import_thunk(thunk_address, found ? function : unbound_import_thunk, imported.library_name,
-                          imported.symbol_name);
-    store_guest_memory(nullptr, image->image_base + imported.import_address_table_rva, thunk_address,
+    const auto import_address = is_fmode_data
+                                    ? msvcrt_file_mode_pointer
+                                    : import_thunk_base() + static_cast<std::uint64_t>(index) * 0x10;
+    if (!is_fmode_data) {
+      register_import_thunk(import_address, found ? function : unbound_import_thunk, imported.library_name,
+                            imported.symbol_name);
+    }
+    store_guest_memory(nullptr, image->image_base + imported.import_address_table_rva, import_address,
                        imported.slot_size != 0 ? static_cast<int>(imported.slot_size) : 8);
-    if (found) {
+    if (found || is_fmode_data) {
       ++implemented;
     } else {
       unsupported += std::string(" ") + imported.library_name + "!" + imported.symbol_name;

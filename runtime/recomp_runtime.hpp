@@ -797,6 +797,31 @@ inline void vector_square_root_doubles_memory(GuestContext* context, int destina
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
 
+// The PACKED square roots. `sqrtss`/`sqrtsd` above take the low lane only; these take
+// every lane, which is what the `ps`/`pd` mnemonics mean.
+inline void vector_square_root_packed_floats(GuestContext* context, int destination, int source) {
+  for (int lane = 0; lane < 4; ++lane)
+    vector_set_float_lane(context, destination, lane,
+                          std::sqrt(vector_get_float_lane(context, source, lane)));
+}
+inline void vector_square_root_packed_floats_memory(GuestContext* context, int destination,
+                                                    std::uint64_t address) {
+  for (int lane = 0; lane < 4; ++lane)
+    vector_set_float_lane(context, destination, lane,
+                          std::sqrt(load_guest_float(context, address + lane * 4)));
+}
+inline void vector_square_root_packed_doubles(GuestContext* context, int destination, int source) {
+  for (int lane = 0; lane < 2; ++lane)
+    vector_set_double_lane(context, destination, lane,
+                           std::sqrt(vector_get_double_lane(context, source, lane)));
+}
+inline void vector_square_root_packed_doubles_memory(GuestContext* context, int destination,
+                                                     std::uint64_t address) {
+  for (int lane = 0; lane < 2; ++lane)
+    vector_set_double_lane(context, destination, lane,
+                           std::sqrt(load_guest_double(context, address + lane * 8)));
+}
+
 // MIN/MAX. The one case worth stating: when an operand is NaN the result is the SECOND
 // operand, which is what the instruction specifies and NOT what `std::min` does with a
 // NaN. Getting this wrong changes the answer only for programs that feed NaN in, which

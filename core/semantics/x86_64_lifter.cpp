@@ -165,6 +165,21 @@ const std::map<std::string, std::string>& vex_equivalents() {
       // Conversions.
       {"vcvtsi2sd", "cvtsi2sd"}, {"vcvtsi2ss", "cvtsi2ss"}, {"vcvttsd2si", "cvttsd2si"},
       {"vcvttss2si", "cvttss2si"}, {"vcvtsd2ss", "cvtsd2ss"}, {"vcvtss2sd", "cvtss2sd"},
+      // PACKED arithmetic. The VEX encoding is a different opcode for the same
+      // operation, so it maps onto the legacy implementation rather than needing its own:
+      // `vaddps` computes exactly what `addps` computes. Without these entries every
+      // packed operation in a modern build was refused even though the implementation
+      // was sitting right there under the legacy name.
+      {"vaddps", "addps"},   {"vsubps", "subps"},   {"vmulps", "mulps"},   {"vdivps", "divps"},
+      {"vaddpd", "addpd"},   {"vsubpd", "subpd"},   {"vmulpd", "mulpd"},   {"vdivpd", "divpd"},
+      // Square roots, in both widths.
+      {"vsqrtss", "sqrtss"}, {"vsqrtsd", "sqrtsd"}, {"vsqrtps", "sqrtps"}, {"vsqrtpd", "sqrtpd"},
+      // Min/max and the compare family.
+      {"vminss", "minss"},   {"vmaxss", "maxss"},   {"vminsd", "minsd"},   {"vmaxsd", "maxsd"},
+      {"vcmpeqss", "cmpeqss"}, {"vcmpltss", "cmpltss"}, {"vcmpless", "cmpless"},
+      {"vcmpeqsd", "cmpeqsd"}, {"vcmpltsd", "cmpltsd"}, {"vcmplesd", "cmplesd"},
+      // The ordered/unordered compares, which set EFLAGS rather than a mask.
+      {"vcomiss", "comiss"}, {"vucomiss", "ucomiss"}, {"vcomisd", "comisd"}, {"vucomisd", "ucomisd"},
   };
   return table;
 }
@@ -1503,11 +1518,13 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     static const std::map<std::string, std::string> double_helpers = {
         {"addsd", "vector_add_doubles"}, {"subsd", "vector_subtract_doubles"},
         {"mulsd", "vector_multiply_doubles"}, {"divsd", "vector_divide_doubles"},
-        {"sqrtsd", "vector_square_root_doubles"}};
+        {"sqrtsd", "vector_square_root_doubles"},
+        {"sqrtpd", "vector_square_root_packed_doubles"}};
     static const std::map<std::string, std::string> float_helpers = {
         {"addss", "vector_add_floats"}, {"subss", "vector_subtract_floats"},
         {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"},
         {"sqrtss", "vector_square_root_floats"},
+        {"sqrtps", "vector_square_root_packed_floats"},
         // The PACKED forms. `ps` operates on four singles and `pd` on two doubles; the
         // scalar mnemonics above are the ones ending `ss`/`sd`, and using one for the
         // other would compute the right value in the low lane and leave the rest alone.

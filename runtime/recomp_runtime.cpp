@@ -981,7 +981,17 @@ void win32_get_local_time(GuestContext* context) {
 }
 void win32_get_startup_info(GuestContext* context) {
   const auto out = import_argument(context, 0);
-  if (out != 0 && out + 68 <= guest_memory_size) std::memset(guest_memory + out, 0, 68);
+  if (out == 0 || guest_memory == nullptr || out >= guest_memory_size) return;
+  // STARTUPINFOA/W has the same layout; only pointer width changes its size.
+  // The CRT reads cb before consulting any optional fields, so initialize the
+  // complete structure and publish a truthful size for the guest ABI.
+  const std::uint64_t size = guest_pointer_width >= 8 ? 104u : 68u;
+  if (size > guest_memory_size - out) return;
+  std::memset(guest_memory + out, 0, static_cast<std::size_t>(size));
+  store_guest_memory(context, out, size, 4);
+}
+void win32_get_startup_info_w(GuestContext* context) {
+  win32_get_startup_info(context);
 }
 void win32_get_command_line(GuestContext* context) {
   set_import_result(context, guest_reserved_top() - 0x500000);
@@ -4561,6 +4571,8 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "InitializeCriticalSectionAndSpinCount", win32_one},
     {"kernel32.dll", "GetSystemTimeAsFileTime", win32_get_system_time_as_file_time},
     {"kernel32.dll", "GetStartupInfoA", win32_get_startup_info},
+    {"kernel32.dll", "GetStartupInfoW", win32_get_startup_info_w},
+    {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", win32_get_command_line},
     {"kernel32.dll", "GetCommandLineA", win32_get_command_line},
     {"kernel32.dll", "GetEnvironmentStrings", win32_get_environment_strings},
     {"kernel32.dll", "FreeEnvironmentStringsA", win32_one},

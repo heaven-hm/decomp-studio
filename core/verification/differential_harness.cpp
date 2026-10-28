@@ -690,12 +690,18 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
   ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
 
+  // Cleared before the run and checked after, so a marker left by an earlier run cannot
+  // make a complete run look truncated.
+  const auto truncation_marker = project_directory / "reports" / "candidate-truncated";
+  std::filesystem::remove(truncation_marker);
+  ::setenv("RECOMP_TRUNCATION_MARKER", truncation_marker.string().c_str(), 1);
+
   const auto candidate = pipeline::run(project_directory);
 
   ::unsetenv("RECOMP_CHECKPOINT");
   ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.truncated = reference.truncated ||
-                     candidate.standard_error.find("instruction budget") != std::string::npos;
+                     std::filesystem::exists(truncation_marker);
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
   result.candidate_ran = true;

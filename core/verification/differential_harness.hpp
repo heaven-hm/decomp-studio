@@ -135,15 +135,20 @@ struct DifferentialResult {
   Verdict verdict() const {
     // Not run is checked first: it is the strongest statement available, and every
     // other field is a default that would otherwise be read as a measurement.
+    // TRUNCATION IS CHECKED FIRST, before both NOT_RUN and the unsupported cases. A run
+    // cut off at the shared ceiling did not fail to run and did not fail to be modelled
+    // -- it ran, for exactly as long as it was allowed to, and what it did can be
+    // compared. Both other orders were tried and both were wrong: after the unsupported
+    // cases it reported a budget as CANDIDATE_UNSUPPORTED, and after NOT_RUN it reported a
+    // truncated reference as NOT_RUN. `truncated` is the strongest and most specific fact
+    // available, so it decides.
+    if (truncated) return Verdict::INCOMPLETE;
     if (!candidate_ran) return Verdict::NOT_RUN;
     // A reference that could not model the program leaves no oracle. This is reported
     // as such rather than as a divergence, because calling it a divergence would blame
     // the translation for a gap in the reference.
     if (!reference_completed) return Verdict::REFERENCE_UNSUPPORTED;
     if (!candidate_completed) return Verdict::CANDIDATE_UNSUPPORTED;
-    // Both sides stopped at a shared budget. What they did up to that point can be
-    // compared and may agree, but a prefix is not a whole program.
-    if (truncated) return Verdict::INCOMPLETE;
     if (checkpoints_compared == 0) return Verdict::INCOMPLETE;
     if (!outputs_match || !state_match || !memory_match || !control_registers_match)
       return Verdict::DIVERGED;

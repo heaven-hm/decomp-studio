@@ -4642,6 +4642,16 @@ std::uint64_t guest_instruction_budget = 0;
 void note_executed_instruction() {
   if (guest_instruction_budget == 0) return;
   if (++guest_executed_instructions <= guest_instruction_budget) return;
+  // A dedicated marker, so the harness does not have to recognise a MESSAGE. Searching
+  // stderr for "instruction budget" made the verdict depend on wording: rewording this
+  // line, or a program that happened to print the same phrase, would change whether a
+  // truncated run was reported as truncated.
+  if (const char* marker = std::getenv("RECOMP_TRUNCATION_MARKER")) {
+    if (std::FILE* file = std::fopen(marker, "w")) {
+      std::fprintf(file, "%llu\n", static_cast<unsigned long long>(guest_executed_instructions));
+      std::fclose(file);
+    }
+  }
   terminate_with_message("instruction budget exhausted after %llu guest instructions",
                          static_cast<unsigned long long>(guest_executed_instructions));
 }

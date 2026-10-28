@@ -782,8 +782,15 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         // reports the harness's own asymmetry as a translation defect. Everything the
         // PROGRAM can allocate or write is still compared.
         const auto page_address = page << 12;
-        constexpr std::uint64_t kScaffoldingFloor = 0x1ff000000ull;  // 8 GiB - 16 MiB
-        if (page_address >= kScaffoldingFloor) continue;
+        // The floor depends on the GUEST's width: a 32-bit guest's address space ends at
+        // 4 GiB, so its TEB, PEB and environment blocks live near 0xfff00000, not near
+        // 0x1ff000000. Using the 64-bit floor for a 32-bit guest compared its TEB -- which
+        // the reference cannot even set up (Unicorn 2.1.4 ignores FS_BASE writes in 32-bit
+        // mode, so the TEB is placed at address 0 there) -- and reported a translation
+        // defect that was the harness's own asymmetry.
+        const std::uint64_t scaffolding_floor =
+            guest_pointer_width >= 8 ? 0x1ff000000ull : 0xff000000ull;
+        if (page_address >= scaffolding_floor) continue;
         // The STACK region is excluded too, for a reason the digest already documents: the
         // fixed window starts AT the stack pointer because memory BELOW it is dead -- the
         // program has moved past it and cannot read it again, and the two sides legitimately

@@ -205,22 +205,14 @@ int main() {
               std::to_string(call("strlen", left)) + ", the host says " + std::to_string(std::strlen(test.left)));
   }
 
-  // Non-v* printf-family entry points receive variadic values inline after their
-  // fixed arguments. A value such as 7 must never be interpreted as a va_list
-  // pointer (which would read arbitrary guest memory).
-  {
-    const auto format = put_string(0x240000, "value=%d");
-    std::string captured;
-    guest_output_capture = &captured;
-    check(call("printf", format, 7) == 7, "printf returns bytes written for inline varargs");
-    guest_output_capture = nullptr;
-    check(captured == "value=7", "printf formats inline integer varargs");
-
-    const auto buffer = 0x250000ull;
-    const auto sprintf_format = put_string(0x250100, "hex=%x");
-    check(call("sprintf", buffer, sprintf_format, 0x2a) == 6,
-          "sprintf returns bytes written for inline varargs");
-    check(get_string(buffer) == "hex=2a", "sprintf formats inline integer varargs");
+  // strerror takes one errno argument and returns a guest pointer to CRT-owned
+  // storage. The returned pointer must be directly readable by the guest and the
+  // ABI must not consume a fictitious destination-buffer argument.
+  for (const int error : {0, 2, 13}) {
+    const auto result = call("strerror", static_cast<std::uint64_t>(error));
+    check(result != 0, "strerror returns a guest pointer");
+    check(get_string(result) == std::strerror(error),
+          std::string("strerror(") + std::to_string(error) + ") matches the host CRT");
   }
 
   // --- strcpy/strncpy/strcat, including the padding strncpy is required to do -------

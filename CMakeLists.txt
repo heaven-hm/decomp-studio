@@ -88,6 +88,15 @@ target_compile_features(half_precision_test PRIVATE cxx_std_20)
 target_include_directories(half_precision_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME half_precision COMMAND half_precision_test)
 
+# Coverage is not detection. This injects a one-byte heap difference that does NOT change
+# stdout and asserts the comparison catches it.
+add_test(NAME heap_corruption
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/heap_corruption_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps
+          ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(heap_corruption PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
+
 add_executable(runtime_crt_test tests/compat/runtime_crt_test.cpp runtime/recomp_runtime.cpp)
 target_compile_features(runtime_crt_test PRIVATE cxx_std_20)
 target_include_directories(runtime_crt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)

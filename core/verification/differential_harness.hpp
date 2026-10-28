@@ -49,7 +49,11 @@ struct DifferentialResult {
   // output all agree on, and it is not yet explained -- so it is reported, not
   // gated. A gate that fails for a reason nobody has diagnosed either gets
   // weakened or gets ignored, and both are worse than an honest diagnostic.
-  bool memory_match{true};
+  // Defaults to FALSE, and is set true only where a comparison actually ran. It
+  // defaulted to true, so a run that compared nothing printed "guest-memory digest
+  // agrees: yes" beside "checkpoints compared: 0" -- an agreement the run had not
+  // established. A default that asserts agreement is the wrong way round for a gate.
+  bool memory_match{};
   std::string memory_diagnosis;
   // A difference classified as the documented x87 precision limit -- one unit in
   // the last place of a double -- rather than as an unexplained divergence. A gate
@@ -62,7 +66,8 @@ struct DifferentialResult {
   // found were control registers that a guest read and that disagreed between the
   // two sides, so they are worth comparing directly; the one found this way is not
   // yet explained, so it is a diagnostic rather than a verdict.
-  bool control_registers_match{true};
+  // False until a comparison runs, for the same reason as memory_match above.
+  bool control_registers_match{};
   std::string control_diagnosis;
   int candidate_exit_code{};
   std::string reference_output;

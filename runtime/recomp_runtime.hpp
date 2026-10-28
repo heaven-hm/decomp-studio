@@ -758,6 +758,35 @@ inline void vector_set_double_lane(GuestContext* context, int vector_index, int 
   std::memcpy(context->vector_registers[vector_index] + lane * 8, &value, 8);
 }
 
+// ROUNDSD rounds the low scalar double and preserves the destination's high
+// lane. Immediate bits 1:0 select nearest/down/up/truncate; bit 2 delegates to
+// MXCSR's rounding control.
+inline double round_scalar_double(const GuestContext* context, double value, int immediate) {
+  const int mode = (immediate & 4) != 0 ? static_cast<int>((context->mxcsr >> 13) & 3u)
+                                        : (immediate & 3);
+  switch (mode) {
+    case 1: return std::floor(value);
+    case 2: return std::ceil(value);
+    case 3: return std::trunc(value);
+    default: return std::nearbyint(value);
+  }
+}
+
+inline void round_scalar_double_register(GuestContext* context, int destination, int source,
+                                         int immediate) {
+  vector_set_double(context, destination,
+                    round_scalar_double(context, vector_get_double(context, source), immediate));
+}
+
+inline void round_scalar_double_memory(GuestContext* context, int destination, std::uint64_t address,
+                                       int immediate) {
+  const std::uint64_t bits = load_guest_memory(context, address, 8);
+  double value = 0.0;
+  std::memcpy(&value, &bits, sizeof(value));
+  vector_set_double(context, destination,
+                    round_scalar_double(context, value, immediate));
+}
+
 // COMISS / COMISD / UCOMISS / UCOMISD: flags only, no writeback.
 inline void compare_scalar_floats(GuestContext* context, double left, double right) {
   context->overflow_flag = context->sign_flag = context->auxiliary_flag = 0;
@@ -1043,6 +1072,9 @@ inline void vector_insert_qword(GuestContext* context, int destination, std::uin
 RECOMP_FMA_OP(fma132, std::fma(dst, src3, src2))
 RECOMP_FMA_OP(fma213, std::fma(src2, dst, src3))
 RECOMP_FMA_OP(fma231, std::fma(src2, src3, dst))
+RECOMP_FMA_OP(fmsub132, std::fma(dst, src3, -src2))
+RECOMP_FMA_OP(fmsub213, std::fma(src2, dst, -src3))
+RECOMP_FMA_OP(fmsub231, std::fma(src2, src3, -dst))
 #undef RECOMP_FMA_OP
 
 // The 256-bit forms. `vector_registers` is [16][32] -- 32 bytes, 256 bits -- and the

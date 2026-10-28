@@ -3383,10 +3383,9 @@ void msvcrt_vfprintf(GuestContext* context) {
 // argument read at the width the guest's own length modifier asks for. What is left to
 // this function is the ABI, and what is left to the host is everything that is easy to
 // get wrong.
-std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
-                                        const std::string& format, std::uint64_t arguments) {
+std::string msvcrt_format_arguments(GuestContext* context, const std::string& format,
+                                    std::uint64_t arguments) {
   std::string output;
-  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
   const int pointer_width = static_cast<int>(guest_pointer_width);
 
   // Reads one argument from the guest's list. `slot` is the width the conversion asks
@@ -3491,8 +3490,109 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
     if (written < 0) continue;
     output.append(buffer, std::min<std::size_t>(static_cast<std::size_t>(written), sizeof(buffer) - 1));
   }
+  return output;
+}
+
+std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
+                                        const std::string& format, std::uint64_t arguments) {
+  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  const auto output = msvcrt_format_arguments(context, format, arguments);
   const auto accepted = write_guest_output(descriptor, output.data(), output.size());
   return accepted < 0 ? 0 : output.size();
+}
+
+// The legacy msvcrt spellings of the standard C library.
+//
+// These are the names a binary built against msvcrt.dll imports -- which is most 32-bit
+// Windows software, and every one of the applications in the cheat-software corpus. The
+// runtime implemented the Universal CRT entry points (`__stdio_common_vfprintf` and
+// friends) but none of these, so those programs stopped at the first `printf` with
+// "unimplemented Win32 import" even though the formatting engine was already there.
+//
+// Each one forwards to the implementation that already exists. Nothing is reimplemented.
+void msvcrt_printf(GuestContext* context) {
+  const auto format = read_guest_string(import_argument(context, 0));
+  const auto arguments = import_argument(context, 1);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto accepted = write_guest_output(1, output.data(), output.size());
+  set_import_result(context, accepted < 0 ? 0 : output.size());
+}
+
+void msvcrt_fprintf(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
+}
+
+// sprintf writes the formatted text into a GUEST buffer and appends a terminator. It
+// does not know the buffer's size -- that is the whole hazard of sprintf -- so the
+// bound here is the guest's own address space, which is what the real one has too.
+void msvcrt_sprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  for (std::size_t index = 0; index < output.size(); ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+  store_guest_memory(context, buffer + output.size(), 0, 1);
+  set_import_result(context, output.size());
+}
+
+// snprintf DOES know the size, and truncating rather than overrunning is its contract.
+void msvcrt_snprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 1));
+  const auto format = read_guest_string(import_argument(context, 2));
+  const auto arguments = import_argument(context, 3);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  if (limit != 0) {
+    const auto written = std::min(limit - 1, output.size());
+    for (std::size_t index = 0; index < written; ++index)
+      store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+    store_guest_memory(context, buffer + written, 0, 1);
+  }
+  // snprintf returns the length it WOULD have written, which is what lets a caller
+  // size a buffer by calling it twice. Returning the truncated length would make the
+  // second call undersized.
+  set_import_result(context, output.size());
+}
+
+// The CRT globals and locks a startup path touches. Each is reported for what it is:
+// a no-op where the concept does not exist here, and a real value where the guest
+// reads one.
+void msvcrt_iob_func(GuestContext* context) { set_import_result(context, msvcrt_iob); }
+void msvcrt_fmode(GuestContext* context) { (void)context; }
+void msvcrt_lconv_init(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_lock(GuestContext* context) { (void)context; }
+void msvcrt_unlock(GuestContext* context) { (void)context; }
+void msvcrt_amsg_exit(GuestContext* context) {
+  terminate_with_message("_amsg_exit(%llu): the runtime asked to terminate",
+                         static_cast<unsigned long long>(import_argument(context, 0)));
+}
+void msvcrt_strerror(GuestContext* context) {
+  // The message is the host's text for the same errno. A guest that prints it gets a
+  // real sentence rather than an empty string or a fabricated one.
+  static std::string message;
+  message = std::strerror(static_cast<int>(import_argument(context, 0)));
+  const auto buffer = import_argument(context, 1);
+  for (std::size_t index = 0; index < message.size(); ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(message[index]), 1);
+  store_guest_memory(context, buffer + message.size(), 0, 1);
+  set_import_result(context, buffer);
+}
+void msvcrt_isspace(GuestContext* context) {
+  set_import_result(context, std::isspace(static_cast<int>(import_argument(context, 0) & 0xffu)) != 0);
+}
+void msvcrt_clock(GuestContext* context) {
+  // The guest's clock counts milliseconds since the process started, so it is
+  // CLOCKS_PER_SEC/1000 ticks; the host's counts microseconds. Converting is the whole
+  // job, and returning the host's value unchanged would be wrong by a factor of 1000.
+  (void)context;
+  static const auto start = std::chrono::steady_clock::now();
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  set_import_result(context, static_cast<std::uint64_t>(milliseconds));
 }
 
 // _initterm runs the table of static initialisers the CRT is given: the C++
@@ -3507,6 +3607,11 @@ void msvcrt_initterm(GuestContext* context) {
     if (entry == 0) continue;
     if (auto function = lookup_guest_function(entry)) {
       function(context);
+    } else if (std::getenv("RECOMP_DEBUG_INITTERM") != nullptr) {
+      std::fprintf(stderr, "DEBUG initterm: begin=0x%llx end=0x%llx slot=0x%llx entry=0x%llx width=%d\n",
+                   (unsigned long long)begin, (unsigned long long)end, (unsigned long long)slot,
+                   (unsigned long long)entry, guest_pointer_width);
+      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     } else {
       terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     }
@@ -4102,6 +4207,21 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "wcstombs", msvcrt_wcstombs},
     {"msvcrt.dll", "wcrtomb", msvcrt_wcrtomb},
     {"msvcrt.dll", "vfprintf", msvcrt_vfprintf},
+    {"msvcrt.dll", "printf", msvcrt_printf},
+    {"msvcrt.dll", "fprintf", msvcrt_fprintf},
+    {"msvcrt.dll", "sprintf", msvcrt_sprintf},
+    {"msvcrt.dll", "snprintf", msvcrt_snprintf},
+    {"msvcrt.dll", "_snprintf", msvcrt_snprintf},
+    {"msvcrt.dll", "_iob_func", msvcrt_iob_func},
+    {"msvcrt.dll", "__iob_func", msvcrt_iob_func},
+    {"msvcrt.dll", "_fmode", msvcrt_fmode},
+    {"msvcrt.dll", "__lconv_init", msvcrt_lconv_init},
+    {"msvcrt.dll", "_lock", msvcrt_lock},
+    {"msvcrt.dll", "_unlock", msvcrt_unlock},
+    {"msvcrt.dll", "_amsg_exit", msvcrt_amsg_exit},
+    {"msvcrt.dll", "strerror", msvcrt_strerror},
+    {"msvcrt.dll", "isspace", msvcrt_isspace},
+    {"msvcrt.dll", "clock", msvcrt_clock},
     {"msvcrt.dll", "__getmainargs", msvcrt_getmainargs},
     {"msvcrt.dll", "strlen", msvcrt_strlen},
     {"msvcrt.dll", "strcmp", msvcrt_strcmp},

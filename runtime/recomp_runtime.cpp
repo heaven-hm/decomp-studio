@@ -1423,6 +1423,7 @@ std::uint64_t msvcrt_data_block = 0;   // CRT globals: errno, _iob, ctype tables
 std::uint64_t msvcrt_environment_pointer = 0;
 std::uint64_t msvcrt_file_mode_pointer = 0;
 std::uint64_t msvcrt_iob = 0;
+std::uint64_t msvcrt_strerror_buffer = 0;
 
 constexpr std::uint64_t kMsvcrtFileObjectBytes = 48;
 constexpr std::uint64_t kMsvcrtFileCount = 3;  // stdin, stdout, stderr
@@ -1440,6 +1441,9 @@ void msvcrt_initialize() {
   msvcrt_environment_pointer = msvcrt_data_block + 0x100;
   msvcrt_file_mode_pointer = msvcrt_data_block + 0x110;
   msvcrt_iob = msvcrt_data_block + 0x200;
+  // strerror returns a pointer to CRT-owned storage. Keep that storage in the
+  // guest address space so a guest can dereference the result directly.
+  msvcrt_strerror_buffer = msvcrt_data_block + 0x500;
   // __p__environ and __p__fmode return the address of a variable, not the value.
   const std::uint32_t environment = static_cast<std::uint32_t>(environment_block_a);
   std::memcpy(guest_memory + msvcrt_environment_pointer, &environment, 4);
@@ -3745,7 +3749,7 @@ void msvcrt_strerror(GuestContext* context) {
   // real sentence rather than an empty string or a fabricated one.
   static std::string message;
   message = std::strerror(static_cast<int>(import_argument(context, 0)));
-  const auto buffer = import_argument(context, 1);
+  const auto buffer = msvcrt_strerror_buffer;
   for (std::size_t index = 0; index < message.size(); ++index)
     store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(message[index]), 1);
   store_guest_memory(context, buffer + message.size(), 0, 1);

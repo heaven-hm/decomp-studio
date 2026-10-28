@@ -1763,6 +1763,7 @@ void msvcrt_wcstombs(GuestContext* context) {
 // something wrong.
 // The formatting itself, shared by msvcrt's vfprintf and the UCRT's
 // __stdio_common_vfprintf, which differ only in where their arguments sit.
+// Defined below, next to the formatter it calls.
 std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
                                         const std::string& format, std::uint64_t arguments);
 
@@ -1772,53 +1773,130 @@ void msvcrt_vfprintf(GuestContext* context) {
   const auto arguments = import_argument(context, 2);
   set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
 }
+
+// Formats one conversion by handing the HARD PART to the host C library.
+//
+// The version this replaces parsed width, precision and flags and then discarded them,
+// read every argument as four bytes regardless of the guest's pointer width, and had no
+// floating-point conversions at all -- so `%-10d` lost its padding, `%s` on a 64-bit
+// guest read half a pointer, and any `%f` terminated the program. The host already has
+// a complete, correct implementation of printf's formatting, so the work here is only
+// the part the host cannot know: reading the guest's argument list.
+//
+// One conversion is rebuilt into a host format string and passed to `snprintf` with the
+// argument read at the width the guest's own length modifier asks for. What is left to
+// this function is the ABI, and what is left to the host is everything that is easy to
+// get wrong.
 std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
                                         const std::string& format, std::uint64_t arguments) {
   std::string output;
   const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  const int pointer_width = static_cast<int>(guest_pointer_width);
+
+  // Reads one argument from the guest's list. `slot` is the width the conversion asks
+  // for, which the guest's ABI advances by: a 32-bit guest's list is 4-byte slots and a
+  // 64-bit guest's is 8-byte, whatever the value's own width.
+  const auto next = [&arguments, context, pointer_width](int slot) -> std::uint64_t {
+    const auto value = load_guest_memory(context, arguments, slot);
+    arguments += static_cast<std::uint64_t>(pointer_width);
+    return value;
+  };
+
   for (std::size_t index = 0; index < format.size(); ++index) {
     if (format[index] != '%') { output.push_back(format[index]); continue; }
     if (index + 1 >= format.size()) break;
-    auto specifier = format[++index];
-    while (specifier == '-' || specifier == '+' || specifier == ' ' || specifier == '#' || specifier == '0')
-      specifier = format[++index];
-    while (specifier >= '0' && specifier <= '9') specifier = format[++index];
-    if (specifier == 'l' || specifier == 'h') specifier = format[++index];
-    const auto next = [&arguments, context] {
-      const auto value = load_guest_memory(context, arguments, 4);
-      arguments += 4;
-      return value;
-    };
+    const auto conversion_start = index;
+    ++index;
+    if (format[index] == '%') { output.push_back('%'); continue; }
+
+    // Collect the whole conversion so it can be handed to the host unchanged: flags,
+    // width, precision and length modifier are all part of what `snprintf` understands.
+    std::size_t cursor = index;
+    while (cursor < format.size() && std::strchr("-+ #0", format[cursor]) != nullptr) ++cursor;
+    while (cursor < format.size() && format[cursor] >= '0' && format[cursor] <= '9') ++cursor;
+    if (cursor < format.size() && format[cursor] == '.') {
+      ++cursor;
+      while (cursor < format.size() && format[cursor] >= '0' && format[cursor] <= '9') ++cursor;
+    }
+    std::size_t length_begin = cursor;
+    while (cursor < format.size() && std::strchr("hljztL", format[cursor]) != nullptr) ++cursor;
+    const auto length = format.substr(length_begin, cursor - length_begin);
+    if (cursor >= format.size()) break;
+    const char specifier = format[cursor];
+    index = cursor;
+
+    // The conversion as the guest wrote it, minus the leading `%`, for the host.
+    std::string host_format = "%" + format.substr(conversion_start + 1, cursor - conversion_start - 1);
+    char buffer[512];
+    int written = 0;
     switch (specifier) {
-      case '%': output.push_back('%'); break;
-      case 'c': output.push_back(static_cast<char>(next() & 0xffu)); break;
-      case 'd':
-      case 'i': output += std::to_string(static_cast<std::int32_t>(next() & 0xffffffffu)); break;
-      case 'u': output += std::to_string(static_cast<std::uint32_t>(next() & 0xffffffffu)); break;
-      case 'x': {
-        std::ostringstream text;
-        text << std::hex << static_cast<std::uint32_t>(next() & 0xffffffffu);
-        output += text.str();
+      case 'c':
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                static_cast<int>(next(4) & 0xffu));
         break;
-      }
+      case 'd':
+      case 'i':
+        if (length.find("ll") != std::string::npos || length.find('j') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<long long>(next(8)));
+        else if (length.find('l') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<long>(next(8)));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<int>(next(4) & 0xffffffffu));
+        break;
+      case 'u':
+      case 'x':
+      case 'X':
+      case 'o':
+        if (length.find("ll") != std::string::npos || length.find('j') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned long long>(next(8)));
+        else if (length.find('l') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned long>(next(8)));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned int>(next(4) & 0xffffffffu));
+        break;
+      case 'f':
+      case 'F':
+      case 'e':
+      case 'E':
+      case 'g':
+      case 'G':
+        // A float argument arrives in the guest's list as an 8-byte double: the Windows
+        // ABI promotes it exactly as the C rules require.
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                static_cast<double>(next(8)));
+        break;
       case 's': {
-        const auto address = next();
-        output += address == 0 ? std::string("(null)") : read_guest_string(address);
+        const auto address = next(pointer_width);
+        const auto text = address == 0 ? std::string("(null)") : read_guest_string(address);
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(), text.c_str());
         break;
       }
       case 'p': {
-        std::ostringstream text;
-        text << "0x" << std::hex << next();
-        output += text.str();
+        // The guest prints its own pointer value, so it is formatted as an integer of
+        // the guest's width rather than as a host pointer, which would be a different
+        // number entirely.
+        const auto value = next(pointer_width);
+        if (pointer_width >= 8)
+          written = std::snprintf(buffer, sizeof(buffer), "0x%llx", static_cast<unsigned long long>(value));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), "0x%x", static_cast<unsigned int>(value));
         break;
       }
       default:
         terminate_with_message("vfprintf: unsupported conversion '%%%c' (ip=0x%" PRIx64 ")", specifier,
                                context->instruction_pointer);
     }
+    if (written < 0) continue;
+    output.append(buffer, std::min<std::size_t>(static_cast<std::size_t>(written), sizeof(buffer) - 1));
   }
-  write_guest_output(descriptor, output.data(), output.size());
-  return output.size();
+  const auto accepted = write_guest_output(descriptor, output.data(), output.size());
+  return accepted < 0 ? 0 : output.size();
 }
 
 // _initterm runs the table of static initialisers the CRT is given: the C++

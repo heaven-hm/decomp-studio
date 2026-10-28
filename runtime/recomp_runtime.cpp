@@ -4724,6 +4724,14 @@ void report_divide_error(GuestContext* context) {
 }
 
 const ShimDescriptor* find_win32_shim(const char* library_name, const char* symbol_name) {
+  // Windows API-set DLLs forward core process/thread/heap exports to kernel32.
+  // Preserve that forwarding behavior for GetProcAddress probes instead of
+  // requiring one duplicate table row for every API-set spelling.
+  if (library_name != nullptr &&
+      (std::strncmp(library_name, "api-ms-win-core-", 16) == 0 ||
+       std::strncmp(library_name, "ext-ms-win-", 11) == 0)) {
+    if (const auto* found = find_win32_shim("kernel32.dll", symbol_name)) return found;
+  }
   // The Universal CRT's API sets carry the standard C library symbols, so a name
   // that is not found under an api-ms-win-crt-* library is retried as msvcrt.
   if (win32_is_universal_crt_library(library_name)) {

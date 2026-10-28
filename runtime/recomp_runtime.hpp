@@ -684,6 +684,15 @@ inline void vector_insert_word(GuestContext* context, int vector_index, std::uin
   std::memcpy(context->vector_registers[vector_index] + offset, &value, sizeof(value));
 }
 
+// AVX VPBROADCASTB clears the destination then fills its 128- or 256-bit lane
+// range with the source's low byte. Clearing all 32 bytes also models VEX.128
+// zeroing the upper half of the architectural YMM register.
+inline void vector_broadcast_byte(GuestContext* context, int vector_index, std::uint8_t value, int byte_count) {
+  std::memset(context->vector_registers[vector_index], value, static_cast<std::size_t>(byte_count));
+  std::memset(context->vector_registers[vector_index] + byte_count, 0,
+              static_cast<std::size_t>(32 - byte_count));
+}
+
 inline std::uint64_t vector_get_high_qword(const GuestContext* context, int vector_index) {
   std::uint64_t value = 0;
   std::memcpy(&value, context->vector_registers[vector_index] + 8, sizeof(value));

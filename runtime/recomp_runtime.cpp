@@ -3800,13 +3800,16 @@ void msvcrt_initterm(GuestContext* context) {
     if (entry == 0) continue;
     if (auto function = lookup_guest_function(entry)) {
       function(context);
-    } else if (std::getenv("RECOMP_DEBUG_INITTERM") != nullptr) {
-      std::fprintf(stderr, "DEBUG initterm: begin=0x%llx end=0x%llx slot=0x%llx entry=0x%llx width=%d\n",
-                   (unsigned long long)begin, (unsigned long long)end, (unsigned long long)slot,
-                   (unsigned long long)entry, guest_pointer_width);
-      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     } else {
-      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
+      // Recovery can leave CRT table entries that point at compiler/runtime
+      // helpers outside the discovered guest function set. Skipping one is the
+      // only safe default for startup: calling an unknown address would jump into
+      // data, while aborting prevents every GUI/CRT-heavy binary from reaching its
+      // first real import. Strict verification can retain the old fail-closed
+      // behavior with RECOMP_STRICT_INITTERM=1.
+      std::fprintf(stderr, "recomp: _initterm skipped unrecovered initializer 0x%" PRIx64 "\n", entry);
+      if (std::getenv("RECOMP_STRICT_INITTERM") != nullptr)
+        terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     }
   }
   set_import_result(context, 0);
@@ -4353,6 +4356,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LCMapStringA", win32_lc_map_string_a},
     {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
     {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
+    {"comctl32.dll", "#17", win32_zero},
     // msvcrt: cdecl, so the caller pops and callee_cleans_stack is false below.
     {"msvcrt.dll", "_initterm", msvcrt_initterm},
     {"msvcrt.dll", "_initterm_e", msvcrt_initterm_e},

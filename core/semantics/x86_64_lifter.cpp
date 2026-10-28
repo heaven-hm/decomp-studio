@@ -106,7 +106,8 @@ const std::map<std::string, int>& string_operation_sizes() {
 const std::map<std::string, std::string>& vector_bitwise_helpers() {
   static const std::map<std::string, std::string> helpers = {
       {"xorps", "vector_bitwise_xor"}, {"xorpd", "vector_bitwise_xor"}, {"pxor", "vector_bitwise_xor"},
-      {"andps", "vector_bitwise_and"}, {"andpd", "vector_bitwise_and"}, {"pand", "vector_bitwise_and"},
+      {"andps", "vector_bitwise_and"}, {"andpd", "vector_bitwise_and"}, {"andnps", "vector_bitwise_and_not"},
+      {"pand", "vector_bitwise_and"},
       {"orps", "vector_bitwise_or"},   {"orpd", "vector_bitwise_or"},   {"por", "vector_bitwise_or"}};
   return helpers;
 }
@@ -986,6 +987,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     if (operands[1].kind == discovery::Operand::Kind::Memory) {
       emit("convert_dwords_to_floats_from_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
+  }
+  if (mnemonic == "cvttps2dq" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    if (is_vector_register(operands[1])) {
+      emit("vector_convert_truncated_floats_to_dwords(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_convert_truncated_floats_to_dwords_memory(context, " + destination + ", " +
            effective_address_expression(instruction, operands[1]) + ");");
       return;
     }

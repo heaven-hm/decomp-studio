@@ -4299,6 +4299,17 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "VirtualFree", win32_virtual_free},
     {"kernel32.dll", "VirtualQuery", win32_virtual_query},
     {"kernel32.dll", "VirtualProtect", win32_virtual_protect},
+    // Minimal message-loop surface. These shims deliberately avoid claiming a
+    // native window exists; they let startup and deterministic headless paths
+    // advance until a real window/GDI provider is required.
+    {"user32.dll", "DefWindowProcA", win32_zero},
+    {"user32.dll", "DispatchMessageA", win32_zero},
+    {"user32.dll", "GetMessageA", win32_zero},
+    {"user32.dll", "MessageBeep", win32_one},
+    {"user32.dll", "PostQuitMessage", win32_zero},
+    {"user32.dll", "ShowWindow", win32_zero},
+    {"user32.dll", "SetForegroundWindow", win32_one},
+    {"user32.dll", "TranslateMessage", win32_zero},
     // libstdc++, cdecl: the caller pops.
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", cxx_ifstream_construct},
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE5closeEv", cxx_file_stream_close},

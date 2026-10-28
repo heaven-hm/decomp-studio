@@ -40,3 +40,25 @@ optional providers behind stable interfaces.
 
 The backlog is intentionally explicit: a project may borrow a proven technique
 without claiming that the entire upstream runtime has been integrated.
+
+## Approved IGI runtime source inventory
+
+The following local sources were audited for the unresolved IGI import groups.
+Both repositories are MIT licensed; retain their copyright and license notices
+with any substantial copied implementation. They use a different guest-context
+ABI, so each adoption must be a small, tested adapter rather than a wholesale
+file drop.
+
+| Import family | Primary source | Fallback/reference | License | Adoption boundary |
+| --- | --- | --- | --- | --- |
+| DirectDraw / Direct3D 7 | `recomp-research/igi-recomp/shim/src/ddraw.c` | `project-igi-browser/host/ddraw7.c` | MIT | COM object and renderer-provider adapter |
+| DirectSound | `recomp-research/igi-recomp/shim/src/dsound.c` | `project-igi-browser/host/dsound.c` | MIT | COM object and host-audio provider |
+| DirectInput | `recomp-research/igi-recomp/shim/src/dinput.c` | `project-igi-browser/host/dinput.c` | MIT | COM object and host-input provider |
+| AVI / video | `recomp-research/igi-recomp/shim/src/avifil32.c` | `project-igi-browser/host/mm.c` | MIT | file parser or explicit headless error path |
+| WinMM / MCI | `recomp-research/igi-recomp/shim/src/winmm.c` | `project-igi-browser/host/mm.c` | MIT | audio-device and mixer adapter |
+| OLE COM activation | `recomp-research/igi-recomp/shim/src/ole32.c` | `project-igi-browser/host/mm.c` | MIT | CLSID/IID dispatch adapter |
+
+The audit source roots are `/Users/haseeb-mir/Downloads/recomp-research/igi-recomp`
+and `/Users/haseeb-mir/Downloads/recomp-research/project-igi-browser`; their
+licenses are at each repository's `LICENSE` file. This table is not a claim
+that these subsystems have already been imported.

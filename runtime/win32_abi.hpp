@@ -200,6 +200,10 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "_assert", 3, true},
     {"msvcrt.dll", "MulDiv", 3, true},
     {"kernel32.dll", "MulDiv", 3, true},
+    // Legacy comctl32 exports InitCommonControls by ordinal #17. Registration is
+    // process-global on Windows; the native runtime has no control class registry,
+    // so a successful no-op is the compatible startup behavior for console-safe paths.
+    {"comctl32.dll", "#17", 0, false},
     {"kernel32.dll", "GlobalAlloc", 2, true},
     {"kernel32.dll", "GlobalLock", 1, true},
     {"kernel32.dll", "GlobalUnlock", 1, true},

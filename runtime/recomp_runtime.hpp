@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <random>
 #include <limits>
@@ -1441,6 +1442,36 @@ inline void vector_convert_dwords_to_doubles_memory(GuestContext* context, int d
   std::int32_t values[2];
   std::memcpy(values, guest_memory + address, 8);
   const double result[2] = {static_cast<double>(values[0]), static_cast<double>(values[1])};
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// CVTTPS2DQ truncates four packed single-precision values toward zero. Values
+// outside the signed dword range (including NaN/infinity) produce the architectural
+// indefinite integer 0x80000000 rather than invoking host floating-point casts.
+inline std::int32_t truncate_float_to_dword(float value) {
+  if (!std::isfinite(value) || value >= 2147483648.0f || value < -2147483648.0f)
+    return std::numeric_limits<std::int32_t>::min();
+  return static_cast<std::int32_t>(std::trunc(value));
+}
+
+inline void vector_convert_truncated_floats_to_dwords(GuestContext* context, int destination, int source) {
+  float values[4];
+  std::int32_t result[4];
+  std::memcpy(values, context->vector_registers[source], 16);
+  for (int index = 0; index < 4; ++index) result[index] = truncate_float_to_dword(values[index]);
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_convert_truncated_floats_to_dwords_memory(GuestContext* context, int destination,
+                                                             std::uint64_t address) {
+  if (address + 16 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 16, 0);
+    return;
+  }
+  float values[4];
+  std::int32_t result[4];
+  std::memcpy(values, guest_memory + address, 16);
+  for (int index = 0; index < 4; ++index) result[index] = truncate_float_to_dword(values[index]);
   std::memcpy(context->vector_registers[destination], result, 16);
 }
 

@@ -18,6 +18,9 @@ struct ReferenceRun {
   std::string output;
   std::vector<std::uint64_t> trace;
   std::uint64_t instruction_count{};
+  // Set when the reference stopped at the shared instruction ceiling rather than
+  // because the program terminated.
+  bool truncated{};
   // Set when the reference had to compensate for an emulator limitation.
   std::string note;
   // Guest state recorded at the same checkpoints the candidate records, so the
@@ -26,14 +29,48 @@ struct ReferenceRun {
   std::vector<std::vector<std::uint8_t>> memory_windows;
 };
 
+// What a verification run actually established. Issue #11 asks for an explicit verdict
+// rather than a boolean, and the reason is in the list: "the two sides agreed" and "the
+// reference could not model this program" and "the run was cut off at a budget" are
+// three different findings that a single `false` reports identically, and the reader
+// cannot tell which one they are looking at.
+enum class Verdict {
+  // The reference and the candidate reached an equivalent terminal condition and agreed
+  // on output, machine state, memory and control registers at every checkpoint.
+  VERIFIED,
+  // Both sides ran and disagreed. This is a finding about the translation.
+  DIVERGED,
+  // The reference could not model something (an import it does not implement, an
+  // instruction the emulator cannot execute). This says NOTHING about the translation:
+  // there was no usable oracle.
+  REFERENCE_UNSUPPORTED,
+  // The candidate could not run -- a missing import, an unsupported instruction at
+  // runtime, a crash. Again not a statement about correctness.
+  CANDIDATE_UNSUPPORTED,
+  // The run stopped before either side reached a terminal condition, so what was
+  // compared is a prefix. Never a pass.
+  INCOMPLETE,
+  // The candidate was never executed, so nothing about it was established at all.
+  NOT_RUN,
+};
+
+const char* verdict_name(Verdict verdict);
+
 struct DifferentialResult {
   bool reference_completed{};     // reference executed and captured output
-  bool candidate_completed{};     // candidate exited with status 0
+  bool candidate_completed{};
+  // False when the candidate was never executed. Without this, a run that stopped
+  // because the REFERENCE did not complete reported `candidate_bytes: 0` and
+  // `outputs_match: false`, which reads as "the candidate ran and produced nothing" --
+  // a claim about a program that was never started.
+  bool candidate_ran{};     // candidate exited with status 0
   bool outputs_match{};
   // Guest-state comparison: how many checkpoints were compared, whether they
   // agreed, and -- when they did not -- where the machine stopped matching, which
   // is something an output comparison cannot say.
   std::size_t checkpoints_compared{};
+  std::size_t checkpoints_matched{};
+  std::size_t checkpoints_total{};
   bool state_match{};
   std::string state_diagnosis;
   // Guest memory is digested at every checkpoint and compared, and the result is
@@ -42,7 +79,11 @@ struct DifferentialResult {
   // output all agree on, and it is not yet explained -- so it is reported, not
   // gated. A gate that fails for a reason nobody has diagnosed either gets
   // weakened or gets ignored, and both are worse than an honest diagnostic.
-  bool memory_match{true};
+  // Defaults to FALSE, and is set true only where a comparison actually ran. It
+  // defaulted to true, so a run that compared nothing printed "guest-memory digest
+  // agrees: yes" beside "checkpoints compared: 0" -- an agreement the run had not
+  // established. A default that asserts agreement is the wrong way round for a gate.
+  bool memory_match{};
   std::string memory_diagnosis;
   // A difference classified as the documented x87 precision limit -- one unit in
   // the last place of a double -- rather than as an unexplained divergence. A gate
@@ -50,12 +91,16 @@ struct DifferentialResult {
   // to be loosened until it catches nothing, and both are worse than naming the
   // class.
   std::size_t x87_precision_differences{};
+  // Pages outside the fixed windows that were compared because the candidate wrote them.
+  // Reported so a PASS says how much of the writable set it actually covered.
+  std::size_t dirty_pages_compared{};
   // Control registers -- MXCSR and the x87 control and status words -- compared at
   // every checkpoint and reported, not gated. Two of the last three divergences
   // found were control registers that a guest read and that disagreed between the
   // two sides, so they are worth comparing directly; the one found this way is not
   // yet explained, so it is a diagnostic rather than a verdict.
-  bool control_registers_match{true};
+  // False until a comparison runs, for the same reason as memory_match above.
+  bool control_registers_match{};
   std::string control_diagnosis;
   int candidate_exit_code{};
   std::string reference_output;
@@ -63,7 +108,14 @@ struct DifferentialResult {
   std::string candidate_error;
   std::string diagnosis;
   std::uint64_t executed_instructions{};
+  // Set when a side stopped because it reached the shared instruction ceiling rather
+  // than because the program terminated.
+  bool truncated{};
   std::vector<std::string> unsupported_mnemonics;
+
+  std::size_t checkpoint_match_percent() const {
+    return checkpoints_total == 0 ? 0 : checkpoints_matched * 100 / checkpoints_total;
+  }
 
   // Verification only passes when the reference completed, the candidate exited
   // cleanly, and the outputs are identical. A missing backend is never a pass.
@@ -80,17 +132,34 @@ struct DifferentialResult {
   // verdict issued without the measurement it claims to rest on. Any program that
   // executes at least one guest instruction records checkpoint 0, so requiring one
   // cannot reject a genuinely verified run.
-  bool verified() const {
-    if (!reference_completed || !candidate_completed || !outputs_match) return false;
-    if (checkpoints_compared == 0) return false;
-    // Memory and the control registers gate the verdict as well as the registers and
-    // flags. They did not until every fixture but one agreed, and the one that does
-    // not is `vex`, whose divergence is a known defect in the emulator used as the
-    // reference rather than in the translation. Gating on a comparison that fails for
-    // a reason nobody has diagnosed teaches people to ignore it; gating on one that
-    // fails only for a documented defect is worth having.
-    return state_match && memory_match && control_registers_match;
+  // The ONE place a verdict is decided. `verify`, `autorecomp` and the repair harness
+  // all read this, so they cannot disagree about what a run established -- which they
+  // could when each computed its own answer from the booleans.
+  Verdict verdict() const {
+    // Not run is checked first: it is the strongest statement available, and every
+    // other field is a default that would otherwise be read as a measurement.
+    // TRUNCATION IS CHECKED FIRST, before both NOT_RUN and the unsupported cases. A run
+    // cut off at the shared ceiling did not fail to run and did not fail to be modelled
+    // -- it ran, for exactly as long as it was allowed to, and what it did can be
+    // compared. Both other orders were tried and both were wrong: after the unsupported
+    // cases it reported a budget as CANDIDATE_UNSUPPORTED, and after NOT_RUN it reported a
+    // truncated reference as NOT_RUN. `truncated` is the strongest and most specific fact
+    // available, so it decides.
+    if (truncated) return Verdict::INCOMPLETE;
+    if (!candidate_ran) return Verdict::NOT_RUN;
+    // A reference that could not model the program leaves no oracle. This is reported
+    // as such rather than as a divergence, because calling it a divergence would blame
+    // the translation for a gap in the reference.
+    if (!reference_completed) return Verdict::REFERENCE_UNSUPPORTED;
+    if (!candidate_completed) return Verdict::CANDIDATE_UNSUPPORTED;
+    if (checkpoints_compared == 0) return Verdict::INCOMPLETE;
+    if (!outputs_match || !state_match || !memory_match || !control_registers_match)
+      return Verdict::DIVERGED;
+    return Verdict::VERIFIED;
   }
+
+  bool verified() const { return verdict() == Verdict::VERIFIED; }
+
 };
 
 struct TraceComparison {

@@ -83,15 +83,50 @@ std::string escape_shell(const std::filesystem::path& value) {
 
 RunReport capture_process(const std::string& command, const std::filesystem::path& error_path) {
   RunReport report;
-  FILE* stream = ::popen((command + " 2> " + escape_shell(error_path)).c_str(), "r");
+  std::string invocation = command + " 2> " + escape_shell(error_path);
+  if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE"))
+    invocation += " < " + escape_shell(stdin_path);
+  if (const char* timeout_env = std::getenv("RECOMP_RUN_TIMEOUT")) {
+    int seconds = std::atoi(timeout_env);
+    if (seconds > 0) {
+      // Keep the supervisor alive while its child runs. `exec` here would replace
+      // Perl before the alarm fires, so the handler could not kill a guest that hangs
+      // waiting for input; it would instead leave that child orphaned.
+      invocation = "perl -e 'my $t=shift; my $pid=fork(); die \"fork failed\" unless defined $pid; "
+                   "if (!$pid) { setpgrp; exec @ARGV; exit 127; } my $expired=0; "
+                   "$SIG{ALRM}=sub { $expired=1; kill 9, -$pid; }; alarm $t; waitpid($pid,0); "
+                   "my $status=$?; alarm 0; exit($expired ? 124 : (($status & 127) ? "
+                   "128 + ($status & 127) : ($status >> 8)));' " +
+                   std::to_string(seconds) + " sh -c " + escape_shell(invocation);
+    }
+  }
+  FILE* stream = ::popen(invocation.c_str(), "r");
   if (stream == nullptr) throw std::runtime_error("cannot launch generated executable");
   std::array<char, 4096> buffer{};
   while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), stream) != nullptr)
     report.standard_output += buffer.data();
   const auto status = ::pclose(stream);
-  report.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+  if (WIFEXITED(status)) report.exit_code = WEXITSTATUS(status);
+  else if (WIFSIGNALED(status)) report.exit_code = 128 + WTERMSIG(status);
+  else report.exit_code = 1;
   if (std::filesystem::exists(error_path)) report.standard_error = read_whole_file(error_path);
   return report;
+}
+
+// Reads one string field out of a generated project's manifest. The manifest is
+// written by this same file with a known shape, so a full JSON parser would be
+// machinery for a format the project controls. A missing field returns an empty
+// string rather than inventing a default, because the question being asked is
+// "what did the input image call itself", and a guess is not an answer.
+std::string manifest_string_field(const std::filesystem::path& project, const std::string& field) {
+  const auto text = read_whole_file(project / "recomp-manifest.json");
+  const auto key = "\"" + field + "\": \"";
+  const auto start = text.find(key);
+  if (start == std::string::npos) return {};
+  const auto from = start + key.size();
+  const auto end = text.find('"', from);
+  if (end == std::string::npos) return {};
+  return text.substr(from, end - from);
 }
 
 }  // namespace
@@ -157,7 +192,15 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
     throw std::runtime_error("project is missing generated sources; run translate first");
 
   const auto built_executable = output_directory / "recomp-guest";
-  std::vector<std::string> arguments{configuration.compiler, "-std=c++20", "-O2", "-w", "-I",
+  // Clang's -O2 pass over the single generated translation unit can spend
+  // minutes and exhaust memory on large recovered images. Those images are
+  // already expensive to optimize as one unit; use a bounded compile strategy
+  // while keeping the default optimization for normal-sized projects.
+  constexpr std::uintmax_t kLargeGuestSourceBytes = 32 * 1024 * 1024;
+  const auto optimization = std::filesystem::file_size(guest_source) >= kLargeGuestSourceBytes
+                                ? "-O0"
+                                : "-O2";
+  std::vector<std::string> arguments{configuration.compiler, "-std=c++20", optimization, "-w", "-I",
                                      output_directory.string(), "-o", built_executable.string(),
                                      guest_source.string(), runtime_source.string()};
   const auto triple = common::target_triple_for(configuration.target);
@@ -176,7 +219,28 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
 RunReport run(const std::filesystem::path& output_directory) {
   const auto executable = output_directory / "recomp-guest";
   if (!std::filesystem::exists(executable)) throw std::runtime_error("no built executable; run build first");
-  return capture_process(escape_shell(executable), output_directory / "recomp-stderr.log");
+  const auto error_path = std::filesystem::absolute(output_directory / "recomp-stderr.log");
+  // Run from the project directory. A program that opens "savegame.dat" means the
+  // one beside itself, and the app-directory policy takes the working directory as
+  // its root -- so where the process starts decides which files it can reach, and
+  // running a generated project from wherever the studio happened to be invoked
+  // sent those reads somewhere nobody intended.
+  //
+  // RECOMP_APP_NAME is the input image's own filename: GetModuleFileNameA has to
+  // answer with a path that ends in a name, because a program that strips the last
+  // component to find its directory gets one level too high if it does not.
+  const auto input_path = manifest_string_field(output_directory, "input_path");
+  std::string app_name = "recomp-guest";
+  if (!input_path.empty()) {
+    const auto leaf = std::filesystem::path(input_path).filename().string();
+    if (!leaf.empty()) app_name = leaf;
+  }
+  // Named explicitly rather than left to the working directory, so `run` and the
+  // differential harness choose the same root for the same project.
+  ::setenv("RECOMP_APP_DIR", std::filesystem::absolute(output_directory).string().c_str(), 1);
+  const auto command = "cd " + escape_shell(std::filesystem::absolute(output_directory)) +
+                       " && RECOMP_APP_NAME=" + escape_shell(app_name) + " " + escape_shell(executable);
+  return capture_process(command, error_path);
 }
 
 void write_project_configuration(const common::Configuration& configuration,
@@ -203,7 +267,9 @@ common::Configuration load_project_configuration(const std::filesystem::path& ou
   const auto path = output_directory / "recomp-config.toml";
   if (std::filesystem::exists(path)) {
     auto configuration = common::Configuration::load(path);
-    if (configuration.runtime_directory.empty()) configuration.runtime_directory = configuration.runtime_directory;
+    // Was a self-assignment -- `x = x` -- so the default was never applied and a project
+    // without a runtime directory in its config kept the empty one.
+    if (configuration.runtime_directory.empty()) configuration.runtime_directory = RECOMP_DEFAULT_RUNTIME_DIR;
     return configuration;
   }
   return {};

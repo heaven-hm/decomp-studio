@@ -134,8 +134,12 @@ def main() -> int:
             check("verify/json", False, verification.stdout[:200])
 
         diagnosis = run_cli(["verify", str(project)]).stdout
-        check("verify/reports-identical", "identical output" in diagnosis,
-              f"the failure does not explain that the reference lacks the shim: {diagnosis.strip()[:200]}")
+        # The pass line used to read "VERIFY: PASS (identical output)", and this checked
+        # for that phrase. It was removed because it UNDERSTATES the gate: output
+        # agreement alone is not a pass, and a reader who sees it reasonably concludes it
+        # is. The verdict name is the honest summary, so that is what is checked now.
+        check("verify/reports-verdict", "verdict: " in diagnosis,
+              f"the run does not report a verdict: {diagnosis.strip()[:200]}")
 
         # It must stay out of the differential suite, where it would fail for
         # the reference's reason and look like a regression.

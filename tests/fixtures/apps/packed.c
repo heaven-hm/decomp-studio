@@ -235,6 +235,7 @@ int app_main(void) {
   MEMOP("pmaddwd"); out("mem_pmaddwd="); outi((i64)fold(result)); crlf();
   MEMOP("psadbw"); out("mem_psadbw="); outi((i64)fold(result)); crlf();
   MEMOP("paddw"); out("mem_paddw="); outi((i64)fold(result)); crlf();
+  MEMOP("pshufb"); out("mem_pshufb="); outi((i64)fold(result)); crlf();
   MEMOP("punpcklbw"); out("mem_unpack_lb="); outi(unpack_matches(result, left, right, 1, 0)); crlf();
   MEMOP("punpckhbw"); out("mem_unpack_hb="); outi(unpack_matches(result, left, right, 1, 1)); crlf();
   MEMOP("punpcklwd"); out("mem_unpack_lw="); outi(unpack_matches(result, left, right, 2, 0)); crlf();

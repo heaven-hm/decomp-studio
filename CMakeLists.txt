@@ -81,6 +81,18 @@ target_compile_features(runtime_time_test PRIVATE cxx_std_20)
 target_include_directories(runtime_time_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME runtime_time COMMAND runtime_time_test)
 
+# A hand-written numeric conversion needs a test that names the VALUES, not one that
+# checks it runs. Every expectation below is the IEEE-754 encoding of that number.
+add_executable(half_precision_test tests/compat/half_precision_test.cpp)
+target_compile_features(half_precision_test PRIVATE cxx_std_20)
+target_include_directories(half_precision_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME half_precision COMMAND half_precision_test)
+
+add_executable(runtime_crt_test tests/compat/runtime_crt_test.cpp runtime/recomp_runtime.cpp)
+target_compile_features(runtime_crt_test PRIVATE cxx_std_20)
+target_include_directories(runtime_crt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME runtime_crt COMMAND runtime_crt_test)
+
 add_executable(diagnostic_test tests/compat/diagnostic_test.cpp core/common/diagnostic.cpp)
 target_compile_features(diagnostic_test PRIVATE cxx_std_20)
 target_include_directories(diagnostic_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -93,6 +105,13 @@ add_executable(guest_file_system_test tests/compat/guest_file_system_test.cpp)
 target_compile_features(guest_file_system_test PRIVATE cxx_std_20)
 target_include_directories(guest_file_system_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME guest_file_system COMMAND guest_file_system_test)
+
+# File APIs cross the same shared shim boundary as real guest imports. Keep the
+# CRT stream and kernel32 handle paths covered for both PE32 and PE32+ guests.
+add_executable(runtime_file_streams_test tests/compat/runtime_file_streams_test.cpp runtime/recomp_runtime.cpp)
+target_compile_features(runtime_file_streams_test PRIVATE cxx_std_20)
+target_include_directories(runtime_file_streams_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME runtime_file_streams COMMAND runtime_file_streams_test)
 
 add_test(NAME preflight_prerequisites
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/preflight/prerequisites_test.py
@@ -179,6 +198,11 @@ add_test(NAME real_application_corpus
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/apps/real_apps_test.py
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/apps/baseline.json)
+
+# A test that exits 0 when its corpus is absent is green without ever running. 77 is
+# ctest's convention for "not run", so this reports SKIPPED rather than PASSED and the
+# absence is visible in the summary instead of hidden behind a pass.
+set_tests_properties(real_application_corpus PROPERTIES SKIP_RETURN_CODE 77)
 
 set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)

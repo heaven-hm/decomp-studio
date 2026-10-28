@@ -165,6 +165,21 @@ const std::map<std::string, std::string>& vex_equivalents() {
       // Conversions.
       {"vcvtsi2sd", "cvtsi2sd"}, {"vcvtsi2ss", "cvtsi2ss"}, {"vcvttsd2si", "cvttsd2si"},
       {"vcvttss2si", "cvttss2si"}, {"vcvtsd2ss", "cvtsd2ss"}, {"vcvtss2sd", "cvtss2sd"},
+      // PACKED arithmetic. The VEX encoding is a different opcode for the same
+      // operation, so it maps onto the legacy implementation rather than needing its own:
+      // `vaddps` computes exactly what `addps` computes. Without these entries every
+      // packed operation in a modern build was refused even though the implementation
+      // was sitting right there under the legacy name.
+      {"vaddps", "addps"},   {"vsubps", "subps"},   {"vmulps", "mulps"},   {"vdivps", "divps"},
+      {"vaddpd", "addpd"},   {"vsubpd", "subpd"},   {"vmulpd", "mulpd"},   {"vdivpd", "divpd"},
+      // Square roots, in both widths.
+      {"vsqrtss", "sqrtss"}, {"vsqrtsd", "sqrtsd"}, {"vsqrtps", "sqrtps"}, {"vsqrtpd", "sqrtpd"},
+      // Min/max and the compare family.
+      {"vminss", "minss"},   {"vmaxss", "maxss"},   {"vminsd", "minsd"},   {"vmaxsd", "maxsd"},
+      {"vcmpeqss", "cmpeqss"}, {"vcmpltss", "cmpltss"}, {"vcmpless", "cmpless"},
+      {"vcmpeqsd", "cmpeqsd"}, {"vcmpltsd", "cmpltsd"}, {"vcmplesd", "cmplesd"},
+      // The ordered/unordered compares, which set EFLAGS rather than a mask.
+      {"vcomiss", "comiss"}, {"vucomiss", "ucomiss"}, {"vcomisd", "comisd"}, {"vucomisd", "ucomisd"},
   };
   return table;
 }
@@ -687,6 +702,11 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            ");");
       return;
     }
+    if (mnemonic == "pshufb" && operands[1].kind == Operand::Kind::Memory) {
+      emit("vector_shuffle_bytes_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
   }
   // PSHUFLW/PSHUFHW are encoded with a source register and an immediate, so the
   // destination is a separate operand: dst = shuffle(src, imm).
@@ -708,6 +728,47 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "pmovmskb" && operands.size() == 2 && is_vector_register(operands[1])) {
     operand_write(output, instruction, operands[0],
          "vector_move_byte_mask(context, " + std::to_string(vector_index(operands[1])) + ")", 4);
+    return;
+  }
+  // Adapted from Remill's Apache-2.0 PINSRW semantics: retain the prior XMM
+  // value, replace only one 16-bit lane, and reduce the immediate to eight
+  // lanes. PINSRW's scalar source is a general register or a 16-bit memory
+  // operand, never another XMM register.
+  if (mnemonic == "pinsrw" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      !is_wide_vector_register(operands[0].register_name) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate &&
+      (operands[1].kind == discovery::Operand::Kind::Register ||
+       operands[1].kind == discovery::Operand::Kind::Memory)) {
+    const auto source = operand_read_expression(instruction, operands[1], 2);
+    emit("vector_insert_word(context, " + std::to_string(vector_index(operands[0])) +
+         ", static_cast<std::uint16_t>(" + source + "), " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  // Adapted from Remill's Apache-2.0 PEXTRW semantics: select one 16-bit XMM
+  // lane modulo eight and zero-extend it into the general-register output.
+  if (mnemonic == "pextrw" && operands.size() == 3 && is_vector_register(operands[1]) &&
+      !is_wide_vector_register(operands[1].register_name) &&
+      operands[0].kind == discovery::Operand::Kind::Register &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    operand_write(output, instruction, operands[0],
+                  "vector_extract_word(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                      std::to_string(operands[2].immediate_value & 0xff) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
+  // Adapted from Remill's Apache-2.0 AVX semantics: VPBROADCASTB takes the
+  // low byte of an XMM or memory source and fills each 128- or 256-bit
+  // destination lane. The helper also clears the unused upper YMM half for a
+  // VEX.128 destination.
+  if (mnemonic == "vpbroadcastb" && operands.size() == 2 && is_vector_register(operands[0]) &&
+      (is_vector_register(operands[1]) || operands[1].kind == discovery::Operand::Kind::Memory)) {
+    const auto source = is_vector_register(operands[1])
+        ? "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", 1)"
+        : "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", 1)";
+    const int byte_count = is_wide_vector_register(operands[0].register_name) ? 32 : 16;
+    emit("vector_broadcast_byte(context, " + std::to_string(vector_index(operands[0])) +
+         ", static_cast<std::uint8_t>(" + source + "), " + std::to_string(byte_count) + ");");
     return;
   }
 
@@ -747,8 +808,47 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit_vector_move(operands[0], operands[1], mnemonic == "movss" ? 4 : 8);
     return;
   }
+  if ((mnemonic == "movhps" || mnemonic == "movlps") && operands.size() == 2) {
+    const bool high = mnemonic == "movhps";
+    if (is_vector_register(operands[0]) && operands[1].kind == Operand::Kind::Memory) {
+      const auto destination = std::to_string(vector_index(operands[0]));
+      const auto address = effective_address_expression(instruction, operands[1]);
+      const auto value = "load_guest_memory(context, " + address + ", 8)";
+      emit(high ? "vector_set_high_qword(context, " + destination + ", " + value + ");"
+                : "vector_set_low_qword_preserve(context, " + destination + ", " + value + ");");
+      return;
+    }
+    if (operands[0].kind == Operand::Kind::Memory && is_vector_register(operands[1])) {
+      const auto source = std::to_string(vector_index(operands[1]));
+      const auto address = effective_address_expression(instruction, operands[0]);
+      const auto value = high ? "vector_get_high_qword(context, " + source + ")"
+                              : "vector_get_low(context, " + source + ", 8)";
+      emit("store_guest_memory(context, " + address + ", " + value + ", 8);");
+      return;
+    }
+  }
   // Adapted from Remill's MOVLHPS/MOVHLPS semantics (Apache-2.0): preserve
   // one half of the destination and copy the indicated half of the source.
+  // movlps/movhps and their double-precision forms move 64 bits between memory and
+  // one half of an XMM register, preserving the other half. Both directions matter and
+  // the destination/source order decides which it is: `movhps xmm, m64` loads into the
+  // high half, `movhps m64, xmm` stores the high half out.
+  if ((mnemonic == "movlps" || mnemonic == "movhps" || mnemonic == "movlpd" ||
+       mnemonic == "movhpd") &&
+      operands.size() == 2) {
+    const bool high_half = mnemonic == "movhps" || mnemonic == "movhpd";
+    const std::string offset = high_half ? "8" : "0";
+    if (is_vector_register(operands[0]) && operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("load_guest_vector_half(context, " + effective_address_expression(instruction, operands[1]) +
+           ", " + std::to_string(vector_index(operands[0])) + ", " + offset + ");");
+      return;
+    }
+    if (operands[0].kind == discovery::Operand::Kind::Memory && is_vector_register(operands[1])) {
+      emit("store_guest_vector_half(context, " + effective_address_expression(instruction, operands[0]) +
+           ", " + std::to_string(vector_index(operands[1])) + ", " + offset + ");");
+      return;
+    }
+  }
   if ((mnemonic == "movlhps" || mnemonic == "movhlps") && operands.size() == 2 &&
       is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
       !is_wide_vector_register(operands[0].register_name) && !is_wide_vector_register(operands[1].register_name)) {
@@ -828,6 +928,25 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     if (operands[1].kind == discovery::Operand::Kind::Memory) {
       emit("vector_shuffle_single_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + control + ");");
+      return;
+    }
+  }
+  // SHUFPD is not SHUFPS with a different name: it has two 64-bit lanes and its
+  // selector bits pick the LOW result from the DESTINATION and the HIGH result from
+  // the SOURCE. Treating it as the single-precision form would silently produce the
+  // wrong lane order, so it gets its own helper.
+  if (mnemonic == "shufpd" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_shuffle_doubles(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + control + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_shuffle_doubles_memory(context, " + destination + ", " +
            effective_address_expression(instruction, operands[1]) + ", " + control + ");");
       return;
     }
@@ -1084,6 +1203,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          "context->carry_flag = ah & 1; }");
     return;
   }
+  // `cbw` sign-extends AL into AX and leaves the rest of EAX alone, which is what
+  // distinguishes it from `cwde`: the destination is 16 bits, so only the low 16 bits
+  // of the register are written. It appears in 32-bit code compiled from anything that
+  // narrows a char before arithmetic, and the lifter refused the whole program for it.
+  if (mnemonic == "cbw") {
+    const auto rax = std::to_string(kRegisterRax);
+    emit("context->registers[" + rax + "] = (context->registers[" + rax +
+         "] & ~0xffffull) | static_cast<std::uint64_t>(static_cast<std::uint16_t>(static_cast<std::int16_t>("
+         "static_cast<std::int8_t>(context->registers[" + rax + "] & 0xffu))));");
+    return;
+  }
   if (mnemonic == "cwde") {
     emit("context->registers[" + std::to_string(kRegisterRax) + "] = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int16_t>(context->registers[" + std::to_string(kRegisterRax) + "])));");
     return;
@@ -1121,6 +1251,230 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     operand_write(output, instruction, operands[0], value, width);
     return;
   }
+  if (mnemonic == "popal" || mnemonic == "popad") {
+    // POPAD restores registers in stack order and consumes, but ignores, the
+    // saved ESP slot. Reading that slot into ESP would change the remaining pops.
+    const char* registers[] = {"edi", "esi", "ebp", nullptr, "ebx", "edx", "ecx", "eax"};
+    for (const auto* name : registers) {
+      if (name == nullptr) {
+        emit("context->registers[4] = mask_guest_address(context->registers[4] + 4);");
+      } else {
+        emit(register_write_statement(name, "static_cast<std::uint32_t>(pop_guest_stack(context))"));
+      }
+    }
+    return;
+  }
+  if (mnemonic == "pushad" || mnemonic == "pushal") {
+    // Capstone names it `pushal` for 32-bit and `pushad` for the same encoding read
+    // as 64-bit; both push the eight general registers in one instruction.
+    emit("push_all_general(context);");
+    return;
+  }
+  // RDRAND/RDSEED write a random value into a general register and set CF to report
+  // success. There is no fixed correct answer, so a real random value is the faithful
+  // implementation; the carry flag is set because the host always has a source.
+  if ((mnemonic == "rdrand" || mnemonic == "rdseed") && operands.size() == 1 &&
+      operands[0].kind == discovery::Operand::Kind::Register) {
+    const auto iterator = register_descriptors().find(operands[0].register_name);
+    if (iterator == register_descriptors().end())
+      fail_operand(instruction, "write", "'" + operands[0].register_name + "'");
+    emit("random_into_register(context, " + std::to_string(iterator->second.index) + ", " +
+         std::to_string(operand_width(operands[0], 4)) + ");");
+    return;
+  }
+  // `sti` sets the interrupt flag, which a user-mode program cannot do: the
+  // instruction is privileged and is a no-op outside ring 0. Modelling it as one is
+  // not a shortcut, it is what happens. It reaches a lifted program through CRT or
+  // compiler-generated code that is never executed.
+  if (mnemonic == "sti") {
+    // Nothing to emit: the instruction is a no-op outside ring 0, and the statement
+    // list must not be left empty for the block, so a comment records why.
+    emit("/* sti: privileged, a no-op in user mode */");
+    return;
+  }
+  // `int1` raises a debug exception. Nothing in a user-mode program reaches it except
+  // a debugger breakpoint, and if one is reached the honest result is to stop and say
+  // where rather than to continue with invented state.
+  if (mnemonic == "int1" || mnemonic == "int3" || mnemonic == "icebp") {
+    emit("recomp_trap(context, \"" + mnemonic + "\");");
+    return;
+  }
+  // The integer SIMD forms that were the largest remaining classes after FMA.
+  // VCVTPS2PH: four singles to four half-precision values, with the rounding mode in the
+  // immediate. The immediate is not decoration -- it selects between nearest-even, down,
+  // up and truncate, and ignoring it rounds every program's result the same way.
+  if (mnemonic == "vcvtps2ph" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1]) && operands[2].kind == discovery::Operand::Kind::Immediate) {
+    emit("vector_convert_floats_to_half(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  // The VEX form of a two-operand SSE instruction has THREE operands, and the first two
+  // are its sources: `vpmaddubsw xmm1, xmm2, xmm3` computes xmm1 = xmm2 op xmm3, where
+  // `pmaddubsw xmm1, xmm2` computes xmm1 = xmm1 op xmm2. Normalising the MNEMONIC does not
+  // normalise the OPERAND LIST, so a two-operand check never matched a VEX instruction --
+  // the implementation was present and still refused. This resolves the two forms to the
+  // same (destination, source) pair.
+  const auto binary_simd_sources = [&](int expected_operands) -> std::optional<std::pair<int, int>> {
+    if (static_cast<int>(operands.size()) != expected_operands) return std::nullopt;
+    if (expected_operands == 2) {
+      if (!is_vector_register(operands[0]) || !is_vector_register(operands[1])) return std::nullopt;
+      return std::make_pair(vector_index(operands[0]), vector_index(operands[1]));
+    }
+    if (!is_vector_register(operands[0]) || !is_vector_register(operands[1]) ||
+        !is_vector_register(operands[2]))
+      return std::nullopt;
+    // `vex` forms write the first source into the destination, then apply the second.
+    return std::make_pair(vector_index(operands[1]), vector_index(operands[2]));
+  };
+  if ((mnemonic == "pmaddubsw" || mnemonic == "vpmaddubsw") &&
+      (operands.size() == 2 || operands.size() == 3)) {
+    const auto pair = binary_simd_sources(static_cast<int>(operands.size()));
+    if (pair && (operands.size() == 2 || pair->first == vector_index(operands[1]))) {
+      if (operands.size() == 3) {
+        // Copy the first source into the destination first: the VEX form is a three-input
+        // operation and the helper reads its accumulator from the destination.
+        emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) +
+             "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], 16);");
+      }
+      emit("vector_multiply_add_unsigned_signed_bytes(context, " +
+           std::to_string(vector_index(operands[0])) + ", " + std::to_string(pair->second) + ");");
+      return;
+    }
+  }
+  if ((mnemonic == "psignb" || mnemonic == "vpsignb") && operands.size() >= 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands.back())) {
+    if (operands.size() == 3 && is_vector_register(operands[1]))
+      emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) +
+           "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], 16);");
+    emit("vector_sign_bytes(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands.back())) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxbd" || mnemonic == "vpmovzxbd") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_bytes_to_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "vinsertps" || mnemonic == "insertps") && operands.size() == 3 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    emit("vector_insert_single(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  if ((mnemonic == "vpinsrd" || mnemonic == "pinsrd" || mnemonic == "vpinsrq" || mnemonic == "pinsrq") &&
+      operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const bool qword = mnemonic.find("rq") != std::string::npos;
+    const auto value = operand_read_expression(instruction, operands[1], qword ? 8 : 4);
+    emit(std::string(qword ? "vector_insert_qword" : "vector_insert_dword") + "(context, " +
+         std::to_string(vector_index(operands[0])) + ", " + value + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  // FMA, in the three operand orderings the mnemonic's digits encode. The digits are not
+  // decoration: `213` and `231` compute different products from the same three registers.
+  {
+    static const std::map<std::string, std::string> fma_orderings = {
+        {"132", "fma132"}, {"213", "fma213"}, {"231", "fma231"}};
+    const auto digits = mnemonic.size() >= 9 ? mnemonic.substr(mnemonic.size() - 5, 3) : std::string{};
+    const auto width_suffix = mnemonic.size() >= 2 ? mnemonic.substr(mnemonic.size() - 2) : std::string{};
+    const bool is_fma = mnemonic.rfind("vfmadd", 0) == 0;
+    const bool fma_width_ok = width_suffix == "ps" || width_suffix == "pd" ||
+                              width_suffix == "ss" || width_suffix == "sd";
+    if (is_fma && fma_orderings.count(digits) != 0 && operands.size() == 3 &&
+        is_vector_register(operands[0]) && is_vector_register(operands[1]) && fma_width_ok) {
+      const bool doubles = width_suffix == "pd" || width_suffix == "sd";
+      const auto helper = "vector_" + fma_orderings.at(digits) + (doubles ? "_doubles" : "_floats");
+      if (is_vector_register(operands[2])) {
+        emit(helper + "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             std::to_string(vector_index(operands[1])) + ", " + std::to_string(vector_index(operands[2])) +
+             ");");
+        return;
+      }
+      if (operands[2].kind == discovery::Operand::Kind::Memory) {
+        emit(helper + "_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             std::to_string(vector_index(operands[1])) + ", " +
+             effective_address_expression(instruction, operands[2]) + ");");
+        return;
+      }
+    }
+  }
+  // The 256-bit and variable-blend forms. `vblendvps` was the single largest unsupported
+  // class on a real application (905 occurrences).
+  if ((mnemonic == "vblendvps" || mnemonic == "vblendvpd") && operands.size() == 4 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      is_vector_register(operands[3])) {
+    emit(std::string(mnemonic == "vblendvps" ? "vector_blend_variable_floats"
+                                             : "vector_blend_variable_doubles") +
+         "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " + std::to_string(vector_index(operands[3])) + ");");
+    return;
+  }
+  if (mnemonic == "vbroadcastss" && operands.size() == 2 && is_vector_register(operands[0])) {
+    if (is_vector_register(operands[1])) {
+      emit("vector_broadcast_float(context, " + std::to_string(vector_index(operands[0])) + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+    } else if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_broadcast_float_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+    }
+    return;
+  }
+  if ((mnemonic == "vinsertf128" || mnemonic == "vextractf128") && operands.size() == 3 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    emit(std::string(mnemonic == "vinsertf128" ? "vector_insert_upper_128" : "vector_extract_upper_128") +
+         "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  if (mnemonic == "vpextrw" && operands.size() == 3 &&
+      operands[0].kind == discovery::Operand::Kind::Register && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    operand_write(output, instruction, operands[0],
+                  "vector_extract_word(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                      std::to_string(operands[2].immediate_value & 0xff) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
+  // The BMI2 variable shifts. Their count comes from a general register, not CL, and
+  // they leave the flags ALONE -- which is the whole reason a compiler emits them in
+  // preference to `shl`/`shr` when it needs the flags preserved.
+  if ((mnemonic == "shlx" || mnemonic == "shrx" || mnemonic == "sarx") && operands.size() == 3 &&
+      operands[0].kind == discovery::Operand::Kind::Register &&
+      operands[1].kind == discovery::Operand::Kind::Register) {
+    const auto width = operand_width(operands[0], 4);
+    const auto count = operand_read_expression(instruction, operands[2], width);
+    const auto value = operand_read_expression(instruction, operands[1], width);
+    const std::string helper = mnemonic == "shlx"   ? "variable_shift_left"
+                              : mnemonic == "shrx" ? "variable_shift_right"
+                                                   : "variable_shift_right_arithmetic";
+    operand_write(output, instruction, operands[0],
+                  helper + "(" + value + ", " + count + ", " + std::to_string(width) + ")", width);
+    return;
+  }
+  // `pmulld` multiplies four 32-bit lanes and keeps the LOW half of each product.
+  if (mnemonic == "pmulld" && operands.size() == 2 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1])) {
+    emit("vector_multiply_low_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  // LFENCE/MFENCE/SFENCE order memory operations for OTHER observers. A single-threaded
+  // guest has none, and the generated code touches guest memory through helpers that the
+  // compiler may not reorder across, so there is nothing left for these to do. They are
+  // accepted rather than refused because refusing them stops a program over a fence that
+  // would have had no effect.
+  if (mnemonic == "lfence" || mnemonic == "mfence" || mnemonic == "sfence") {
+    emit("/* " + mnemonic + ": memory fence, no effect for a single-threaded guest */");
+    return;
+  }
   if (mnemonic == "leave") {
     emit("context->registers[" + std::to_string(kRegisterRsp) + "] = context->registers[" + std::to_string(kRegisterRbp) + "];");
     emit("context->registers[" + std::to_string(kRegisterRbp) + "] = pop_guest_stack(context);");
@@ -1148,9 +1502,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     const auto target = operands.empty() ? std::optional<std::uint64_t>{} : std::optional<std::uint64_t>{
         static_cast<std::uint64_t>(operands[0].immediate_value)};
-    if (target && operands[0].kind == Operand::Kind::Immediate) {
+    // A DIRECT call is only emitted as a direct call when discovery actually recovered
+    // the target. Otherwise the generated code names a function that does not exist and
+    // the whole program fails to COMPILE -- which is what happened to two real
+    // applications, one of them calling address zero. An unrecovered target is a real
+    // situation (the address may be data that decoded as a call, or code discovery did
+    // not reach), and the honest response is the runtime's: resolve it and, if it is
+    // not there, say which address at the point it is reached.
+    if (target && operands[0].kind == Operand::Kind::Immediate &&
+        discovery_.functions().count(*target) != 0) {
       emit("push_guest_stack(context, " + format_hex(instruction.address + instruction.size) + ");");
       emit(guest_function_name(*target) + "(context);");
+      return;
+    }
+    if (target && operands[0].kind == Operand::Kind::Immediate) {
+      emit("invoke_guest_indirect(context, " + format_hex(*target) + ", " +
+           format_hex(instruction.address + instruction.size) + ");");
       return;
     }
     emit("invoke_guest_indirect(context, " +
@@ -1169,11 +1536,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate) {
       const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-      if (function.tail_call_targets.count(target) != 0 || function.instructions.count(target) == 0) {
+      // The same rule as a direct `call`: naming `guest_function_<target>` is only
+      // valid when discovery recovered that target. Emitting it otherwise produces a
+      // reference to a function that does not exist, and the whole program fails to
+      // compile -- which is how a real application ended up calling address zero.
+      if (discovery_.functions().count(target) != 0 &&
+          (function.tail_call_targets.count(target) != 0 || function.instructions.count(target) == 0)) {
         emit(guest_function_name(target) + "(context);");
         emit_return();
-      } else {
+      } else if (function.instructions.count(target) != 0) {
         emit("goto label_" + std::to_string(target) + ";");
+      } else {
+        emit("jump_guest_indirect(context, " + format_hex(target) + ");");
+        emit_return();
       }
       return;
     }
@@ -1182,11 +1557,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit_return();
     return;
   }
+  // A `goto` is only valid where a label was actually written, and labels exist only
+  // for addresses that are instructions in THIS function. A branch anywhere else --
+  // outside the recovered range, or into data -- has to go through the runtime's
+  // dispatch, which names the address if it is not a function either. Emitting the
+  // `goto` unconditionally is what produced "use of undeclared label" in the
+  // generated code for a real application.
+  const auto branch_body = [&function](std::uint64_t target) {
+    if (function.instructions.count(target) != 0)
+      return "goto label_" + std::to_string(target) + ";";
+    return "{ jump_guest_indirect(context, " + format_hex(target) + "); return; }";
+  };
   if (kConditionalBranches.count(mnemonic) != 0 && condition_codes().count(mnemonic.substr(1)) != 0) {
     const auto condition = condition_codes().at(mnemonic.substr(1));
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate) {
       const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-      emit("if (evaluate_condition(context, " + condition + ")) goto label_" + std::to_string(target) + ";");
+      emit("if (evaluate_condition(context, " + condition + ")) " + branch_body(target));
     } else {
       emit("if (evaluate_condition(context, " + condition + ")) { jump_guest_indirect(context, " +
            operand_read_expression(instruction, operands[0], 8) + "); return; }");
@@ -1237,6 +1623,28 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "retf") {
     emit("return_from_guest_function(context, 8);");
     emit_return();
+    return;
+  }
+
+  if (mnemonic == "cbw") {
+    emit(register_write_statement("ax", "static_cast<std::int8_t>(" + register_read_expression("al") + ")"));
+    return;
+  }
+  if (mnemonic == "cwde") {
+    emit(register_write_statement("eax", "static_cast<std::int16_t>(" + register_read_expression("ax") + ")"));
+    return;
+  }
+  if (mnemonic == "cdqe") {
+    emit(register_write_statement("rax", "static_cast<std::int32_t>(" + register_read_expression("eax") + ")"));
+    return;
+  }
+  if (mnemonic == "daa") {
+    emit(register_write_statement("al", "decimal_adjust_after_addition(context, " +
+                                      register_read_expression("al") + ")"));
+    return;
+  }
+  if (mnemonic == "into") {
+    emit("if (context->overflow_flag != 0) recomp_trap(context, \"into\");");
     return;
   }
   if (mnemonic == "int3" || mnemonic == "hlt" || mnemonic == "ud2" || mnemonic == "ud1" || mnemonic == "ud0") {
@@ -1317,10 +1725,31 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   {
     static const std::map<std::string, std::string> double_helpers = {
         {"addsd", "vector_add_doubles"}, {"subsd", "vector_subtract_doubles"},
-        {"mulsd", "vector_multiply_doubles"}, {"divsd", "vector_divide_doubles"}};
+        {"mulsd", "vector_multiply_doubles"}, {"divsd", "vector_divide_doubles"},
+        {"sqrtsd", "vector_square_root_doubles"},
+        {"sqrtpd", "vector_square_root_packed_doubles"}};
     static const std::map<std::string, std::string> float_helpers = {
         {"addss", "vector_add_floats"}, {"subss", "vector_subtract_floats"},
-        {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"}};
+        {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"},
+        {"sqrtss", "vector_square_root_floats"},
+        {"sqrtps", "vector_square_root_packed_floats"},
+        // The PACKED forms. `ps` operates on four singles and `pd` on two doubles; the
+        // scalar mnemonics above are the ones ending `ss`/`sd`, and using one for the
+        // other would compute the right value in the low lane and leave the rest alone.
+        {"addps", "vector_add_packed_floats"}, {"subps", "vector_subtract_packed_floats"},
+        {"mulps", "vector_multiply_packed_floats"}, {"divps", "vector_divide_packed_floats"},
+        {"addpd", "vector_add_packed_doubles"}, {"subpd", "vector_subtract_packed_doubles"},
+        {"mulpd", "vector_multiply_packed_doubles"}, {"divpd", "vector_divide_packed_doubles"},
+        {"minss", "vector_min_floats"}, {"maxss", "vector_max_floats"},
+        {"minsd", "vector_min_doubles"}, {"maxsd", "vector_max_doubles"},
+        // The compare family. Each writes an all-ones or all-zeros MASK per lane, which
+        // is why they map to their own helpers rather than to a boolean.
+        {"cmpeqss", "vector_compare_equal_floats"}, {"cmpltss", "vector_compare_less_floats"},
+        {"cmpless", "vector_compare_less_equal_floats"},
+        {"cmpneqss", "vector_compare_not_equal_floats"},
+        {"cmpeqsd", "vector_compare_equal_doubles"}, {"cmpltsd", "vector_compare_less_doubles"},
+        {"cmplesd", "vector_compare_less_equal_doubles"},
+        {"cmpneqsd", "vector_compare_not_equal_doubles"}};
     const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
                          : float_helpers.count(mnemonic) != 0 ? &float_helpers
                                                              : nullptr;
@@ -1797,7 +2226,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // direction-flag instruction, so this block only owns the counted jumps.
   if (mnemonic == "jecxz" || mnemonic == "jrcxz") {
     const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-    emit("if (context->registers[1] == 0) goto label_" + std::to_string(target) + ";");
+    emit("if (context->registers[1] == 0) " + branch_body(target));
     return;
   }
   if (mnemonic == "loop" || mnemonic == "loope" || mnemonic == "loopne") {
@@ -1806,7 +2235,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     if (mnemonic == "loope") condition = " && context->zero_flag != 0";
     else if (mnemonic == "loopne") condition = " && context->zero_flag == 0";
     emit("context->registers[1] = mask_guest_address(context->registers[1] - 1); if (context->registers[1] != 0" +
-         condition + ") goto label_" + std::to_string(target) + ";");
+         condition + ") " + branch_body(target));
     return;
   }
 
@@ -1830,8 +2259,26 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
     jump.address_of_instruction = function.entry;
     lifted.statements.push_back(std::move(jump));
   }
+  // A label is needed wherever anything can JUMP TO, not only at a block start.
+  // Discovery's block starts and the set of branch targets are not the same set: a
+  // branch into the middle of a recovered block is emitted as `goto label_<target>`
+  // and the label was never written, so the generated code failed to compile with
+  // "use of undeclared label". Collecting the targets from the instructions
+  // themselves is what makes the two agree.
+  std::set<std::uint64_t> branch_targets;
   for (const auto& [address, instruction] : function.instructions) {
-    if (function.block_starts.count(address) != 0) {
+    (void)address;
+    if (instruction.operands.empty()) continue;
+    const bool branches = instruction.mnemonic == "jmp" || instruction.mnemonic == "call" ||
+                          kConditionalBranches.count(instruction.mnemonic) != 0 ||
+                          instruction.mnemonic.rfind("loop", 0) == 0 ||
+                          instruction.mnemonic == "jcxz" || instruction.mnemonic == "jecxz" ||
+                          instruction.mnemonic == "jrcxz";
+    if (branches && instruction.operands[0].kind == Operand::Kind::Immediate)
+      branch_targets.insert(static_cast<std::uint64_t>(instruction.operands[0].immediate_value));
+  }
+  for (const auto& [address, instruction] : function.instructions) {
+    if (function.block_starts.count(address) != 0 || branch_targets.count(address) != 0) {
       ir::Statement label;
       label.kind = ir::StatementKind::Label;
       label.label = "label_" + std::to_string(address);

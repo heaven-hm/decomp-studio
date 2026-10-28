@@ -7,10 +7,19 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cctype>
+#include <clocale>
+#include <cwchar>
+#include <cwctype>
+#include <climits>
 #include <cstdlib>
 #include <array>
 #include <sstream>
+#include <fstream>
+#include <condition_variable>
+#include <mutex>
+#include <chrono>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <system_error>
 #include <map>
 #include <filesystem>
@@ -36,6 +45,8 @@ std::uint64_t guest_memory_size = 0;
 std::uint64_t recompiled_image_base = 0;
 bool guest_tracing_enabled = false;
 int guest_pointer_width = 8;
+const std::string* guest_input_capture = nullptr;
+std::size_t guest_input_position = 0;
 
 namespace {
 std::FILE* guest_trace_stream = nullptr;
@@ -161,6 +172,22 @@ std::string read_guest_string(std::uint64_t address) {
   return value;
 }
 
+// Reads a UTF-16 guest string as bytes. Only the low half of each unit is kept,
+// which is exact for ASCII and lossy above it; the callers are the wide forms of
+// LoadLibrary, _wfopen and CreateFileW, where the name is a path or a DLL and a
+// non-ASCII character is a name this host cannot open under either spelling.
+// Every path the runtime then touches goes through the app directory.
+std::string read_guest_wide_string(std::uint64_t address) {
+  std::string text;
+  for (std::uint64_t index = 0; index < 512; ++index) {
+    if (address + index * 2 + 1 >= guest_memory_size) break;
+    const auto unit = load_guest_memory(nullptr, address + index * 2, 2);
+    if (unit == 0) break;
+    text.push_back(static_cast<char>(unit & 0xffu));
+  }
+  return text;
+}
+
 // ---- Win32 last-error -----------------------------------------------------
 // The guest's only channel for asking why a call failed, so a shim that reports a
 // failure without recording one here has told the program nothing. A constant 0
@@ -208,6 +235,8 @@ enum GuestHandleType {
   kGuestHandleFind = 3,
   kGuestHandleHeap = 4,
   kGuestHandleMutex = 5,
+  kGuestHandleEvent = 6,
+  kGuestHandleSemaphore = 7,
 };
 
 struct GuestHandle {
@@ -219,11 +248,17 @@ struct GuestHandle {
   bool may_write{false};
   // The guest path it was opened through, for diagnostics that name the file.
   std::string path;
+  bool signaled{false};
+  bool manual_reset{false};
+  std::uint32_t semaphore_count{0};
+  std::uint32_t semaphore_maximum{0};
 };
 
 constexpr std::uint32_t kGuestHandleBase = 0x1000;
 constexpr std::uint32_t kGuestHandleCount = 1024;
 GuestHandle guest_handles[kGuestHandleCount];
+std::mutex guest_sync_mutex;
+std::condition_variable guest_sync_changed;
 GuestHandle standard_handles[3] = {{kGuestHandleStandard, STDIN_FILENO, true, false, "<stdin>"},
                                    {kGuestHandleStandard, STDOUT_FILENO, false, true, "<stdout>"},
                                    {kGuestHandleStandard, STDERR_FILENO, false, true, "<stderr>"}};
@@ -267,11 +302,7 @@ void guest_handle_close(std::uint64_t handle) {
   auto* entry = guest_handle_lookup(handle);
   if (entry == nullptr || entry->type == kGuestHandleStandard) return;
   if (entry->host_descriptor >= 0) ::close(entry->host_descriptor);
-  entry->type = kGuestHandleFree;
-  entry->host_descriptor = -1;
-  entry->may_read = false;
-  entry->may_write = false;
-  entry->path.clear();
+  *entry = GuestHandle{};
 }
 
 // The descriptor behind a handle, checked for the access the caller wants. An
@@ -538,14 +569,17 @@ void win32_set_handle_count(GuestContext* context) {
   set_import_result(context, import_argument(context, 0));
 }
 void win32_release_mutex(GuestContext* context) {
-  (void)import_argument(context, 0);
+  const auto handle = import_argument(context, 0);
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleMutex || entry->signaled) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  entry->signaled = true;
   set_import_result(context, 1);
-}
-void win32_flush_file_buffers(GuestContext* context) {
-  // Deliberately reports success without flushing, as igi-recomp does; the
-  // reference has to take the same branch or the traces diverge.
-  (void)import_argument(context, 0);
-  set_import_result(context, 1);
+  guest_sync_changed.notify_all();
 }
 void win32_free_environment_strings_w(GuestContext* context) {
   (void)import_argument(context, 0);
@@ -577,6 +611,75 @@ void win32_close_handle(GuestContext* context) {
   guest_handle_close(import_argument(context, 0));
   set_import_result(context, 1);
 }
+// The same-process pseudo-thread case follows the narrow DuplicateHandle
+// handling in cricket07-browser/host/kernel32.c (MIT, commit
+// 4febc615b6e07d3e70b22c05a65bf37959c6989a). Its guest handles are different,
+// so this runtime preserves its own pseudo handle instead of using Cricket's
+// private 0x1FFFFFFC alias. Real file descriptors are duplicated with dup(2).
+void win32_duplicate_handle(GuestContext* context) {
+  constexpr std::uint64_t kCurrentProcess = static_cast<std::uint64_t>(-1);
+  constexpr std::uint64_t kCurrentThread = static_cast<std::uint64_t>(-2);
+  constexpr std::uint32_t kDuplicateCloseSource = 1;
+  constexpr std::uint32_t kDuplicateSameAccess = 2;
+  const auto source_process = import_argument(context, 0);
+  const auto source_handle = import_argument(context, 1);
+  const auto target_process = import_argument(context, 2);
+  const auto output_pointer = import_argument(context, 3);
+  const auto options = static_cast<std::uint32_t>(import_argument(context, 6));
+  if (source_process != kCurrentProcess || target_process != kCurrentProcess || output_pointer == 0 ||
+      (options & ~(kDuplicateCloseSource | kDuplicateSameAccess)) != 0) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+
+  // GetCurrentThread returns a pseudo handle that is process-local and must not
+  // be closed. Duplicating it in this single-threaded guest runtime retains the
+  // same pseudo-handle value; CloseHandle already treats pseudo handles as
+  // non-owned values.
+  if (source_handle == kCurrentThread && (options & kDuplicateCloseSource) == 0) {
+    store_guest_memory(context, output_pointer, kCurrentThread, guest_pointer_width);
+    set_import_result(context, 1);
+    return;
+  }
+
+  auto* source = guest_handle_lookup(source_handle);
+  if (source == nullptr || (source->type != kGuestHandleFile && source->type != kGuestHandleStandard) ||
+      source->host_descriptor < 0) {
+    set_guest_last_error(source == nullptr ? kErrorInvalidHandle : kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  const int duplicate_descriptor = ::dup(source->host_descriptor);
+  if (duplicate_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto duplicate = guest_file_handle_new(duplicate_descriptor, source->may_read, source->may_write, source->path);
+  if (duplicate == 0) {
+    ::close(duplicate_descriptor);
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  store_guest_memory(context, output_pointer, duplicate, guest_pointer_width);
+  if ((options & kDuplicateCloseSource) != 0) guest_handle_close(source_handle);
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+// These two Win32 fallbacks match cricket07-browser/host/kernel32.c (MIT,
+// commit 4febc615b6e07d3e70b22c05a65bf37959c6989a): thread priority is not
+// scheduled by the single-threaded compatibility runtime.
+void win32_set_thread_priority(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, 1);
+}
+void win32_get_thread_priority(GuestContext* context) {
+  (void)import_argument(context, 0);
+  set_import_result(context, 0);
+}
 void win32_set_std_handle(GuestContext* context) {
   (void)import_argument(context, 0);
   (void)import_argument(context, 1);
@@ -584,9 +687,186 @@ void win32_set_std_handle(GuestContext* context) {
 }
 void win32_create_mutex_a(GuestContext* context) {
   (void)import_argument(context, 0);  // attributes
-  (void)import_argument(context, 1);  // initial owner
+  const bool initial_owner = import_argument(context, 1) != 0;
   (void)import_argument(context, 2);  // name
-  set_import_result(context, guest_handle_new(kGuestHandleMutex));
+  const auto handle = guest_handle_new(kGuestHandleMutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr) entry->signaled = !initial_owner;
+  set_import_result(context, handle);
+}
+
+// These handles model the Win32 event/semaphore state used by CRT startup and
+// synchronization. The API contract follows Wine's kernelbase sync wrappers;
+// this runtime stores the guest-visible object state locally instead of requiring
+// Wine's NT object manager.
+void win32_create_event_a(GuestContext* context) {
+  (void)import_argument(context, 0);  // security attributes
+  const bool manual_reset = import_argument(context, 1) != 0;
+  const bool initial_state = import_argument(context, 2) != 0;
+  const auto name = import_argument(context, 3);
+  if (name != 0) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto handle = guest_handle_new(kGuestHandleEvent);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr) {
+    entry->manual_reset = manual_reset;
+    entry->signaled = initial_state;
+  }
+  set_import_result(context, handle);
+}
+
+void win32_set_event(GuestContext* context) {
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleEvent) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  entry->signaled = true;
+  set_import_result(context, 1);
+  guest_sync_changed.notify_all();
+}
+
+void win32_reset_event(GuestContext* context) {
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleEvent) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  entry->signaled = false;
+  set_import_result(context, 1);
+}
+
+void win32_create_semaphore_a(GuestContext* context) {
+  (void)import_argument(context, 0);  // security attributes
+  const auto initial = static_cast<std::int32_t>(import_argument(context, 1));
+  const auto maximum = static_cast<std::int32_t>(import_argument(context, 2));
+  const auto name = import_argument(context, 3);
+  if (initial < 0 || maximum <= 0 || initial > maximum || name != 0) {
+    set_guest_last_error(name != 0 ? kErrorNotSupported : kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto handle = guest_handle_new(kGuestHandleSemaphore);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr) {
+    entry->semaphore_count = static_cast<std::uint32_t>(initial);
+    entry->semaphore_maximum = static_cast<std::uint32_t>(maximum);
+  }
+  set_import_result(context, handle);
+}
+
+void win32_release_semaphore(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  const auto release_count = import_argument(context, 1);
+  const auto previous_count = import_argument(context, 2);
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleSemaphore || release_count == 0 ||
+      release_count > entry->semaphore_maximum - entry->semaphore_count) {
+    set_guest_last_error(entry == nullptr || entry->type != kGuestHandleSemaphore
+                             ? kErrorInvalidHandle : kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  if (previous_count != 0) store_guest_memory(context, previous_count, entry->semaphore_count, 4);
+  entry->semaphore_count += static_cast<std::uint32_t>(release_count);
+  set_import_result(context, 1);
+  guest_sync_changed.notify_all();
+}
+
+constexpr std::uint32_t kWaitObject0 = 0;
+constexpr std::uint32_t kWaitTimeout = 0x102;
+constexpr std::uint32_t kWaitFailed = 0xffffffffu;
+constexpr std::uint32_t kInfiniteTimeout = 0xffffffffu;
+constexpr std::uint32_t kMaximumWaitObjects = 64;
+
+bool guest_sync_ready(const GuestHandle* entry) {
+  if (entry == nullptr) return false;
+  if (entry->type == kGuestHandleEvent || entry->type == kGuestHandleMutex) return entry->signaled;
+  return entry->type == kGuestHandleSemaphore && entry->semaphore_count != 0;
+}
+
+void guest_sync_consume(GuestHandle* entry) {
+  if (entry->type == kGuestHandleEvent && !entry->manual_reset) entry->signaled = false;
+  else if (entry->type == kGuestHandleSemaphore) --entry->semaphore_count;
+  else if (entry->type == kGuestHandleMutex) entry->signaled = false;
+}
+
+void win32_wait_for_single_object(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  const auto timeout = static_cast<std::uint32_t>(import_argument(context, 1));
+  std::unique_lock lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || (entry->type != kGuestHandleEvent && entry->type != kGuestHandleSemaphore &&
+                           entry->type != kGuestHandleMutex)) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, kWaitFailed);
+    return;
+  }
+  const auto ready = [&] { return guest_sync_ready(entry); };
+  const bool signaled = timeout == kInfiniteTimeout
+                            ? (guest_sync_changed.wait(lock, ready), true)
+                            : guest_sync_changed.wait_for(lock, std::chrono::milliseconds(timeout), ready);
+  if (!signaled) {
+    set_import_result(context, kWaitTimeout);
+    return;
+  }
+  guest_sync_consume(entry);
+  set_import_result(context, kWaitObject0);
+}
+
+void win32_wait_for_multiple_objects(GuestContext* context) {
+  const auto count = import_argument(context, 0);
+  const auto handles_address = import_argument(context, 1);
+  const bool wait_all = import_argument(context, 2) != 0;
+  const auto timeout = static_cast<std::uint32_t>(import_argument(context, 3));
+  if (count == 0 || count > kMaximumWaitObjects || handles_address == 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, kWaitFailed);
+    return;
+  }
+  std::vector<GuestHandle*> entries;
+  entries.reserve(static_cast<std::size_t>(count));
+  for (std::uint64_t index = 0; index < count; ++index) {
+    const auto handle = load_guest_memory(context, handles_address + index * guest_pointer_width,
+                                          guest_pointer_width);
+    auto* entry = guest_handle_lookup(handle);
+    if (entry == nullptr || (entry->type != kGuestHandleEvent && entry->type != kGuestHandleSemaphore &&
+                             entry->type != kGuestHandleMutex)) {
+      set_guest_last_error(kErrorInvalidHandle);
+      set_import_result(context, kWaitFailed);
+      return;
+    }
+    entries.push_back(entry);
+  }
+  std::unique_lock lock(guest_sync_mutex);
+  const auto ready = [&] {
+    if (wait_all) return std::all_of(entries.begin(), entries.end(), guest_sync_ready);
+    return std::any_of(entries.begin(), entries.end(), guest_sync_ready);
+  };
+  const bool signaled = timeout == kInfiniteTimeout
+                            ? (guest_sync_changed.wait(lock, ready), true)
+                            : guest_sync_changed.wait_for(lock, std::chrono::milliseconds(timeout), ready);
+  if (!signaled) {
+    set_import_result(context, kWaitTimeout);
+    return;
+  }
+  if (wait_all) {
+    for (auto* entry : entries) guest_sync_consume(entry);
+    set_import_result(context, kWaitObject0);
+  } else {
+    const auto ready_entry = std::find_if(entries.begin(), entries.end(), guest_sync_ready);
+    const auto index = static_cast<std::uint32_t>(std::distance(entries.begin(), ready_entry));
+    guest_sync_consume(*ready_entry);
+    set_import_result(context, kWaitObject0 + index);
+  }
 }
 
 void win32_get_process_heap(GuestContext* context) { set_import_result(context, 0x1000); }
@@ -884,6 +1164,9 @@ void win32_lc_map_string_w(GuestContext* context) {
 std::string guest_path_to_host(std::string path);
 // Resolves through the app-directory policy and reports why a path was refused.
 bool guest_path_resolve(const std::string& guest_path, std::string& host_path, bool for_creation);
+// Defined with the module table below; the file shims need it to tell a handle for
+// the image itself apart from one for a DLL the guest named.
+const char* guest_module_library(std::uint64_t handle);
 
 constexpr std::uint64_t kCxxStringBytes = 24;
 constexpr std::uint64_t kCxxStringLocalCapacity = 15;
@@ -1144,6 +1427,11 @@ std::uint64_t msvcrt_iob = 0;
 constexpr std::uint64_t kMsvcrtFileObjectBytes = 48;
 constexpr std::uint64_t kMsvcrtFileCount = 3;  // stdin, stdout, stderr
 
+// Defined below with the stream table it populates. The three standard streams
+// have to be registered before any guest code runs, because stdin is a FILE* the
+// program reads without opening anything.
+void crt_files_seed();
+
 void msvcrt_initialize() {
   msvcrt_data_block = 0;
   if (guest_memory == nullptr || guest_memory_size < 0x400000) return;
@@ -1160,12 +1448,707 @@ void msvcrt_initialize() {
   const std::uint32_t mb_cur_max = 1;
   std::memcpy(guest_memory + msvcrt_data_block + 0x320, &mb_cur_max, 4);
   store_guest_memory(nullptr, msvcrt_data_block + 0x430, guest_reserved_top() - 0x500000, guest_pointer_width);
+  crt_files_seed();
 }
 
 std::uint64_t msvcrt_stream_index(std::uint64_t stream) {
   if (msvcrt_iob == 0 || stream < msvcrt_iob) return 0;
   const auto index = (stream - msvcrt_iob) / kMsvcrtFileObjectBytes;
   return index < kMsvcrtFileCount ? index : 0;
+}
+
+// ---- CRT file descriptors and streams -------------------------------------
+// Three levels, because Windows has three: a guest HANDLE names an opened object,
+// a CRT file descriptor names one end of it, and a FILE* names a view of a
+// descriptor. Collapsing them is what makes _fileno, _open_osfhandle and _fdopen
+// unanswerable -- and mixing CreateFileA with fread is the ordinary way a Win32
+// program opens a file, so a stream that cannot be tied back to the handle it
+// came from reads the wrong thing and reports success.
+struct GuestCrtFile {
+  int host_fd{-1};
+  std::uint64_t handle{0};  // the guest handle it was made from, when it was
+  bool open{false};
+};
+std::vector<GuestCrtFile> crt_files;
+
+struct GuestCrtStream {
+  int fd{-1};
+  bool for_read{false};
+  bool for_write{false};
+  // EOF and error are per-stream, not per-descriptor: two FILE* on one descriptor
+  // have separate flags, and a program that calls feof after a short read has to
+  // see the flag the read set. Reporting eof from the descriptor would answer a
+  // different question than the one asked.
+  bool at_eof{false};
+  bool had_error{false};
+  // ungetc() puts back one byte; a second pushback before a read is undefined,
+  // so one slot is the whole requirement.
+  std::int32_t pushback{-1};
+};
+std::map<std::uint64_t, GuestCrtStream> crt_streams;
+
+std::uint64_t crt_file_new(int host_fd, std::uint64_t handle) {
+  for (std::size_t index = 0; index < crt_files.size(); ++index) {
+    if (!crt_files[index].open) {
+      crt_files[index] = GuestCrtFile{host_fd, handle, true};
+      return index;
+    }
+  }
+  crt_files.push_back(GuestCrtFile{host_fd, handle, true});
+  return crt_files.size() - 1;
+}
+
+GuestCrtFile* crt_file_get(std::uint64_t descriptor) {
+  if (descriptor >= crt_files.size() || !crt_files[descriptor].open) return nullptr;
+  return &crt_files[descriptor];
+}
+
+// The host descriptor behind a FILE*, or -1. A stream the runtime never created
+// -- a pointer the guest made up -- has to be distinguishable from a closed one,
+// because the guest's own error handling depends on the answer being no.
+int crt_stream_descriptor(std::uint64_t stream) {
+  const auto found = crt_streams.find(stream);
+  if (found == crt_streams.end()) return -1;
+  auto* file = crt_file_get(static_cast<std::uint64_t>(found->second.fd));
+  return file != nullptr ? file->host_fd : -1;
+}
+
+GuestCrtStream* crt_stream(std::uint64_t stream) {
+  const auto found = crt_streams.find(stream);
+  return found == crt_streams.end() ? nullptr : &found->second;
+}
+
+// Registers a stream for a descriptor. `object` is the FILE* the guest sees; for
+// fopen it is a fresh block, for the standard streams it is the slot in _iob.
+std::uint64_t crt_stream_make(std::uint64_t object, int fd, bool for_read, bool for_write) {
+  crt_streams[object] = GuestCrtStream{};
+  crt_streams[object].fd = fd;
+  crt_streams[object].for_read = for_read;
+  crt_streams[object].for_write = for_write;
+  return object;
+}
+
+// A FILE* the guest can hold: its own block in the guest heap, so the value is a
+// guest address like every other pointer the CRT returns.
+std::uint64_t crt_stream_allocate_object() {
+  return heap_allocate(kMsvcrtFileObjectBytes);
+}
+
+void crt_files_seed() {
+  crt_files.clear();
+  crt_streams.clear();
+  if (msvcrt_iob == 0) return;
+  // stdin, stdout, stderr, in the order _iob lays them out and the order
+  // __acrt_iob_func indexes.
+  crt_stream_make(msvcrt_iob + 0 * kMsvcrtFileObjectBytes,
+                  static_cast<int>(crt_file_new(STDIN_FILENO, 10)), true, false);
+  crt_stream_make(msvcrt_iob + 1 * kMsvcrtFileObjectBytes,
+                  static_cast<int>(crt_file_new(STDOUT_FILENO, 11)), false, true);
+  crt_stream_make(msvcrt_iob + 2 * kMsvcrtFileObjectBytes,
+                  static_cast<int>(crt_file_new(STDERR_FILENO, 12)), false, true);
+}
+
+// True when a guest buffer of `length` bytes at `address` lies inside the guest
+// address space. Everything that copies between the two checks this first: a
+// host read into a buffer the guest does not own writes over whatever follows the
+// mapping, which is not a failure the guest can be told about.
+bool guest_buffer_usable(std::uint64_t address, std::uint64_t length) {
+  return length <= guest_memory_size && address <= guest_memory_size - length;
+}
+
+// Parses a CRT mode string ("rb", "w+", "a+t", ...) into open flags and the
+// access the resulting stream has. Returns false for a mode Windows would reject,
+// which the caller reports as a failed fopen rather than as a guess.
+bool crt_parse_mode(const std::string& mode, int& host_flags, bool& for_read, bool& for_write) {
+  const bool has_plus = mode.find('+') != std::string::npos;
+  const bool text = mode.find('t') != std::string::npos || mode.find('b') == std::string::npos;
+  for_read = false;
+  for_write = false;
+  if (mode.find('r') != std::string::npos) {
+    if (has_plus) {
+      host_flags = O_RDWR;
+      for_read = for_write = true;
+    } else {
+      host_flags = O_RDONLY;
+      for_read = true;
+    }
+    // Text mode translates line endings on Windows; a guest that opens "rt" and
+    // reads back CRLF it never wrote would be a surprise, so the translation is
+    // named here rather than quietly dropped. It is not implemented: every stream
+    // is binary, which is what reading "rb" means.
+    return true;
+  }
+  if (mode.find('w') != std::string::npos) {
+    host_flags = has_plus ? O_RDWR : O_WRONLY;
+    host_flags |= O_CREAT | O_TRUNC;
+    for_write = true;
+    for_read = has_plus;
+    return true;
+  }
+  if (mode.find('a') != std::string::npos) {
+    host_flags = (has_plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;
+    for_write = true;
+    for_read = has_plus;
+    return true;
+  }
+  (void)text;
+  return false;
+}
+
+// ---- CRT: streams ---------------------------------------------------------
+void msvcrt_fopen(GuestContext* context, bool wide) {
+  const auto path_argument = import_argument(context, 0);
+  const auto mode_text = read_guest_string(import_argument(context, 1));
+  // _wfsopen and _wfopen name their path in UTF-16; the modes are still narrow.
+  const auto path = wide ? read_guest_wide_string(path_argument) : read_guest_string(path_argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, mode_text.find('w') != std::string::npos)) {
+    set_import_result(context, 0);
+    return;
+  }
+  int host_flags = 0;
+  bool for_read = false;
+  bool for_write = false;
+  if (!crt_parse_mode(mode_text, host_flags, for_read, for_write)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto host_fd = ::open(host_path.c_str(), host_flags, 0644);
+  if (host_fd < 0) {
+    // Which failure it was matters to the caller: a missing file and a refused
+    // path are different problems, and ENOENT/EPERM distinguish them.
+    set_guest_last_error(errno == EACCES || errno == EPERM ? kErrorAccessDenied : kErrorFileNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto object = crt_stream_allocate_object();
+  if (object == 0) {
+    ::close(host_fd);
+    set_guest_last_error(kErrorNotEnoughMemory);
+    set_import_result(context, 0);
+    return;
+  }
+  if (object + kMsvcrtFileObjectBytes <= guest_memory_size)
+    std::memset(guest_memory + object, 0, kMsvcrtFileObjectBytes);
+  // The descriptor is created first so _fileno(f) has something to return, and
+  // _close(f) has something to release.
+  crt_stream_make(object, static_cast<int>(crt_file_new(host_fd, 0)), for_read, for_write);
+  clear_guest_last_error();
+  set_import_result(context, object);
+}
+
+void msvcrt_fclose(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto found = crt_streams.find(stream);
+  if (found == crt_streams.end()) {
+    // A stream this runtime did not create. Windows returns EOF and sets a bad
+    // file descriptor; closing something unknown by guessing at its descriptor
+    // would release a file the guest still has open.
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto fd = found->second.fd;
+  // The standard streams are not the program's to close. Releasing fd 1 makes
+  // every later write to stdout fail, and the guest gets no signal that it did
+  // something wrong -- it just stops being able to print.
+  const bool standard = msvcrt_iob != 0 && stream >= msvcrt_iob &&
+                        stream < msvcrt_iob + kMsvcrtFileCount * kMsvcrtFileObjectBytes;
+  crt_streams.erase(found);
+  auto* file = crt_file_get(static_cast<std::uint64_t>(fd));
+  if (file != nullptr) {
+    if (!standard) {
+      if (file->host_fd >= 0) ::close(file->host_fd);
+      if (file->handle != 0) guest_handle_close(file->handle);
+      file->open = false;
+      file->host_fd = -1;
+    }
+  }
+  if (standard) {
+    // Re-register the standard stream: fclose(stdin) is legal, it just has no
+    // effect on the host descriptor, and the stream has to keep working after it.
+    crt_stream_make(stream, fd, fd == 0, fd != 0);
+  } else {
+    // A FILE* whose object the guest may still hold, so the pointer cannot be
+    // reused for a new file; leaving the table entry absent makes every later use
+    // of it fail as a closed stream, which is what Windows does.
+  }
+  set_import_result(context, 0);
+}
+
+int guest_read_byte();
+
+void msvcrt_fread(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  const auto stream = import_argument(context, 3);
+  const auto total = size * count;
+  auto* state = crt_stream(stream);
+  if (state == nullptr || !state->for_read) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  if (total == 0) { set_import_result(context, 0); return; }
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0 || !guest_buffer_usable(buffer, total)) {
+    state->had_error = true;
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  bool failed = false;
+  std::size_t filled = 0;
+  while (filled < total) {
+    if (state->pushback >= 0) {
+      guest_memory[buffer + filled] = static_cast<std::uint8_t>(state->pushback);
+      state->pushback = -1;
+      ++filled;
+      continue;
+    }
+    if (guest_input_capture != nullptr && stream == msvcrt_iob) {
+      const auto character = guest_read_byte();
+      if (character < 0) break;
+      guest_memory[buffer + filled++] = static_cast<std::uint8_t>(character);
+      continue;
+    }
+    const auto read = ::read(host_fd, guest_memory + buffer + filled, total - filled);
+    if (read == 0) break;
+    if (read < 0) { failed = true; break; }
+    filled += static_cast<std::size_t>(read);
+  }
+  if (filled < total) {
+    // A read that reaches the end of the file is not an error, and the two flags
+    // mean different things to the caller: feof() after a clean exhaustion tells a
+    // parsing loop to stop, ferror() tells it the data is corrupt. Setting both
+    // makes a file read to its end look like a failed read.
+    if (failed) {
+      state->had_error = true;
+      set_guest_last_error(kErrorInvalidHandle);
+      set_import_result(context, 0);
+      return;
+    }
+    state->at_eof = true;
+  }
+  clear_guest_last_error();
+  // Items, not bytes: size * count bytes filled is `size` items when size is not
+  // 1, and the caller compares the return value against `count`.
+  set_import_result(context, size == 0 ? 0 : filled / size);
+}
+
+void msvcrt_fwrite(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  const auto stream = import_argument(context, 3);
+  const auto total = size * count;
+  auto* state = crt_stream(stream);
+  if (state == nullptr || !state->for_write) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  if (total == 0) { set_import_result(context, 0); return; }
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0 || !guest_buffer_usable(buffer, total)) {
+    state->had_error = true;
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  // The standard streams go through the output writer, which is what the
+  // differential reference captures; a real file is written to its own descriptor.
+  const bool standard = msvcrt_iob != 0 && stream >= msvcrt_iob &&
+                        stream < msvcrt_iob + kMsvcrtFileCount * kMsvcrtFileObjectBytes;
+  std::size_t written = 0;
+  while (written < total) {
+    const auto accepted = standard
+        ? write_guest_output(host_fd, reinterpret_cast<const char*>(guest_memory + buffer + written),
+                             total - written)
+        : ::write(host_fd, guest_memory + buffer + written, total - written);
+    if (accepted <= 0) break;
+    written += static_cast<std::size_t>(accepted);
+  }
+  if (written < total) state->had_error = true;
+  if (written == 0) { set_import_result(context, 0); return; }
+  clear_guest_last_error();
+  set_import_result(context, size == 0 ? 0 : written / size);
+}
+
+void msvcrt_fseek(GuestContext* context, bool wide_offset) {
+  const auto stream = import_argument(context, 0);
+  const auto raw = import_argument(context, 1);
+  const auto origin = static_cast<std::int32_t>(import_argument(context, 2));
+  auto* state = crt_stream(stream);
+  if (state == nullptr) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // `fseek`'s offset is a C `long`, which on Windows is 32 bits at *both* guest
+  // widths -- LLP64, not LP64. A PE32+ guest moving -4 into a register leaves the
+  // upper half zero, so reading it as a 64-bit value gives +4294967292, the seek
+  // lands past the end, and the next read returns nothing: an empty file, reported
+  // as success. `_fseeki64` is the 64-bit form and takes the register as it is.
+  std::int64_t offset = wide_offset
+      ? static_cast<std::int64_t>(raw)
+      : static_cast<std::int64_t>(static_cast<std::int32_t>(static_cast<std::uint32_t>(raw)));
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  int host_origin = SEEK_SET;
+  if (origin == 1) host_origin = SEEK_CUR;
+  else if (origin == 2) host_origin = SEEK_END;
+  const auto position = ::lseek(host_fd, static_cast<off_t>(offset), host_origin);
+  if (position < 0) {
+    state->had_error = true;
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // Seeking is the one thing that reliably clears a previous end-of-file, and a
+  // stream that stayed flagged would make a program's next read look exhausted.
+  state->at_eof = false;
+  state->pushback = -1;
+  clear_guest_last_error();
+  set_import_result(context, 0);
+}
+
+void msvcrt_ftell(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(::lseek(host_fd, 0, SEEK_CUR)));
+}
+
+void msvcrt_feof(GuestContext* context) {
+  auto* state = crt_stream(import_argument(context, 0));
+  set_import_result(context, state != nullptr && state->at_eof ? 1 : 0);
+}
+void msvcrt_ferror(GuestContext* context) {
+  auto* state = crt_stream(import_argument(context, 0));
+  set_import_result(context, state != nullptr && state->had_error ? 1 : 0);
+}
+void msvcrt_clearerr(GuestContext* context) {
+  auto* state = crt_stream(import_argument(context, 0));
+  if (state != nullptr) {
+    state->at_eof = false;
+    state->had_error = false;
+  }
+}
+void msvcrt_rewind(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  ::lseek(host_fd, 0, SEEK_SET);
+  state->at_eof = false;
+  state->had_error = false;
+  state->pushback = -1;
+  set_import_result(context, 0);
+}
+
+void msvcrt_fgetc(GuestContext* context, bool for_write) {
+  const auto stream = import_argument(context, for_write ? 1 : 0);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0) {
+    if (state != nullptr) state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));  // EOF
+    return;
+  }
+  if (!for_write) {
+    if (state->pushback >= 0) {
+      const auto value = state->pushback;
+      state->pushback = -1;
+      set_import_result(context, static_cast<std::uint64_t>(value));
+      return;
+    }
+    if (guest_input_capture != nullptr && stream == msvcrt_iob) {
+      const auto character = guest_read_byte();
+      if (character < 0) state->at_eof = true;
+      else state->at_eof = false;
+      set_import_result(context, character < 0 ? static_cast<std::uint64_t>(-1)
+                                              : static_cast<std::uint64_t>(character));
+      return;
+    }
+    std::uint8_t byte = 0;
+    const auto read = ::read(host_fd, &byte, 1);
+    if (read <= 0) {
+      // EOF and error are different answers, and the guest distinguishes them by
+      // calling feof or ferror afterwards.
+      if (read == 0) state->at_eof = true; else state->had_error = true;
+      set_import_result(context, static_cast<std::uint64_t>(-1));
+      return;
+    }
+    set_import_result(context, byte);
+    return;
+  }
+  if (!state->for_write) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto character = static_cast<std::uint8_t>(import_argument(context, 0));
+  const auto written = ::write(host_fd, &character, 1);
+  if (written != 1) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, character);
+}
+
+void msvcrt_fgets(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto maximum = import_argument(context, 1);
+  const auto stream = import_argument(context, 2);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0 || !state->for_read || maximum <= 1 ||
+      !guest_buffer_usable(buffer, static_cast<std::uint64_t>(maximum))) {
+    if (state != nullptr) state->had_error = true;
+    set_import_result(context, 0);
+    return;
+  }
+  std::uint64_t filled = 0;
+  while (filled + 1 < static_cast<std::uint64_t>(maximum)) {
+    std::uint8_t byte = 0;
+    if (state->pushback >= 0) {
+      byte = static_cast<std::uint8_t>(state->pushback);
+      state->pushback = -1;
+    } else if (guest_input_capture != nullptr && stream == msvcrt_iob) {
+      const auto character = guest_read_byte();
+      if (character < 0) {
+        state->at_eof = true;
+        break;
+      }
+      state->at_eof = false;
+      byte = static_cast<std::uint8_t>(character);
+    } else {
+      const auto one = ::read(host_fd, &byte, 1);
+      if (one != 1) {
+        // A read of zero bytes is the end of the file; a read that failed is an
+        // error. Both leave the loop, and the guest distinguishes them afterwards
+        // by calling feof() or ferror(), so they must not set the same flag.
+        if (one == 0) state->at_eof = true;
+        else state->had_error = true;
+        break;
+      }
+    }
+    guest_memory[buffer + filled++] = byte;
+    if (byte == '\n') break;
+  }
+  if (filled == 0) { set_import_result(context, 0); return; }
+  guest_memory[buffer + filled] = 0;
+  set_import_result(context, buffer);
+}
+
+void msvcrt_fputs(GuestContext* context) {
+  const auto text_address = import_argument(context, 0);
+  const auto stream = import_argument(context, 1);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0 || !state->for_write) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto text = read_guest_string(text_address);
+  std::size_t written = 0;
+  while (written < text.size()) {
+    const auto accepted = ::write(host_fd, text.data() + written, text.size() - written);
+    if (accepted <= 0) break;
+    written += static_cast<std::size_t>(accepted);
+  }
+  if (written != text.size()) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, 0);
+}
+
+void msvcrt_ungetc(GuestContext* context) {
+  const auto character = import_argument(context, 0);
+  const auto stream = import_argument(context, 1);
+  auto* state = crt_stream(stream);
+  if (state == nullptr || !state->for_read || character == 0xffffffffull) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));  // EOF
+    return;
+  }
+  state->pushback = static_cast<std::int32_t>(character & 0xffu);
+  state->at_eof = false;
+  set_import_result(context, static_cast<std::uint64_t>(state->pushback));
+}
+
+// No host buffering exists to flush: every write goes straight to the descriptor.
+// fflush therefore succeeds without doing anything, and says so by returning 0 --
+// the answer a caller checking for a failed flush is looking for.
+void msvcrt_fflush(GuestContext* context) { set_import_result(context, 0); }
+
+void msvcrt_fileno(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  auto* state = crt_stream(stream);
+  if (state == nullptr) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(state->fd));
+}
+
+void msvcrt_open(GuestContext* context, bool wide) {
+  const auto path_argument = import_argument(context, 0);
+  const auto of_flags = static_cast<std::uint32_t>(import_argument(context, 1));
+  const auto path = wide ? read_guest_wide_string(path_argument) : read_guest_string(path_argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, (of_flags & 0x0100u) != 0)) {
+    set_import_result(context, static_cast<std::uint64_t>(-2));  // ENOENT
+    return;
+  }
+  // _O_RDONLY 0x0000, _O_WRONLY 0x0001, _O_RDWR 0x0002, _O_APPEND 0x0008,
+  // _O_CREAT 0x0100, _O_TRUNC 0x0200, _O_EXCL 0x0400. The access bits are the low
+  // two bits, which is the same shape the host uses.
+  int host_flags = of_flags & 0x3;
+  if ((of_flags & 0x0100u) != 0) host_flags |= O_CREAT;
+  if ((of_flags & 0x0200u) != 0) host_flags |= O_TRUNC;
+  if ((of_flags & 0x0400u) != 0) host_flags |= O_EXCL;
+  if ((of_flags & 0x0008u) != 0) host_flags |= O_APPEND;
+  const auto host_fd = ::open(host_path.c_str(), host_flags, 0644);
+  if (host_fd < 0) {
+    set_guest_last_error(kErrorFileNotFound);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, crt_file_new(host_fd, 0));
+}
+
+void msvcrt_close(GuestContext* context) {
+  auto* file = crt_file_get(import_argument(context, 0));
+  if (file == nullptr) { set_import_result(context, static_cast<std::uint64_t>(-1)); return; }
+  if (file->host_fd >= 0) ::close(file->host_fd);
+  file->open = false;
+  file->host_fd = -1;
+  set_import_result(context, 0);
+}
+
+void msvcrt_read_or_write(GuestContext* context, bool for_write) {
+  auto* file = crt_file_get(import_argument(context, 0));
+  const auto buffer = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  if (file == nullptr || file->host_fd < 0 || length > guest_memory_size ||
+      buffer > guest_memory_size - length) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const std::size_t count = static_cast<std::size_t>(length);
+  std::size_t moved = 0;
+  while (moved < count) {
+    const auto accepted = for_write
+        ? ::write(file->host_fd, guest_memory + buffer + moved, count - moved)
+        : ::read(file->host_fd, guest_memory + buffer + moved, count - moved);
+    if (accepted <= 0) break;
+    moved += static_cast<std::size_t>(accepted);
+  }
+  if (!for_write && moved < count) {
+    // A short read from a descriptor is the end of the file, not an error.
+    set_guest_last_error(0);
+  }
+  set_import_result(context, moved);
+}
+
+void msvcrt_lseek(GuestContext* context) {
+  auto* file = crt_file_get(import_argument(context, 0));
+  const auto raw_offset = import_argument(context, 1);
+  const auto origin = static_cast<std::int32_t>(import_argument(context, 2));
+  if (file == nullptr || file->host_fd < 0) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // `_lseek`'s offset is a C `long`: 32 bits on Windows at both guest widths, so a
+  // negative seek arrives as 0xfffffffc in a 64-bit register and has to be read
+  // back as -4. See msvcrt_fseek for what it reports if it is not.
+  const auto offset = static_cast<std::int64_t>(static_cast<std::int32_t>(
+      static_cast<std::uint32_t>(raw_offset)));
+  int host_origin = SEEK_SET;
+  if (origin == 1) host_origin = SEEK_CUR;
+  else if (origin == 2) host_origin = SEEK_END;
+  set_import_result(context, static_cast<std::uint64_t>(
+      ::lseek(file->host_fd, static_cast<off_t>(offset), host_origin)));
+}
+
+// Bridges a guest HANDLE to a CRT descriptor, which is how a program that opened
+// a file with CreateFileA goes on to read it with fread.
+void msvcrt_open_osfhandle(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, crt_file_new(entry->host_descriptor, handle));
+}
+
+void msvcrt_fdopen(GuestContext* context, bool wide) {
+  const auto fd = static_cast<std::uint64_t>(import_argument(context, 0));
+  const auto mode_text = wide ? read_guest_wide_string(import_argument(context, 1))
+                              : read_guest_string(import_argument(context, 1));
+  auto* file = crt_file_get(fd);
+  if (file == nullptr) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  int host_flags = 0;
+  bool for_read = false;
+  bool for_write = false;
+  if (!crt_parse_mode(mode_text, host_flags, for_read, for_write)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto object = crt_stream_allocate_object();
+  if (object == 0) { set_import_result(context, 0); return; }
+  if (object + kMsvcrtFileObjectBytes <= guest_memory_size)
+    std::memset(guest_memory + object, 0, kMsvcrtFileObjectBytes);
+  crt_stream_make(object, static_cast<int>(fd), for_read, for_write);
+  set_import_result(context, object);
+}
+
+void msvcrt_remove_or_rename(GuestContext* context, bool rename) {
+  const auto first = read_guest_string(import_argument(context, 0));
+  std::string host_first;
+  if (!guest_path_resolve(first, host_first, false)) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  if (!rename) {
+    set_import_result(context, ::remove(host_first.c_str()) == 0 ? 0u : static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto second = read_guest_string(import_argument(context, 1));
+  std::string host_second;
+  if (!guest_path_resolve(second, host_second, true)) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, ::rename(host_first.c_str(), host_second.c_str()) == 0 ? 0u
+                                                                                    : static_cast<std::uint64_t>(-1));
 }
 
 // The C runtime's allocator is the guest heap, so a pointer it returns is
@@ -1250,17 +2233,44 @@ void msvcrt_rand(GuestContext* context) {
   set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
 }
 
-void msvcrt_fwrite(GuestContext* context) {
-  const auto buffer = import_argument(context, 0);
-  const auto size = import_argument(context, 1);
-  const auto count = import_argument(context, 2);
-  const auto stream = import_argument(context, 3);
-  const auto total = size * count;
-  const auto index = msvcrt_stream_index(stream);
-  const int descriptor = index == 0 ? STDIN_FILENO : index == 1 ? STDOUT_FILENO : STDERR_FILENO;
-  if (total != 0 && buffer + total <= guest_memory_size)
-    write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer), static_cast<std::size_t>(total));
-  set_import_result(context, count);
+// The bytes the guest reads as stdin. The reference runs in this process and the
+// candidate in a subprocess, so a capture that is set only here would leave the candidate
+// reading the real stdin -- which the capture has already consumed -- and the two would
+// disagree for a reason that has nothing to do with the translation. This is called from
+// `initialize_guest_state`, which BOTH sides pass through, so the file reaches both.
+std::string guest_input_storage;
+
+void load_guest_input_from_environment() {
+  const char* path = std::getenv("RECOMP_STDIN_FILE");
+  if (path == nullptr || path[0] == '\0') return;
+  std::FILE* file = std::fopen(path, "rb");
+  if (file == nullptr) {
+    std::fprintf(stderr, "recomp: RECOMP_STDIN_FILE=%s could not be opened\n", path);
+    return;
+  }
+  char buffer[4096];
+  std::size_t read = 0;
+  while ((read = std::fread(buffer, 1, sizeof(buffer), file)) != 0) guest_input_storage.append(buffer, read);
+  std::fclose(file);
+  guest_input_capture = &guest_input_storage;
+  guest_input_position = 0;
+}
+int guest_read_byte() {
+  if (guest_input_capture != nullptr) {
+    if (guest_input_position >= guest_input_capture->size()) return -1;
+    return static_cast<unsigned char>((*guest_input_capture)[guest_input_position++]);
+  }
+  return std::fgetc(stdin);
+}
+
+void msvcrt_getchar(GuestContext* context) {
+  const auto character = guest_read_byte();
+  set_import_result(context, character < 0 ? static_cast<std::uint64_t>(-1)
+                                           : static_cast<std::uint64_t>(static_cast<unsigned char>(character)));
+}
+
+void msvcrt_fgetc(GuestContext* context) {
+  msvcrt_fgetc(context, false);
 }
 
 void msvcrt_puts(GuestContext* context) {
@@ -1291,6 +2301,7 @@ void msvcrt_p_fmode(GuestContext* context) { set_import_result(context, msvcrt_f
 void msvcrt_iob_pointer(GuestContext* context) { set_import_result(context, msvcrt_iob); }
 void msvcrt_pctype(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x300); }
 void msvcrt_mb_cur_max(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x320); }
+void msvcrt_mb_cur_max_func(GuestContext* context) { set_import_result(context, 4); }
 
 // ---- msvcrt: strings and numeric conversion -------------------------------
 void msvcrt_strlen(GuestContext* context) {
@@ -1337,17 +2348,33 @@ void msvcrt_strcat(GuestContext* context) {
                        index < tail.size() ? static_cast<std::uint8_t>(tail[index]) : 0, 1);
   set_import_result(context, destination);
 }
+// `strchr(s, 0)` is defined to return a pointer to the TERMINATING NUL, not null. The
+// string read here stops before the terminator, so searching for a zero character found
+// nothing and returned null -- wrong for a case callers really use, because
+// `strchr(s, 0)` is the standard way to get a pointer to the end of a string.
 void msvcrt_strchr(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = import_argument(context, 0);
+  const auto text = read_guest_string(base);
   const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  if (character == '\0') {
+    set_import_result(context, base + text.size());
+    return;
+  }
   const auto found = text.find(character);
-  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+  set_import_result(context, found == std::string::npos ? 0 : base + found);
 }
 void msvcrt_strrchr(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = import_argument(context, 0);
+  const auto text = read_guest_string(base);
   const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  // The same rule for the reverse search: the terminator is the LAST occurrence of a
+  // zero character, and the search stops there.
+  if (character == '\0') {
+    set_import_result(context, base + text.size());
+    return;
+  }
   const auto found = text.rfind(character);
-  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+  set_import_result(context, found == std::string::npos ? 0 : base + found);
 }
 void msvcrt_strstr(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 0));
@@ -1355,28 +2382,86 @@ void msvcrt_strstr(GuestContext* context) {
   const auto found = text.find(needle);
   set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
 }
-void msvcrt_strtol(GuestContext* context) {
+// The string-to-number family, on the HOST's implementation.
+//
+// What was here used `std::stol(text, &consumed, base == 0 ? 10 : base)`, and that
+// ternary is wrong in a way that is easy to miss: `strtol` with base 0 is defined to
+// DETECT the base from the text, so `strtol("0x1f", NULL, 0)` is 31 and `strtol("010",
+// NULL, 0)` is 8. Forcing base 10 made the first return 0 and the second return 10.
+// It also threw on overflow and on a string with no digits, which `strtol` does not do
+// -- it returns a clamped value and sets the end pointer to the start.
+//
+// The host has the real implementation, so it is called directly. Only the guest's
+// calling convention is this function's business.
+std::uint64_t msvcrt_parse_integer(GuestContext* context, bool is_signed, int width) {
   const auto text = read_guest_string(import_argument(context, 0));
   const auto base = static_cast<int>(import_argument(context, 2));
-  std::size_t consumed = 0;
-  long value = 0;
-  try {
-    value = std::stol(text, &consumed, base == 0 ? 10 : base);
-  } catch (...) {
-    value = 0;
-    consumed = 0;
+  char* end = nullptr;
+  std::uint64_t value = 0;
+  if (is_signed) {
+    const auto parsed = std::strtoll(text.c_str(), &end, base);
+    value = static_cast<std::uint64_t>(width >= 8 ? parsed : static_cast<std::int32_t>(parsed));
+  } else {
+    const auto parsed = std::strtoull(text.c_str(), &end, base);
+    value = width >= 8 ? parsed : static_cast<std::uint32_t>(parsed);
   }
-  const auto end = import_argument(context, 1);
-  if (end != 0) store_guest_memory(context, end, import_argument(context, 0) + consumed, 4);
-  set_import_result(context, static_cast<std::uint64_t>(value));
+  const auto end_pointer = import_argument(context, 1);
+  if (end_pointer != 0) {
+    // The end pointer is a GUEST address, and it points at the first character not
+    // consumed. When nothing was consumed that is the start of the string, which is
+    // what `strtol` reports and what a caller checking for "no digits" relies on.
+    const auto consumed = static_cast<std::uint64_t>(end - text.c_str());
+    store_guest_memory(context, end_pointer, import_argument(context, 0) + consumed, guest_pointer_width);
+  }
+  return value;
+}
+
+void msvcrt_strtol(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, true, 4));
+}
+void msvcrt_strtoul(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, false, 4));
+}
+// The 64-bit forms exist because the guest's `long` is 32 bits on Windows while the
+// host's is 64: `strtol` must truncate to what the guest asked for, and `strtoll` must
+// not.
+void msvcrt_strtoll(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, true, 8));
+}
+void msvcrt_strtoull(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, false, 8));
+}
+
+// strtod/atof, on the host's parser: the same reasoning, and the host's is correct for
+// infinities, subnormals, exponents and the C locale's decimal point.
+void msvcrt_strtod(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  char* end = nullptr;
+  const auto value = std::strtod(text.c_str(), &end);
+  const auto end_pointer = import_argument(context, 1);
+  if (end_pointer != 0) {
+    const auto consumed = static_cast<std::uint64_t>(end - text.c_str());
+    store_guest_memory(context, end_pointer, import_argument(context, 0) + consumed, guest_pointer_width);
+  }
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_atof(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto value = std::strtod(text.c_str(), nullptr);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  set_import_result(context, bits);
 }
 void msvcrt_atoi(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 0));
-  try {
-    set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::stol(text))));
-  } catch (...) {
-    set_import_result(context, 0);
-  }
+  set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::atoll(text.c_str()))));
+}
+void msvcrt_atol(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  set_import_result(context, static_cast<std::uint64_t>(
+                                 static_cast<std::int64_t>(static_cast<std::int32_t>(std::atoll(text.c_str())))));
 }
 void msvcrt_toupper(GuestContext* context) {
   set_import_result(context, static_cast<std::uint64_t>(
@@ -1477,6 +2562,16 @@ void msvcrt_isctype(GuestContext* context) {
   const auto character = import_argument(context, 1);
   set_import_result(context, classify_character(static_cast<std::uint32_t>(character & 0xffu)) != 0 ? 1 : 0);
 }
+void msvcrt_wctype(GuestContext* context) {
+  const auto name = read_guest_string(import_argument(context, 0));
+  const auto descriptor = std::wctype(name.c_str());
+  set_import_result(context, static_cast<std::uint64_t>(descriptor));
+}
+void msvcrt_iswctype(GuestContext* context) {
+  const auto character = static_cast<wint_t>(import_argument(context, 0));
+  const auto descriptor = static_cast<std::wctype_t>(import_argument(context, 1));
+  set_import_result(context, std::iswctype(character, descriptor) != 0 ? 1 : 0);
+}
 void msvcrt_mbstowcs(GuestContext* context) {
   const auto destination = import_argument(context, 0);
   const auto source = import_argument(context, 1);
@@ -1494,6 +2589,142 @@ void msvcrt_mbstowcs(GuestContext* context) {
   } else {
     set_import_result(context, static_cast<std::uint64_t>(-1));
   }
+}
+namespace {
+std::mutex guest_multibyte_state_mutex;
+std::map<std::uint64_t, std::mbstate_t> guest_multibyte_states;
+
+locale_t guest_utf8_locale() {
+  static const locale_t locale = [] {
+    auto created = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", nullptr);
+    if (created == nullptr) created = newlocale(LC_CTYPE_MASK, "C.UTF-8", nullptr);
+    return created;
+  }();
+  return locale;
+}
+
+std::size_t guest_mbrtowc(wchar_t* output, const char* input, std::size_t length, std::mbstate_t* state) {
+  const auto locale = guest_utf8_locale();
+  const auto previous = locale != nullptr ? uselocale(locale) : static_cast<locale_t>(0);
+  const auto converted = std::mbrtowc(output, input, length, state);
+  if (locale != nullptr) uselocale(previous);
+  return converted;
+}
+
+std::mbstate_t guest_multibyte_state(std::uint64_t address) {
+  std::lock_guard lock(guest_multibyte_state_mutex);
+  return guest_multibyte_states[address];
+}
+
+void store_guest_multibyte_state(std::uint64_t address, const std::mbstate_t& state) {
+  std::lock_guard lock(guest_multibyte_state_mutex);
+  guest_multibyte_states[address] = state;
+}
+
+void store_guest_utf16(GuestContext* context, std::uint64_t destination, wchar_t value) {
+  const auto codepoint = static_cast<std::uint32_t>(value);
+  if (codepoint <= 0xffffu) {
+    store_guest_memory(context, destination, codepoint, 2);
+    return;
+  }
+  const auto scalar = codepoint - 0x10000u;
+  store_guest_memory(context, destination, 0xd800u + (scalar >> 10), 2);
+  store_guest_memory(context, destination + 2, 0xdc00u + (scalar & 0x3ffu), 2);
+}
+}  // namespace
+
+void msvcrt_mbrtowc(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  const auto state_address = import_argument(context, 3);
+  auto state = guest_multibyte_state(state_address);
+  if (source == 0) {
+    std::memset(&state, 0, sizeof(state));
+    store_guest_multibyte_state(state_address, state);
+    set_import_result(context, 0);
+    return;
+  }
+  std::string bytes;
+  for (std::uint64_t index = 0; index < std::min<std::uint64_t>(length, 8); ++index) {
+    const auto byte = static_cast<std::uint8_t>(load_guest_memory(context, source + index, 1));
+    bytes.push_back(static_cast<char>(byte));
+    if (byte == 0) break;
+  }
+  wchar_t converted_character = 0;
+  const auto converted = guest_mbrtowc(&converted_character, bytes.data(), bytes.size(), &state);
+  store_guest_multibyte_state(state_address, state);
+  if (converted == static_cast<std::size_t>(-1) || converted == static_cast<std::size_t>(-2)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(converted));
+    return;
+  }
+  if (destination != 0) store_guest_utf16(context, destination, converted_character);
+  set_import_result(context, converted);
+}
+
+void msvcrt_mbsrtowcs(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source_pointer = import_argument(context, 1);
+  const auto maximum = import_argument(context, 2);
+  const auto state_address = import_argument(context, 3);
+  auto source = load_guest_memory(context, source_pointer, guest_pointer_width);
+  auto state = guest_multibyte_state(state_address);
+  std::size_t converted_units = 0;
+  while (source != 0 && (destination == 0 || converted_units < maximum)) {
+    std::string bytes;
+    for (std::size_t index = 0; index < MB_LEN_MAX; ++index) {
+      const auto byte = static_cast<std::uint8_t>(load_guest_memory(context, source + index, 1));
+      bytes.push_back(static_cast<char>(byte));
+      if (byte == 0) break;
+    }
+    wchar_t character = 0;
+    const auto consumed = guest_mbrtowc(&character, bytes.data(), bytes.size(), &state);
+    if (consumed == static_cast<std::size_t>(-1) || consumed == static_cast<std::size_t>(-2)) {
+      set_guest_last_error(kErrorInvalidParameter);
+      set_import_result(context, static_cast<std::uint64_t>(-1));
+      return;
+    }
+    if (consumed == 0) {
+      if (destination != 0) store_guest_memory(context, destination + converted_units * 2, 0, 2);
+      source = 0;
+      break;
+    }
+    source += consumed;
+    if (destination != 0) store_guest_utf16(context, destination + converted_units * 2, character);
+    ++converted_units;
+  }
+  if (destination != 0) {
+    store_guest_memory(context, source_pointer, source, guest_pointer_width);
+    store_guest_multibyte_state(state_address, state);
+  }
+  set_import_result(context, converted_units);
+}
+void msvcrt_wcrtomb(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto wide_character = static_cast<wchar_t>(import_argument(context, 1) & 0xffffu);
+  const auto state_address = import_argument(context, 2);
+  if (destination == 0) {
+    set_import_result(context, 1);
+    return;
+  }
+
+  auto state = guest_multibyte_state(state_address);
+
+  char bytes[MB_LEN_MAX]{};
+  const auto locale = guest_utf8_locale();
+  const auto previous_locale = locale != nullptr ? uselocale(locale) : static_cast<locale_t>(0);
+  const auto converted = std::wcrtomb(bytes, wide_character, &state);
+  if (locale != nullptr) uselocale(previous_locale);
+  if (converted == static_cast<std::size_t>(-1)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  store_guest_multibyte_state(state_address, state);
+  for (std::size_t index = 0; index < converted; ++index)
+    store_guest_memory(context, destination + index, static_cast<std::uint8_t>(bytes[index]), 1);
+  set_import_result(context, converted);
 }
 void msvcrt_setlocale(GuestContext* context) {
   (void)import_argument(context, 0);
@@ -1645,6 +2876,418 @@ void win32_find_close(GuestContext* context) {
   set_import_result(context, 1);
 }
 
+// ---- kernel32: files ------------------------------------------------------
+// A guest file handle is a typed entry in the handle table whose descriptor is a
+// host descriptor, opened through the app-directory policy. Everything here
+// either produces one of those or consumes one, so a handle from CreateFileA and
+// a handle from FindFirstFileA cannot be confused for each other, and neither can
+// be a host pointer.
+
+// Maps GENERIC_* / FILE_*_DATA access bits onto the read and write permission the
+// handle will carry.
+void guest_decode_access(std::uint64_t desired_access, bool& may_read, bool& may_write) {
+  may_read = false;
+  may_write = false;
+  if (desired_access == 0) return;  // access 0 asks for metadata only
+  const std::uint64_t generic_read = 0x80000000ull;
+  const std::uint64_t generic_write = 0x40000000ull;
+  const std::uint64_t generic_execute = 0x20000000ull;
+  const std::uint64_t all_access = 0x1F01FFull;
+  if (desired_access == all_access) { may_read = may_write = true; return; }
+  if ((desired_access & generic_read) != 0 || (desired_access & 0x86ull) != 0) may_read = true;
+  if ((desired_access & generic_write) != 0 || (desired_access & 0x190ull) != 0) may_write = true;
+  if ((desired_access & generic_execute) != 0) may_read = true;
+}
+
+int guest_open_disposition(std::uint32_t disposition, bool for_write) {
+  // CREATE_NEW 1, CREATE_ALWAYS 2, OPEN_EXISTING 3, OPEN_ALWAYS 4,
+  // TRUNCATE_EXISTING 5.
+  switch (disposition) {
+    case 1: return O_CREAT | O_EXCL | (for_write ? O_WRONLY : O_RDONLY);
+    case 2: return O_CREAT | O_TRUNC | (for_write ? O_WRONLY : O_RDWR);
+    case 3: return for_write ? O_RDWR : O_RDONLY;
+    case 4: return O_CREAT | (for_write ? O_WRONLY : O_RDONLY);
+    case 5: return O_TRUNC | O_WRONLY;
+    default: return -1;
+  }
+}
+
+void win32_create_file(GuestContext* context, bool wide) {
+  const auto path_argument = import_argument(context, 0);
+  const auto desired_access = import_argument(context, 1);
+  const auto disposition = static_cast<std::uint32_t>(import_argument(context, 4));
+  const auto path = wide ? read_guest_wide_string(path_argument) : read_guest_string(path_argument);
+  bool may_read = false;
+  bool may_write = false;
+  guest_decode_access(desired_access, may_read, may_write);
+  std::string host_path;
+  // The policy has to be told whether this call intends to create, because
+  // creating inside the app directory is allowed and creating outside it is the
+  // case where "we refused" must be louder than "not found".
+  if (!guest_path_resolve(path, host_path, disposition == 1 || disposition == 2 || disposition == 4)) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));  // INVALID_HANDLE_VALUE
+    return;
+  }
+  const auto flags = guest_open_disposition(disposition, may_write);
+  if (flags < 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // A directory is not a file: Windows refuses to open one without the backup
+  // semantics flag, and a guest that gets a handle for a directory then tries to
+  // read it is confused about something worth failing loudly for.
+  std::error_code error;
+  const bool is_directory = std::filesystem::is_directory(host_path, error);
+  if (is_directory && may_write) {
+    set_guest_last_error(kErrorAccessDenied);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const int host_fd = is_directory ? ::open(host_path.c_str(), O_RDONLY)
+                                   : ::open(host_path.c_str(), flags, 0644);
+  if (host_fd < 0) {
+    const auto code = errno == EEXIST ? kErrorSharingViolation
+                    : errno == EACCES || errno == EPERM ? kErrorAccessDenied
+                    : errno == ENOENT ? kErrorFileNotFound
+                                      : kErrorPathNotFound;
+    set_guest_last_error(code);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto handle = guest_file_handle_new(host_fd, is_directory || may_read, may_write, path);
+  if (handle == 0) {
+    ::close(host_fd);
+    set_guest_last_error(kErrorNotEnoughMemory);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, handle);
+}
+
+// Moves the file pointer, in the 32-bit and 64-bit forms the two APIs offer.
+void win32_set_file_pointer(GuestContext* context, bool extended) {
+  const auto handle = import_argument(context, 0);
+  const auto raw_distance = import_argument(context, 1);
+  const auto origin = static_cast<std::int32_t>(import_argument(context, 2));
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    // SetFilePointer returns 0xFFFFFFFF and reports the real position through the
+    // high-word pointer when there is one, which is what the caller checks.
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  const auto distance = extended
+      ? static_cast<std::int64_t>(raw_distance)
+      : static_cast<std::int64_t>(static_cast<std::int32_t>(static_cast<std::uint32_t>(raw_distance)));
+  int host_origin = SEEK_SET;
+  if (origin == 1) host_origin = SEEK_CUR;
+  else if (origin == 2) host_origin = SEEK_END;
+  const auto position = ::lseek(entry->host_descriptor, static_cast<off_t>(distance), host_origin);
+  if (position < 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  if (!extended) {
+    const auto high_pointer = import_argument(context, 3);
+    if (high_pointer != 0)
+      store_guest_memory(context, high_pointer, static_cast<std::uint64_t>(position >> 32), 4);
+  }
+  clear_guest_last_error();
+  set_import_result(context, static_cast<std::uint64_t>(position));
+}
+
+void win32_get_file_size(GuestContext* context, bool extended) {
+  const auto handle = import_argument(context, 0);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || (entry->type != kGuestHandleFile && entry->type != kGuestHandleStandard) ||
+      entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  struct stat status{};
+  if (::fstat(entry->host_descriptor, &status) != 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  const auto size = static_cast<std::uint64_t>(status.st_size);
+  if (!extended) {
+    const auto high_pointer = import_argument(context, 1);
+    if (high_pointer != 0)
+      store_guest_memory(context, high_pointer, size >> 32, 4);
+    set_import_result(context, size & 0xffffffffull);
+    return;
+  }
+  set_import_result(context, size);
+}
+
+// The name the guest is running under, in the Windows form it expects. Programs
+// use this to find the directory they were started from and then read their own
+// data files, so a shim that returns 0 here makes every bundled asset unreachable
+// and the failure surfaces as a missing texture rather than as a refused call.
+//
+// Three arguments, the first of which is the module to ask about: NULL means the
+// executable the process started from, which is the only module this runtime has.
+// Reading the buffer from argument 0 would write the path over whatever the guest
+// passed as the module handle and report success.
+void win32_get_module_file_name(GuestContext* context, bool wide) {
+  const auto module_handle = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto maximum = import_argument(context, 2);
+  if (module_handle != 0 && module_handle != recompiled_image_base &&
+      guest_module_library(module_handle) == nullptr) {
+    // A module this runtime does not know has no name to report; Windows writes
+    // nothing and returns 0, which is what the caller checks.
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto& root = guest_file_sandbox().root();
+  if (root.empty()) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  // The executable's own name comes from the harness when it knows it; the
+  // directory alone would make a program that strips the last path component end
+  // up one level too high.
+  std::string name = "recomp-guest";
+  if (const char* configured = std::getenv("RECOMP_APP_NAME"); configured != nullptr && configured[0] != '\0')
+    name = configured;
+  const auto guest_path = guest_file_sandbox().to_guest_path(root + "/" + name);
+  const auto length = guest_path.size();
+  if (buffer == 0 || maximum == 0 || !guest_buffer_usable(buffer, length + 1)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  for (std::size_t index = 0; index < length; ++index) {
+    const auto unit = wide ? static_cast<std::uint64_t>(static_cast<std::uint16_t>(guest_path[index]))
+                           : static_cast<std::uint64_t>(static_cast<std::uint8_t>(guest_path[index]));
+    store_guest_memory(context, buffer + index * (wide ? 2 : 1), unit, wide ? 2 : 1);
+  }
+  store_guest_memory(context, buffer + length * (wide ? 2 : 1), 0, wide ? 2 : 1);
+  clear_guest_last_error();
+  set_import_result(context, length);
+}
+
+// Deletes and renames, through the same policy as opening.
+void win32_delete_file(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) {
+    set_guest_last_error(kErrorFileNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  if (::remove(host_path.c_str()) != 0) {
+    set_guest_last_error(errno == EPERM || errno == EACCES ? kErrorAccessDenied : kErrorFileNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_create_directory(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, true)) {
+    set_guest_last_error(kErrorAccessDenied);
+    set_import_result(context, 0);
+    return;
+  }
+  if (::mkdir(host_path.c_str(), 0755) != 0) {
+    set_guest_last_error(errno == EEXIST ? kErrorSharingViolation : kErrorPathNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_remove_directory(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) {
+    set_import_result(context, 0);
+    return;
+  }
+  // rmdir fails on a non-empty directory, which is the behaviour the caller is
+  // checking for when it decides whether to report "in use".
+  set_import_result(context, ::rmdir(host_path.c_str()) == 0 ? 1u : 0u);
+}
+
+void win32_move_file(GuestContext* context, bool extended) {
+  const auto first_argument = import_argument(context, 0);
+  const auto second_argument = import_argument(context, 1);
+  const auto first = read_guest_string(first_argument);
+  // MoveFileExA puts its flags in the third argument; MoveFileW takes no flags,
+  // and reading one that is not there would invent a behaviour.
+  const auto flags = extended ? static_cast<std::uint32_t>(import_argument(context, 2)) : 0u;
+  std::string host_first;
+  std::string host_second;
+  if (!guest_path_resolve(first, host_first, false)) { set_import_result(context, 0); return; }
+  // MOVEFILE_COPY_ALLOWED is 2, MOVEFILE_REPLACE_EXISTING is 1, DELAY_UNTIL_REBOOT
+  // is 4 -- and a recompiler has no reboot to defer to, so a request that depends
+  // on it cannot be honoured and has to say so rather than do nothing.
+  if ((flags & 4u) != 0) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  if (!guest_path_resolve(second_argument == 0 ? std::string() : read_guest_string(second_argument),
+                         host_second, true)) {
+    set_import_result(context, 0);
+    return;
+  }
+  if (::rename(host_first.c_str(), host_second.c_str()) != 0) {
+    // EEXIST on a rename onto an existing file is exactly the case
+    // REPLACE_EXISTING was passed for; unlink and try again before giving up.
+    if (errno == EEXIST && (flags & 1u) != 0 && ::unlink(host_second.c_str()) == 0 &&
+        ::rename(host_first.c_str(), host_second.c_str()) == 0) {
+      clear_guest_last_error();
+      set_import_result(context, 1);
+      return;
+    }
+    set_guest_last_error(errno == ENOENT ? kErrorFileNotFound : kErrorAccessDenied);
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_get_file_attributes(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) {
+    set_import_result(context, 0xffffffffull);  // INVALID_FILE_ATTRIBUTES
+    return;
+  }
+  std::error_code error;
+  if (!std::filesystem::exists(host_path, error)) {
+    set_guest_last_error(kErrorFileNotFound);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  // FILE_ATTRIBUTE_DIRECTORY 0x10, FILE_ATTRIBUTE_READONLY 0x1, and 0x80 for a
+  // plain file.
+  std::uint64_t attributes = 0x80;
+  if (std::filesystem::is_directory(host_path, error)) attributes = 0x10;
+  else if ((std::filesystem::status(host_path, error).permissions() & std::filesystem::perms::owner_write) ==
+           std::filesystem::perms::none)
+    attributes = 0x1;
+  clear_guest_last_error();
+  set_import_result(context, attributes);
+}
+
+void win32_set_end_of_file(GuestContext* context) {
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto position = ::lseek(entry->host_descriptor, 0, SEEK_CUR);
+  set_import_result(context, ::ftruncate(entry->host_descriptor, static_cast<off_t>(position)) == 0 ? 1u : 0u);
+}
+
+// The file's own bytes, not the program's output. Flushing the host stream here
+// would be wrong in a different way for every file the guest has open.
+void win32_flush_file_buffers(GuestContext* context) {
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    // A standard stream has no buffers of the guest's to push out.
+    set_import_result(context, entry != nullptr ? 1 : 0);
+    if (entry == nullptr) set_guest_last_error(kErrorInvalidHandle);
+    return;
+  }
+  set_import_result(context, ::fsync(entry->host_descriptor) == 0 ? 1u : 0u);
+}
+
+// Bytes of free space on the drive the app directory lives on. The guest asks when
+// it is about to write something large; answering 0 makes it refuse to write, and
+// answering a made-up number lets it fill a real disk.
+void win32_get_disk_free_space(GuestContext* context) {
+  const auto root_argument = import_argument(context, 0);
+  const auto free_bytes_for_caller = import_argument(context, 1);
+  const auto total_bytes_for_caller = import_argument(context, 2);
+  const auto total_free_for_caller = import_argument(context, 3);
+  const auto path = root_argument == 0 ? guest_file_sandbox().root() : read_guest_string(root_argument);
+  std::string host_path;
+  // A drive letter alone ("C:\") is a legal argument and resolves to the sandbox.
+  if (!guest_path_resolve(path.empty() ? "." : path, host_path, false)) host_path = guest_file_sandbox().root();
+  std::error_code error;
+  const auto space = std::filesystem::space(host_path.empty() ? "." : host_path, error);
+  if (error) { set_import_result(context, 0); return; }
+  if (free_bytes_for_caller != 0) store_guest_memory(context, free_bytes_for_caller, space.available, 8);
+  if (total_bytes_for_caller != 0) store_guest_memory(context, total_bytes_for_caller, space.capacity, 8);
+  if (total_free_for_caller != 0) store_guest_memory(context, total_free_for_caller, space.free, 8);
+  set_import_result(context, 1);
+}
+
+// The A/W and 32/64-bit spellings, as separate entries because the shim table keys
+// on the name the guest actually imports. Each is named after the entry it serves
+// -- `shim_` prefix, implementation without -- so a wrapper can never quietly call
+// itself instead of the function it wraps.
+void shim_CreateFileA(GuestContext* c) { win32_create_file(c, false); }
+void shim_CreateFileW(GuestContext* c) { win32_create_file(c, true); }
+void shim_SetFilePointer(GuestContext* c) { win32_set_file_pointer(c, false); }
+void shim_SetFilePointerEx(GuestContext* c) { win32_set_file_pointer(c, true); }
+void shim_GetFileSize(GuestContext* c) { win32_get_file_size(c, false); }
+void shim_GetFileSizeEx(GuestContext* c) { win32_get_file_size(c, true); }
+void shim_DeleteFileA(GuestContext* c) { win32_delete_file(c, false); }
+void shim_DeleteFileW(GuestContext* c) { win32_delete_file(c, true); }
+void shim_CreateDirectoryA(GuestContext* c) { win32_create_directory(c, false); }
+void shim_CreateDirectoryW(GuestContext* c) { win32_create_directory(c, true); }
+void shim_RemoveDirectoryA(GuestContext* c) { win32_remove_directory(c, false); }
+void shim_RemoveDirectoryW(GuestContext* c) { win32_remove_directory(c, true); }
+void shim_MoveFileA(GuestContext* c) { win32_move_file(c, false); }
+void shim_MoveFileW(GuestContext* c) { win32_move_file(c, false); }
+void shim_MoveFileExA(GuestContext* c) { win32_move_file(c, true); }
+void shim_MoveFileExW(GuestContext* c) { win32_move_file(c, true); }
+void shim_GetFileAttributesA(GuestContext* c) { win32_get_file_attributes(c, false); }
+void shim_GetFileAttributesW(GuestContext* c) { win32_get_file_attributes(c, true); }
+void shim_GetModuleFileNameA(GuestContext* c) { win32_get_module_file_name(c, false); }
+void shim_GetModuleFileNameW(GuestContext* c) { win32_get_module_file_name(c, true); }
+
+void shim_fopen(GuestContext* c) { msvcrt_fopen(c, false); }
+void shim__wfopen(GuestContext* c) { msvcrt_fopen(c, true); }
+void shim__fsopen(GuestContext* c) { msvcrt_fopen(c, false); }
+void shim_fread(GuestContext* c) { msvcrt_fread(c); }
+void shim_fseek(GuestContext* c) { msvcrt_fseek(c, false); }
+void shim__fseeki64(GuestContext* c) { msvcrt_fseek(c, true); }
+void shim_fgetc(GuestContext* c) { msvcrt_fgetc(c, false); }
+void shim_getc(GuestContext* c) { msvcrt_fgetc(c, false); }
+void shim_fputc(GuestContext* c) { msvcrt_fgetc(c, true); }
+void shim_putc(GuestContext* c) { msvcrt_fgetc(c, true); }
+void shim__open(GuestContext* c) { msvcrt_open(c, false); }
+void shim__wopen(GuestContext* c) { msvcrt_open(c, true); }
+void shim__read(GuestContext* c) { msvcrt_read_or_write(c, false); }
+void shim__write(GuestContext* c) { msvcrt_read_or_write(c, true); }
+void shim_remove(GuestContext* c) { msvcrt_remove_or_rename(c, false); }
+void shim_rename(GuestContext* c) { msvcrt_remove_or_rename(c, true); }
+void shim__fdopen(GuestContext* c) { msvcrt_fdopen(c, false); }
+void shim__wfdopen(GuestContext* c) { msvcrt_fdopen(c, true); }
+// _set_fmode sets the whole-process text/binary default. The runtime treats every
+// stream as binary, so recording the request and succeeding is the honest answer:
+// there is no translation here for the mode to switch on.
+void shim__set_fmode(GuestContext* context) {
+  (void)import_argument(context, 0);
+  clear_guest_last_error();
+  set_import_result(context, 0);
+}
+
 // ---- msvcrt: the remaining CRT entry points -------------------------------
 void msvcrt_system(GuestContext* context) {
   const auto command = read_guest_string(import_argument(context, 0));
@@ -1716,6 +3359,7 @@ void msvcrt_wcstombs(GuestContext* context) {
 // something wrong.
 // The formatting itself, shared by msvcrt's vfprintf and the UCRT's
 // __stdio_common_vfprintf, which differ only in where their arguments sit.
+// Defined below, next to the formatter it calls.
 std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
                                         const std::string& format, std::uint64_t arguments);
 
@@ -1725,53 +3369,400 @@ void msvcrt_vfprintf(GuestContext* context) {
   const auto arguments = import_argument(context, 2);
   set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
 }
-std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
-                                        const std::string& format, std::uint64_t arguments) {
+
+// Formats one conversion by handing the HARD PART to the host C library.
+//
+// The version this replaces parsed width, precision and flags and then discarded them,
+// read every argument as four bytes regardless of the guest's pointer width, and had no
+// floating-point conversions at all -- so `%-10d` lost its padding, `%s` on a 64-bit
+// guest read half a pointer, and any `%f` terminated the program. The host already has
+// a complete, correct implementation of printf's formatting, so the work here is only
+// the part the host cannot know: reading the guest's argument list.
+//
+// One conversion is rebuilt into a host format string and passed to `snprintf` with the
+// argument read at the width the guest's own length modifier asks for. What is left to
+// this function is the ABI, and what is left to the host is everything that is easy to
+// get wrong.
+std::string msvcrt_format_arguments(GuestContext* context, const std::string& format,
+                                    std::uint64_t arguments) {
   std::string output;
-  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  const int pointer_width = static_cast<int>(guest_pointer_width);
+
+  // Reads one argument from the guest's list. `slot` is the width the conversion asks
+  // for, which the guest's ABI advances by: a 32-bit guest's list is 4-byte slots and a
+  // 64-bit guest's is 8-byte, whatever the value's own width.
+  const auto next = [&arguments, context, pointer_width](int slot) -> std::uint64_t {
+    const auto value = load_guest_memory(context, arguments, slot);
+    arguments += static_cast<std::uint64_t>(pointer_width);
+    return value;
+  };
+
   for (std::size_t index = 0; index < format.size(); ++index) {
     if (format[index] != '%') { output.push_back(format[index]); continue; }
     if (index + 1 >= format.size()) break;
-    auto specifier = format[++index];
-    while (specifier == '-' || specifier == '+' || specifier == ' ' || specifier == '#' || specifier == '0')
-      specifier = format[++index];
-    while (specifier >= '0' && specifier <= '9') specifier = format[++index];
-    if (specifier == 'l' || specifier == 'h') specifier = format[++index];
-    const auto next = [&arguments, context] {
-      const auto value = load_guest_memory(context, arguments, 4);
-      arguments += 4;
-      return value;
-    };
+    const auto conversion_start = index;
+    ++index;
+    if (format[index] == '%') { output.push_back('%'); continue; }
+
+    // Collect the whole conversion so it can be handed to the host unchanged: flags,
+    // width, precision and length modifier are all part of what `snprintf` understands.
+    std::size_t cursor = index;
+    while (cursor < format.size() && std::strchr("-+ #0", format[cursor]) != nullptr) ++cursor;
+    while (cursor < format.size() && format[cursor] >= '0' && format[cursor] <= '9') ++cursor;
+    if (cursor < format.size() && format[cursor] == '.') {
+      ++cursor;
+      while (cursor < format.size() && format[cursor] >= '0' && format[cursor] <= '9') ++cursor;
+    }
+    std::size_t length_begin = cursor;
+    while (cursor < format.size() && std::strchr("hljztL", format[cursor]) != nullptr) ++cursor;
+    const auto length = format.substr(length_begin, cursor - length_begin);
+    if (cursor >= format.size()) break;
+    const char specifier = format[cursor];
+    index = cursor;
+
+    // The conversion as the guest wrote it, minus the leading `%`, for the host.
+    std::string host_format = "%" + format.substr(conversion_start + 1, cursor - conversion_start);
+    char buffer[512];
+    int written = 0;
     switch (specifier) {
-      case '%': output.push_back('%'); break;
-      case 'c': output.push_back(static_cast<char>(next() & 0xffu)); break;
-      case 'd':
-      case 'i': output += std::to_string(static_cast<std::int32_t>(next() & 0xffffffffu)); break;
-      case 'u': output += std::to_string(static_cast<std::uint32_t>(next() & 0xffffffffu)); break;
-      case 'x': {
-        std::ostringstream text;
-        text << std::hex << static_cast<std::uint32_t>(next() & 0xffffffffu);
-        output += text.str();
+      case 'c':
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                static_cast<int>(next(4) & 0xffu));
         break;
-      }
+      case 'd':
+      case 'i':
+        if (length.find("ll") != std::string::npos || length.find('j') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<long long>(next(8)));
+        else if (length.find('l') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<long>(next(8)));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<int>(next(4) & 0xffffffffu));
+        break;
+      case 'u':
+      case 'x':
+      case 'X':
+      case 'o':
+        if (length.find("ll") != std::string::npos || length.find('j') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned long long>(next(8)));
+        else if (length.find('l') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned long>(next(8)));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned int>(next(4) & 0xffffffffu));
+        break;
+      case 'f':
+      case 'F':
+      case 'e':
+      case 'E':
+      case 'g':
+      case 'G':
+        // A float argument arrives in the guest's list as an 8-byte double: the Windows
+        // ABI promotes it exactly as the C rules require.
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                static_cast<double>(next(8)));
+        break;
       case 's': {
-        const auto address = next();
-        output += address == 0 ? std::string("(null)") : read_guest_string(address);
+        const auto address = next(pointer_width);
+        const auto text = address == 0 ? std::string("(null)") : read_guest_string(address);
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(), text.c_str());
         break;
       }
       case 'p': {
-        std::ostringstream text;
-        text << "0x" << std::hex << next();
-        output += text.str();
+        // The guest prints its own pointer value, so it is formatted as an integer of
+        // the guest's width rather than as a host pointer, which would be a different
+        // number entirely.
+        const auto value = next(pointer_width);
+        if (pointer_width >= 8)
+          written = std::snprintf(buffer, sizeof(buffer), "0x%llx", static_cast<unsigned long long>(value));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), "0x%x", static_cast<unsigned int>(value));
         break;
       }
       default:
         terminate_with_message("vfprintf: unsupported conversion '%%%c' (ip=0x%" PRIx64 ")", specifier,
                                context->instruction_pointer);
     }
+    if (written < 0) continue;
+    output.append(buffer, std::min<std::size_t>(static_cast<std::size_t>(written), sizeof(buffer) - 1));
   }
-  write_guest_output(descriptor, output.data(), output.size());
-  return output.size();
+  return output;
+}
+
+std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
+                                        const std::string& format, std::uint64_t arguments) {
+  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto accepted = write_guest_output(descriptor, output.data(), output.size());
+  return accepted < 0 ? 0 : output.size();
+}
+
+// The rest of the console C runtime the corpus asks for.
+//
+// A GUI application needs user32 and gdi32, which this build does not provide and does
+// not pretend to: those stay refused with the import named. What is here is the part a
+// CONSOLE program needs, and every one of these is a real implementation rather than a
+// stub that returns success.
+
+// getenv searches the guest's own environment block, which is built from the host's
+// environment at startup. Returning a pointer into that block is what the guest expects;
+// returning the host's pointer would hand it an address outside its own memory.
+void msvcrt_getenv(GuestContext* context) {
+  const auto name = read_guest_string(import_argument(context, 0));
+  if (name.empty() || environment_block_a == 0) {
+    set_import_result(context, 0);
+    return;
+  }
+  std::uint64_t cursor = environment_block_a;
+  for (;;) {
+    const auto entry = read_guest_string(cursor);
+    if (entry.empty()) break;
+    if (entry.size() > name.size() && entry.compare(0, name.size(), name) == 0 &&
+        entry[name.size()] == '=') {
+      set_import_result(context, cursor + name.size() + 1);
+      return;
+    }
+    cursor += entry.size() + 1;
+  }
+  set_import_result(context, 0);
+}
+
+// The double-precision math functions. The result is returned as its bit pattern
+// because the guest reads it out of XMM0, and the host's `double` is the same IEEE-754
+// value the instruction produces.
+void msvcrt_math_double(GuestContext* context, double (*operation)(double)) {
+  const auto argument = load_guest_double(context, context->registers[4] + 4);
+  const auto result = operation(argument);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &result, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_cos(GuestContext* context) { msvcrt_math_double(context, std::cos); }
+void msvcrt_sin(GuestContext* context) { msvcrt_math_double(context, std::sin); }
+void msvcrt_sqrt(GuestContext* context) { msvcrt_math_double(context, std::sqrt); }
+void msvcrt_log(GuestContext* context) { msvcrt_math_double(context, std::log); }
+void msvcrt_exp(GuestContext* context) { msvcrt_math_double(context, std::exp); }
+void msvcrt_fabs(GuestContext* context) { msvcrt_math_double(context, std::fabs); }
+void msvcrt_atan(GuestContext* context) { msvcrt_math_double(context, std::atan); }
+void msvcrt_tan(GuestContext* context) { msvcrt_math_double(context, std::tan); }
+void msvcrt_floor(GuestContext* context) { msvcrt_math_double(context, std::floor); }
+void msvcrt_ceil(GuestContext* context) { msvcrt_math_double(context, std::ceil); }
+
+// strspn/strcspn count characters, so they are the host's own definitions applied to
+// the guest's bytes.
+void msvcrt_strspn(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto accept = read_guest_string(import_argument(context, 1));
+  set_import_result(context, std::strspn(text.c_str(), accept.c_str()));
+}
+void msvcrt_strcspn(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto reject = read_guest_string(import_argument(context, 1));
+  set_import_result(context, std::strcspn(text.c_str(), reject.c_str()));
+}
+
+// wcslen counts UTF-16 code units up to the terminator, which is not the byte length
+// and not the number of characters: a surrogate pair is two units. Counting units is
+// what the instruction's callers expect.
+void msvcrt_wcslen(GuestContext* context) {
+  std::uint64_t address = import_argument(context, 0);
+  std::uint64_t units = 0;
+  while (load_guest_memory(context, address + units * 2, 2) != 0 && units < 0x100000) ++units;
+  set_import_result(context, units);
+}
+
+// _assert terminates and names the expression and the location. Reporting them is the
+// whole value of an assertion; returning success would hide the failure it detected.
+void msvcrt_assert(GuestContext* context) {
+  terminate_with_message("assertion failed: %s (%s:%llu)", read_guest_string(import_argument(context, 0)).c_str(),
+                         read_guest_string(import_argument(context, 1)).c_str(),
+                         static_cast<unsigned long long>(import_argument(context, 2)));
+}
+
+// MulDiv multiplies two 32-bit values into 64 bits before dividing, which is the whole
+// reason it exists: doing it in 32 bits overflows for the inputs it is used with.
+void msvcrt_muldiv(GuestContext* context) {
+  const auto left = static_cast<std::int64_t>(static_cast<std::int32_t>(import_argument(context, 0)));
+  const auto right = static_cast<std::int64_t>(static_cast<std::int32_t>(import_argument(context, 1)));
+  const auto divisor = static_cast<std::int64_t>(static_cast<std::int32_t>(import_argument(context, 2)));
+  if (divisor == 0) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int32_t>((left * right) / divisor)));
+}
+
+// The `v` forms take the guest's argument list directly instead of the arguments, which
+// is what a function forwarding its own varargs uses. `_vsnprintf` and `vsprintf` differ
+// only in whether they are told the buffer size, and `_vscprintf` reports the length
+// WITHOUT writing anything -- that is how a caller sizes a buffer before formatting into
+// it, so it must not write.
+void msvcrt_vsprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  for (std::size_t index = 0; index < output.size(); ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+  store_guest_memory(context, buffer + output.size(), 0, 1);
+  set_import_result(context, output.size());
+}
+
+void msvcrt_vsnprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 1));
+  const auto format = read_guest_string(import_argument(context, 2));
+  const auto arguments = import_argument(context, 3);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  if (limit != 0) {
+    const auto written = std::min(limit - 1, output.size());
+    for (std::size_t index = 0; index < written; ++index)
+      store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+    store_guest_memory(context, buffer + written, 0, 1);
+  }
+  // The length it WOULD have written, as snprintf does.
+  set_import_result(context, output.size());
+}
+
+void msvcrt_vscprintf(GuestContext* context) {
+  const auto format = read_guest_string(import_argument(context, 0));
+  const auto arguments = import_argument(context, 1);
+  set_import_result(context, msvcrt_format_arguments(context, format, arguments).size());
+}
+
+// The UCRT spellings of the same two, which take the options word first.
+void msvcrt_stdio_common_vsprintf(GuestContext* context) {
+  const auto options = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
+  const auto format = read_guest_string(import_argument(context, 3));
+  const auto arguments = import_argument(context, 4);
+  if ((options & ~std::uint64_t{2}) != 0)
+    terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
+                           static_cast<unsigned long long>(options));
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto written = limit == 0 ? output.size() : std::min(limit - 1, output.size());
+  for (std::size_t index = 0; index < written; ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+  if (limit != 0) store_guest_memory(context, buffer + written, 0, 1);
+  set_import_result(context, output.size());
+}
+
+// The Global* family is the old shared allocator. The guest heap is the same heap
+// `malloc` uses, so a pointer from one is valid for the other -- which matters because
+// a program is free to pass a GlobalAlloc block to free().
+void msvcrt_global_alloc(GuestContext* context) {
+  const auto flags = import_argument(context, 0);
+  // GMEM_FIXED is the only mode that returns a usable pointer; the movable modes
+  // return a HANDLE that must be locked first, and pretending otherwise would hand the
+  // guest an address it would dereference directly.
+  if ((flags & 0x0002u) == 0 && (flags & 0x0040u) == 0) {
+    terminate_with_message("GlobalAlloc: only GMEM_FIXED is implemented (flags=0x%llx)",
+                           static_cast<unsigned long long>(flags));
+  }
+  set_import_result(context, heap_allocate(import_argument(context, 1)));
+}
+void msvcrt_global_lock(GuestContext* context) { set_import_result(context, import_argument(context, 0)); }
+void msvcrt_global_unlock(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_global_free(GuestContext* context) { (void)context; }
+void msvcrt_local_free(GuestContext* context) { (void)context; }
+
+// The legacy msvcrt spellings of the standard C library.
+//
+// These are the names a binary built against msvcrt.dll imports -- which is most 32-bit
+// Windows software, and every one of the applications in the cheat-software corpus. The
+// runtime implemented the Universal CRT entry points (`__stdio_common_vfprintf` and
+// friends) but none of these, so those programs stopped at the first `printf` with
+// "unimplemented Win32 import" even though the formatting engine was already there.
+//
+// Each one forwards to the implementation that already exists. Nothing is reimplemented.
+void msvcrt_printf(GuestContext* context) {
+  const auto format = read_guest_string(import_argument(context, 0));
+  const auto arguments = import_argument(context, 1);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto accepted = write_guest_output(1, output.data(), output.size());
+  set_import_result(context, accepted < 0 ? 0 : output.size());
+}
+
+void msvcrt_fprintf(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
+}
+
+// sprintf writes the formatted text into a GUEST buffer and appends a terminator. It
+// does not know the buffer's size -- that is the whole hazard of sprintf -- so the
+// bound here is the guest's own address space, which is what the real one has too.
+void msvcrt_sprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  for (std::size_t index = 0; index < output.size(); ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+  store_guest_memory(context, buffer + output.size(), 0, 1);
+  set_import_result(context, output.size());
+}
+
+// snprintf DOES know the size, and truncating rather than overrunning is its contract.
+void msvcrt_snprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 1));
+  const auto format = read_guest_string(import_argument(context, 2));
+  const auto arguments = import_argument(context, 3);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  if (limit != 0) {
+    const auto written = std::min(limit - 1, output.size());
+    for (std::size_t index = 0; index < written; ++index)
+      store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+    store_guest_memory(context, buffer + written, 0, 1);
+  }
+  // snprintf returns the length it WOULD have written, which is what lets a caller
+  // size a buffer by calling it twice. Returning the truncated length would make the
+  // second call undersized.
+  set_import_result(context, output.size());
+}
+
+// The CRT globals and locks a startup path touches. Each is reported for what it is:
+// a no-op where the concept does not exist here, and a real value where the guest
+// reads one.
+void msvcrt_iob_func(GuestContext* context) { set_import_result(context, msvcrt_iob); }
+void msvcrt_fmode(GuestContext* context) { (void)context; }
+void msvcrt_lconv_init(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_lock(GuestContext* context) { (void)context; }
+void msvcrt_unlock(GuestContext* context) { (void)context; }
+void msvcrt_amsg_exit(GuestContext* context) {
+  terminate_with_message("_amsg_exit(%llu): the runtime asked to terminate",
+                         static_cast<unsigned long long>(import_argument(context, 0)));
+}
+void msvcrt_strerror(GuestContext* context) {
+  // The message is the host's text for the same errno. A guest that prints it gets a
+  // real sentence rather than an empty string or a fabricated one.
+  static std::string message;
+  message = std::strerror(static_cast<int>(import_argument(context, 0)));
+  const auto buffer = import_argument(context, 1);
+  for (std::size_t index = 0; index < message.size(); ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(message[index]), 1);
+  store_guest_memory(context, buffer + message.size(), 0, 1);
+  set_import_result(context, buffer);
+}
+void msvcrt_isspace(GuestContext* context) {
+  set_import_result(context, std::isspace(static_cast<int>(import_argument(context, 0) & 0xffu)) != 0);
+}
+void msvcrt_clock(GuestContext* context) {
+  // The guest's clock counts milliseconds since the process started, so it is
+  // CLOCKS_PER_SEC/1000 ticks; the host's counts microseconds. Converting is the whole
+  // job, and returning the host's value unchanged would be wrong by a factor of 1000.
+  (void)context;
+  static const auto start = std::chrono::steady_clock::now();
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  set_import_result(context, static_cast<std::uint64_t>(milliseconds));
 }
 
 // _initterm runs the table of static initialisers the CRT is given: the C++
@@ -1786,6 +3777,11 @@ void msvcrt_initterm(GuestContext* context) {
     if (entry == 0) continue;
     if (auto function = lookup_guest_function(entry)) {
       function(context);
+    } else if (std::getenv("RECOMP_DEBUG_INITTERM") != nullptr) {
+      std::fprintf(stderr, "DEBUG initterm: begin=0x%llx end=0x%llx slot=0x%llx entry=0x%llx width=%d\n",
+                   (unsigned long long)begin, (unsigned long long)end, (unsigned long long)slot,
+                   (unsigned long long)entry, guest_pointer_width);
+      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     } else {
       terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     }
@@ -1813,29 +3809,85 @@ void msvcrt_stdio_common_vfprintf(GuestContext* context) {
   set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
 }
 
-// UCRT uses a guest va_list and Windows-sized pointers, not a host va_list.
-// Bridge the single-character forms for now and reject other formats explicitly.
+// How many DESTINATION pointers a scanf format consumes. A conversion is a `%`
+// followed by optional flags, width and length, then the conversion character; `%%`
+// consumes nothing and a `*` assignment-suppression consumes nothing.
+std::size_t scanf_destination_count(const std::string& format) {
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < format.size(); ++index) {
+    if (format[index] != '%') continue;
+    ++index;
+    if (index >= format.size()) break;
+    if (format[index] == '%') continue;
+    bool suppressed = false;
+    while (index < format.size()) {
+      const char character = format[index];
+      if (character == '*') { suppressed = true; ++index; continue; }
+      if (std::isalpha(static_cast<unsigned char>(character)) || character == '[') break;
+      ++index;
+    }
+    if (!suppressed) ++count;
+  }
+  return count;
+}
+
+// UCRT uses a guest va_list and Windows-sized pointers, not a host va_list. The
+// vendored scanf is a HOST function taking a host va_list of host pointers, so the
+// guest's destinations are translated one by one: each is read from the guest's
+// argument list at the guest's pointer width, offset into `guest_memory`, and the
+// translated array is handed over as the va_list. Restricting this to `%c` was what
+// made a real application stop at its first `scanf("%d")`.
 void msvcrt_stdio_common_vfscanf(GuestContext* context) {
   const bool wide_guest = guest_pointer_width >= 8;
   const auto sp = context->registers[4];
+  // The options argument is uint64_t even for PE32, so it occupies two
+  // 32-bit stack slots. The remaining arguments start at [esp+12].
   const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
   const auto stream = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
   const auto format_address = wide_guest ? import_argument(context, 2) : load_guest_memory(context, sp + 16, 4);
   const auto locale = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
   const auto arguments = wide_guest ? import_argument(context, 4) : load_guest_memory(context, sp + 24, 4);
   const auto format = read_guest_string(format_address);
-  // Legacy wide-specifier mode does not change a narrow %c; secure scanf
-  // requires additional buffer-size arguments and remains unsupported.
-  if ((options & ~std::uint64_t{2}) != 0 || locale != 0 || stream != msvcrt_iob ||
-      (format != "%c" && format != " %c"))
+  // The options word carries the legacy wide-specifier flag and the secure-scanf
+  // buffer-size mode. The flag does not change a narrow conversion; the buffer-size
+  // mode adds extra arguments that this bridge does not read, so it is still refused
+  // rather than guessed at.
+  if ((options & ~std::uint64_t{2}) != 0 || locale != 0 || stream != msvcrt_iob)
     terminate_with_message("__stdio_common_vfscanf: unsupported options=0x%" PRIx64 " stream=0x%" PRIx64
                            " stdin=0x%" PRIx64 " locale=0x%" PRIx64 " format='%s'",
                            options, stream, msvcrt_iob, locale, format.c_str());
-  const auto destination = load_guest_memory(context, arguments, guest_pointer_width);
-  (void)load_guest_memory(context, destination, 1);  // check the destination before passing it to host code
-  const auto getch = [](void* input) { return std::fgetc(static_cast<std::FILE*>(input)); };
-  const auto ungetch = [](int ch, void* input) { (void)std::ungetc(ch, static_cast<std::FILE*>(input)); };
-  const auto result = fctscanf_(getch, ungetch, stdin, format.c_str(), guest_memory + destination);
+  const auto count = scanf_destination_count(format);
+  std::vector<std::uint8_t*> translated;
+  translated.reserve(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto guest_pointer =
+        load_guest_memory(context, arguments + index * guest_pointer_width, guest_pointer_width);
+    if (guest_pointer == 0) {
+      // A null destination is the program's error, and passing it to host code would
+      // fault inside the vendored scanf rather than here. Stop with the address.
+      terminate_with_message("__stdio_common_vfscanf: null destination for conversion %zu of '%s'",
+                             index + 1, format.c_str());
+    }
+    // Reading one byte first proves the destination is inside the guest's memory, so a
+    // wild pointer is reported here instead of corrupting the host.
+    (void)load_guest_memory(context, guest_pointer, 1);
+    translated.push_back(guest_memory + guest_pointer);
+  }
+  const auto getch = [](void* input) {
+    if (guest_input_capture != nullptr) return guest_read_byte();
+    return std::fgetc(static_cast<std::FILE*>(input));
+  };
+  const auto ungetch = [](int ch, void* input) {
+    if (guest_input_capture != nullptr) {
+      if (ch != EOF && guest_input_position > 0) --guest_input_position;
+      return;
+    }
+    (void)std::ungetc(ch, static_cast<std::FILE*>(input));
+  };
+  // On this platform a va_list is a pointer, so an array of translated destinations
+  // IS a valid argument list -- the same representation the guest uses.
+  const auto result = vfctscanf_(getch, ungetch, stdin, format.c_str(),
+                                 reinterpret_cast<va_list>(translated.data()));
   set_import_result(context, static_cast<std::uint32_t>(result));
 }
 
@@ -2046,20 +4098,6 @@ std::uint64_t guest_module_handle_for(const std::string& library_name) {
   return handle;
 }
 
-// Reads a library name from the guest, widening a UTF-16 one to bytes. The wide
-// forms are not optional: an installer or a shell extension built with Unicode
-// everywhere names its DLLs only in the W variants.
-std::string read_guest_wide_string(std::uint64_t address) {
-  std::string text;
-  for (std::uint64_t index = 0; index < 512; ++index) {
-    if (address + index * 2 + 1 >= guest_memory_size) break;
-    const auto unit = load_guest_memory(nullptr, address + index * 2, 2);
-    if (unit == 0) break;
-    text.push_back(static_cast<char>(unit & 0xffu));
-  }
-  return text;
-}
-
 // Which library a module handle refers to. nullptr means "not one this runtime
 // handed out", and the caller decides whether that is a search-everything case
 // (Windows' NULL, meaning the default search order) or a genuine bad handle.
@@ -2228,7 +4266,6 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "IsDebuggerPresent", win32_zero},
     {"kernel32.dll", "GetModuleHandleA", win32_get_module_handle_a},
     {"kernel32.dll", "GetModuleHandleW", win32_get_module_handle_w},
-    {"kernel32.dll", "GetModuleFileNameA", win32_zero},
     {"kernel32.dll", "SetUnhandledExceptionFilter", win32_zero},
     {"kernel32.dll", "UnhandledExceptionFilter", win32_one},
     {"kernel32.dll", "IsProcessorFeaturePresent", win32_is_processor_feature_present},
@@ -2300,7 +4337,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
     {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
-    {"msvcrt.dll", "fflush", msvcrt_return_zero},
+    {"msvcrt.dll", "fflush", msvcrt_fflush},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},
     {"msvcrt.dll", "_set_new_mode", msvcrt_return_zero},
     {"msvcrt.dll", "_configthreadlocale", msvcrt_return_zero},
@@ -2308,6 +4345,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_set_invalid_parameter_handler", msvcrt_return_zero},
     {"msvcrt.dll", "_configure_narrow_argv", msvcrt_return_zero},
     {"msvcrt.dll", "_initialize_narrow_environment", msvcrt_return_zero},
+    {"msvcrt.dll", "_set_fmode", shim__set_fmode},
     {"msvcrt.dll", "_crt_atexit", msvcrt_register_atexit},
     {"msvcrt.dll", "_exit", msvcrt_exit_process},
     {"msvcrt.dll", "__p___argc", msvcrt_p_argc},
@@ -2326,13 +4364,61 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "system", msvcrt_system},
     {"msvcrt.dll", "time", msvcrt_time},
     {"msvcrt.dll", "_time64", msvcrt_time64},
+    {"msvcrt.dll", "puts", msvcrt_puts},
+    {"msvcrt.dll", "getchar", msvcrt_getchar},
+    {"msvcrt.dll", "fgetc", msvcrt_fgetc},
+    {"msvcrt.dll", "getc", msvcrt_fgetc},
+    {"msvcrt.dll", "fgets", msvcrt_fgets},
     {"msvcrt.dll", "putchar", msvcrt_putchar},
     {"msvcrt.dll", "signal", msvcrt_signal},
     {"msvcrt.dll", "strcoll", msvcrt_strcoll},
     {"msvcrt.dll", "_stricoll", msvcrt_strcoll},
     {"msvcrt.dll", "_fullpath", msvcrt_fullpath},
     {"msvcrt.dll", "wcstombs", msvcrt_wcstombs},
+    {"msvcrt.dll", "wcrtomb", msvcrt_wcrtomb},
     {"msvcrt.dll", "vfprintf", msvcrt_vfprintf},
+    {"msvcrt.dll", "printf", msvcrt_printf},
+    {"msvcrt.dll", "fprintf", msvcrt_fprintf},
+    {"msvcrt.dll", "sprintf", msvcrt_sprintf},
+    {"msvcrt.dll", "snprintf", msvcrt_snprintf},
+    {"msvcrt.dll", "_snprintf", msvcrt_snprintf},
+    {"msvcrt.dll", "_iob_func", msvcrt_iob_func},
+    {"msvcrt.dll", "__iob_func", msvcrt_iob_func},
+    {"msvcrt.dll", "_fmode", msvcrt_fmode},
+    {"msvcrt.dll", "__lconv_init", msvcrt_lconv_init},
+    {"msvcrt.dll", "_lock", msvcrt_lock},
+    {"msvcrt.dll", "_unlock", msvcrt_unlock},
+    {"msvcrt.dll", "_amsg_exit", msvcrt_amsg_exit},
+    {"msvcrt.dll", "strerror", msvcrt_strerror},
+    {"msvcrt.dll", "isspace", msvcrt_isspace},
+    {"msvcrt.dll", "clock", msvcrt_clock},
+    {"msvcrt.dll", "getenv", msvcrt_getenv},
+    {"msvcrt.dll", "vsprintf", msvcrt_vsprintf},
+    {"msvcrt.dll", "_vsnprintf", msvcrt_vsnprintf},
+    {"msvcrt.dll", "vsnprintf", msvcrt_vsnprintf},
+    {"msvcrt.dll", "_vscprintf", msvcrt_vscprintf},
+    {"msvcrt.dll", "__stdio_common_vsprintf", msvcrt_stdio_common_vsprintf},
+    {"msvcrt.dll", "cos", msvcrt_cos},
+    {"msvcrt.dll", "sin", msvcrt_sin},
+    {"msvcrt.dll", "sqrt", msvcrt_sqrt},
+    {"msvcrt.dll", "log", msvcrt_log},
+    {"msvcrt.dll", "exp", msvcrt_exp},
+    {"msvcrt.dll", "fabs", msvcrt_fabs},
+    {"msvcrt.dll", "atan", msvcrt_atan},
+    {"msvcrt.dll", "tan", msvcrt_tan},
+    {"msvcrt.dll", "floor", msvcrt_floor},
+    {"msvcrt.dll", "ceil", msvcrt_ceil},
+    {"msvcrt.dll", "strspn", msvcrt_strspn},
+    {"msvcrt.dll", "strcspn", msvcrt_strcspn},
+    {"msvcrt.dll", "wcslen", msvcrt_wcslen},
+    {"msvcrt.dll", "_assert", msvcrt_assert},
+    {"msvcrt.dll", "MulDiv", msvcrt_muldiv},
+    {"kernel32.dll", "MulDiv", msvcrt_muldiv},
+    {"kernel32.dll", "GlobalAlloc", msvcrt_global_alloc},
+    {"kernel32.dll", "GlobalLock", msvcrt_global_lock},
+    {"kernel32.dll", "GlobalUnlock", msvcrt_global_unlock},
+    {"kernel32.dll", "GlobalFree", msvcrt_global_free},
+    {"kernel32.dll", "LocalFree", msvcrt_local_free},
     {"msvcrt.dll", "__getmainargs", msvcrt_getmainargs},
     {"msvcrt.dll", "strlen", msvcrt_strlen},
     {"msvcrt.dll", "strcmp", msvcrt_strcmp},
@@ -2344,6 +4430,14 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "strrchr", msvcrt_strrchr},
     {"msvcrt.dll", "strstr", msvcrt_strstr},
     {"msvcrt.dll", "strtol", msvcrt_strtol},
+    {"msvcrt.dll", "strtoul", msvcrt_strtoul},
+    {"msvcrt.dll", "strtoll", msvcrt_strtoll},
+    {"msvcrt.dll", "_strtoi64", msvcrt_strtoll},
+    {"msvcrt.dll", "_strtoui64", msvcrt_strtoull},
+    {"msvcrt.dll", "strtoull", msvcrt_strtoull},
+    {"msvcrt.dll", "strtod", msvcrt_strtod},
+    {"msvcrt.dll", "atof", msvcrt_atof},
+    {"msvcrt.dll", "atol", msvcrt_atol},
     {"msvcrt.dll", "atoi", msvcrt_atoi},
     {"msvcrt.dll", "toupper", msvcrt_toupper},
     {"msvcrt.dll", "tolower", msvcrt_tolower},
@@ -2355,6 +4449,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_iob", msvcrt_iob_pointer},
     {"msvcrt.dll", "_pctype", msvcrt_pctype},
     {"msvcrt.dll", "__mb_cur_max", msvcrt_mb_cur_max},
+    {"msvcrt.dll", "___mb_cur_max_func", msvcrt_mb_cur_max_func},
     {"msvcrt.dll", "malloc", msvcrt_malloc},
     {"msvcrt.dll", "calloc", msvcrt_calloc},
     {"msvcrt.dll", "realloc", msvcrt_realloc},
@@ -2366,7 +4461,6 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "srand", msvcrt_srand},
     {"msvcrt.dll", "rand", msvcrt_rand},
     {"msvcrt.dll", "fwrite", msvcrt_fwrite},
-    {"msvcrt.dll", "puts", msvcrt_puts},
     {"msvcrt.dll", "__set_app_type", msvcrt_noop},
     {"msvcrt.dll", "_set_app_type", msvcrt_noop},
     {"msvcrt.dll", "_fpreset", msvcrt_noop},
@@ -2379,7 +4473,11 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "abort", msvcrt_abort},
     {"msvcrt.dll", "exit", msvcrt_exit},
     {"msvcrt.dll", "_isctype", msvcrt_isctype},
+    {"msvcrt.dll", "wctype", msvcrt_wctype},
+    {"msvcrt.dll", "iswctype", msvcrt_iswctype},
     {"msvcrt.dll", "mbstowcs", msvcrt_mbstowcs},
+    {"msvcrt.dll", "mbrtowc", msvcrt_mbrtowc},
+    {"msvcrt.dll", "mbsrtowcs", msvcrt_mbsrtowcs},
     {"msvcrt.dll", "setlocale", msvcrt_setlocale},
     {"ole32.dll", "CoInitialize", win32_co_initialize},
     {"ole32.dll", "CoUninitialize", win32_co_uninitialize},
@@ -2389,7 +4487,17 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "CloseHandle", win32_close_handle},
     {"kernel32.dll", "SetStdHandle", win32_set_std_handle},
     {"kernel32.dll", "CreateMutexA", win32_create_mutex_a},
+    {"kernel32.dll", "CreateEventA", win32_create_event_a},
+    {"kernel32.dll", "SetEvent", win32_set_event},
+    {"kernel32.dll", "ResetEvent", win32_reset_event},
+    {"kernel32.dll", "CreateSemaphoreA", win32_create_semaphore_a},
+    {"kernel32.dll", "ReleaseSemaphore", win32_release_semaphore},
+    {"kernel32.dll", "WaitForSingleObject", win32_wait_for_single_object},
+    {"kernel32.dll", "WaitForMultipleObjects", win32_wait_for_multiple_objects},
     {"kernel32.dll", "SetHandleCount", win32_set_handle_count},
+    {"kernel32.dll", "DuplicateHandle", win32_duplicate_handle},
+    {"kernel32.dll", "SetThreadPriority", win32_set_thread_priority},
+    {"kernel32.dll", "GetThreadPriority", win32_get_thread_priority},
     {"kernel32.dll", "ReleaseMutex", win32_release_mutex},
     {"kernel32.dll", "FlushFileBuffers", win32_flush_file_buffers},
     {"kernel32.dll", "FreeEnvironmentStringsW", win32_free_environment_strings_w},
@@ -2439,6 +4547,64 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LoadLibraryA", win32_load_library_a},
     {"kernel32.dll", "LoadLibraryW", win32_load_library_w},
     {"kernel32.dll", "FreeLibrary", win32_free_library},
+    // kernel32 file services, all of which go through the handle table and the
+    // app-directory policy rather than touching a host path directly.
+    {"kernel32.dll", "CreateFileA", shim_CreateFileA},
+    {"kernel32.dll", "CreateFileW", shim_CreateFileW},
+    {"kernel32.dll", "SetFilePointer", shim_SetFilePointer},
+    {"kernel32.dll", "SetFilePointerEx", shim_SetFilePointerEx},
+    {"kernel32.dll", "GetFileSize", shim_GetFileSize},
+    {"kernel32.dll", "GetFileSizeEx", shim_GetFileSizeEx},
+    {"kernel32.dll", "SetEndOfFile", win32_set_end_of_file},
+    {"kernel32.dll", "DeleteFileA", shim_DeleteFileA},
+    {"kernel32.dll", "DeleteFileW", shim_DeleteFileW},
+    {"kernel32.dll", "CreateDirectoryA", shim_CreateDirectoryA},
+    {"kernel32.dll", "CreateDirectoryW", shim_CreateDirectoryW},
+    {"kernel32.dll", "RemoveDirectoryA", shim_RemoveDirectoryA},
+    {"kernel32.dll", "RemoveDirectoryW", shim_RemoveDirectoryW},
+    {"kernel32.dll", "MoveFileA", shim_MoveFileA},
+    {"kernel32.dll", "MoveFileW", shim_MoveFileW},
+    {"kernel32.dll", "MoveFileExA", shim_MoveFileExA},
+    {"kernel32.dll", "MoveFileExW", shim_MoveFileExW},
+    {"kernel32.dll", "GetFileAttributesA", shim_GetFileAttributesA},
+    {"kernel32.dll", "GetFileAttributesW", shim_GetFileAttributesW},
+    {"kernel32.dll", "GetModuleFileNameA", shim_GetModuleFileNameA},
+    {"kernel32.dll", "GetModuleFileNameW", shim_GetModuleFileNameW},
+    {"kernel32.dll", "GetDiskFreeSpaceA", win32_get_disk_free_space},
+    {"kernel32.dll", "GetDiskFreeSpaceW", win32_get_disk_free_space},
+    // The CRT stream family: FILE*, its descriptor, and the handle it came from,
+    // all three of which a real program mixes freely.
+    {"msvcrt.dll", "fopen", shim_fopen},
+    {"msvcrt.dll", "_wfopen", shim__wfopen},
+    {"msvcrt.dll", "_fsopen", shim__fsopen},
+    {"msvcrt.dll", "fclose", msvcrt_fclose},
+    {"msvcrt.dll", "fread", shim_fread},
+    {"msvcrt.dll", "fseek", shim_fseek},
+    {"msvcrt.dll", "_fseeki64", shim__fseeki64},
+    {"msvcrt.dll", "ftell", msvcrt_ftell},
+    {"msvcrt.dll", "feof", msvcrt_feof},
+    {"msvcrt.dll", "ferror", msvcrt_ferror},
+    {"msvcrt.dll", "clearerr", msvcrt_clearerr},
+    {"msvcrt.dll", "rewind", msvcrt_rewind},
+    {"msvcrt.dll", "fgetc", shim_fgetc},
+    {"msvcrt.dll", "getc", shim_getc},
+    {"msvcrt.dll", "fputc", shim_fputc},
+    {"msvcrt.dll", "putc", shim_putc},
+    {"msvcrt.dll", "fgets", msvcrt_fgets},
+    {"msvcrt.dll", "fputs", msvcrt_fputs},
+    {"msvcrt.dll", "ungetc", msvcrt_ungetc},
+    {"msvcrt.dll", "_fileno", msvcrt_fileno},
+    {"msvcrt.dll", "_open", shim__open},
+    {"msvcrt.dll", "_wopen", shim__wopen},
+    {"msvcrt.dll", "_close", msvcrt_close},
+    {"msvcrt.dll", "_read", shim__read},
+    {"msvcrt.dll", "_write", shim__write},
+    {"msvcrt.dll", "_lseek", msvcrt_lseek},
+    {"msvcrt.dll", "_open_osfhandle", msvcrt_open_osfhandle},
+    {"msvcrt.dll", "_fdopen", shim__fdopen},
+    {"msvcrt.dll", "_wfdopen", shim__wfdopen},
+    {"msvcrt.dll", "remove", shim_remove},
+    {"msvcrt.dll", "rename", shim_rename},
 };
 
 }  // namespace
@@ -2468,6 +4634,28 @@ void report_guest_memory_fault(GuestContext* context, std::uint64_t address, int
   terminate_with_message("guest %s fault at 0x%" PRIx64 " (width %d) ip=0x%" PRIx64,
                          is_write ? "write" : "read", address, width, context->instruction_pointer);
 }
+// The candidate's instruction budget. The reference has had one since it was written
+// (`instruction budget exhausted before ExitProcess`); the candidate had none, so a
+// program that never terminates hung verification instead of reporting anything.
+std::uint64_t guest_instruction_budget = 0;
+
+void note_executed_instruction() {
+  if (guest_instruction_budget == 0) return;
+  if (++guest_executed_instructions <= guest_instruction_budget) return;
+  // A dedicated marker, so the harness does not have to recognise a MESSAGE. Searching
+  // stderr for "instruction budget" made the verdict depend on wording: rewording this
+  // line, or a program that happened to print the same phrase, would change whether a
+  // truncated run was reported as truncated.
+  if (const char* marker = std::getenv("RECOMP_TRUNCATION_MARKER")) {
+    if (std::FILE* file = std::fopen(marker, "w")) {
+      std::fprintf(file, "%llu\n", static_cast<unsigned long long>(guest_executed_instructions));
+      std::fclose(file);
+    }
+  }
+  terminate_with_message("instruction budget exhausted after %llu guest instructions",
+                         static_cast<unsigned long long>(guest_executed_instructions));
+}
+
 void recomp_trap(GuestContext* context, const char* reason) {
   terminate_with_message("trap '%s' at ip=0x%" PRIx64, reason, context->instruction_pointer);
 }
@@ -2877,11 +5065,20 @@ void open_guest_memory_windows(const char* path) {
   guest_memory_windows = std::fopen(path, "wb");
 }
 
+std::FILE* guest_dirty_page_log = nullptr;
+
+void open_guest_dirty_page_log(const char* path) {
+  if (path == nullptr || path[0] == '\0') return;
+  guest_dirty_page_log = std::fopen(path, "w");
+}
+
 void open_guest_store_log(const char* path) {
   if (path == nullptr) return;
   guest_store_log = std::fopen(path, "w");
   guest_store_logging = guest_store_log != nullptr;
 }
+
+std::uint8_t* guest_page_dirty = nullptr;
 
 std::uint64_t guest_memory_digest(const GuestContext* context) {
   // The window starts AT the stack pointer, not below it. Memory below the stack
@@ -2912,6 +5109,20 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
   checkpoint.x87_control_word = context->x87_control_word;
   checkpoint.x87_status_word = x87_status_value(context);
   checkpoint.memory_digest = guest_memory_digest(context);
+  // The pages this run has written, exported so the harness can hash the SAME addresses in
+  // both memories. The set decides what to compare; it never decides whether the two sides
+  // agree -- which is what the first attempt got wrong.
+  if (guest_dirty_page_log != nullptr && guest_page_dirty != nullptr) {
+    for (std::uint64_t page = 0; page < (guest_memory_size >> kGuestPageShift); ++page) {
+      if (guest_page_dirty[page] == 0) continue;
+      // The PAGE's digest, not its address alone. The candidate has exited by the time the
+      // harness compares, so its memory is gone; a per-page digest is what lets the
+      // reference's memory be hashed over the SAME pages and the two compared.
+      const auto page_digest = digest_bytes(14695981039346656037ull, page << kGuestPageShift, kGuestPageBytes);
+      std::fprintf(guest_dirty_page_log, "%llu %llu %llx\n", static_cast<unsigned long long>(index),
+                   static_cast<unsigned long long>(page), static_cast<unsigned long long>(page_digest));
+    }
+  }
   const auto checkpoint_number = index / guest_checkpoint_interval;
   if (guest_memory_windows != nullptr &&
       checkpoint_number < kMemoryWindowSampleLimit) {
@@ -2994,6 +5205,11 @@ void arm_guest_file_sandbox() {
 }
 
 void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top) {
+  // Both sides of a verification pass through here, so loading the supplied stdin once
+  // is enough for the reference and the candidate to read the same bytes.
+  load_guest_input_from_environment();
+  if (const char* budget = std::getenv("RECOMP_INSTRUCTION_BUDGET"))
+    guest_instruction_budget = std::strtoull(budget, nullptr, 10);
   recompiled_image_base = image_base;
   next_heap_address = heap_base;
   heap_initialize(heap_base, stack_top);
@@ -3018,6 +5234,9 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
 bool map_guest_memory(std::uint64_t bytes) {
   if (guest_memory != nullptr) return true;
   guest_memory_size = bytes;
+  // One byte per 4 KiB page: 2 MiB for the 8 GiB space, against the mapping it describes.
+  guest_page_dirty = static_cast<std::uint8_t*>(std::calloc(
+      static_cast<std::size_t>(guest_memory_size >> kGuestPageShift), sizeof(std::uint8_t)));
   guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
                                                  PROT_READ | PROT_WRITE,
                                                  MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0));
@@ -3099,6 +5318,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   // The differential comparison asks for guest-state checkpoints at a fixed
   // interval; the reference uses the same one, so the two streams line up.
   open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
+  open_guest_dirty_page_log(std::getenv("RECOMP_DIRTY_PAGES"));
   open_guest_memory_windows(std::getenv("RECOMP_MEMORY_WINDOWS"));
   open_guest_mxcsr_log(std::getenv("RECOMP_MXCSR_LOG"));
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))

@@ -560,12 +560,19 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"candidate_completed\":" << (result.candidate_completed ? "true" : "false")
               << ",\"outputs_match\":" << (result.outputs_match ? "true" : "false")
               << ",\"checkpoints_compared\":" << result.checkpoints_compared
+              << ",\"dirty_pages_compared\":" << result.dirty_pages_compared
+              << ",\"checkpoints_matched\":" << result.checkpoints_matched
+              << ",\"checkpoints_total\":" << result.checkpoints_total
+              << ",\"checkpoint_match_percent\":" << result.checkpoint_match_percent()
               << ",\"state_match\":" << (result.state_match ? "true" : "false")
               << ",\"state_diagnosis\":" << recomp::common::quote_json(result.state_diagnosis)
               << ",\"memory_match\":" << (result.memory_match ? "true" : "false")
               << ",\"memory_diagnosis\":" << recomp::common::quote_json(result.memory_diagnosis)
               << ",\"control_registers_match\":" << (result.control_registers_match ? "true" : "false")
               << ",\"control_diagnosis\":" << recomp::common::quote_json(result.control_diagnosis)
+              << ",\"verdict\":\"" << recomp::verification::verdict_name(result.verdict()) << "\""
+              << ",\"candidate_ran\":" << (result.candidate_ran ? "true" : "false")
+              << ",\"diagnosis\":" << recomp::common::quote_json(result.diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
@@ -577,12 +584,17 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
     }
     std::cout << "]}\n";
   } else {
-    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"              << "guest-state checkpoints compared: " << result.checkpoints_compared << "\n"              << "guest-memory digest agrees: " << (result.memory_match ? "yes" : "no") << "\n"
+    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"
+              << "guest-state checkpoints matched exactly: " << result.checkpoints_matched << "/"
+              << result.checkpoints_total << " (" << result.checkpoint_match_percent() << "%)\n"
+              << "guest-state checkpoints compared: " << result.checkpoints_compared << "\n"
+              << "guest-memory digest agrees: " << (result.memory_match ? "yes" : "no") << "\n"
               << "reference completed: " << (result.reference_completed ? "yes" : "no") << "\n"
               << "candidate completed: " << (result.candidate_completed ? "yes" : "no") << "\n"
               << "reference output: " << result.reference_output.size() << " bytes\n"
               << "candidate output: " << result.candidate_output.size() << " bytes\n"
-              << (verified ? "VERIFY: PASS (identical output)\n" : "VERIFY: FAIL\n");
+              << "verdict: " << recomp::verification::verdict_name(result.verdict()) << "\n"
+              << (verified ? "VERIFY: PASS\n" : "VERIFY: FAIL\n");
     if (!result.diagnosis.empty()) std::cout << result.diagnosis << "\n";
   }
   return verified ? 0 : 1;
@@ -749,6 +761,64 @@ struct HostTarget {
   std::string target;
 };
 
+class StdinCapture {
+ public:
+  explicit StdinCapture(const std::filesystem::path& output) {
+    const auto project_input = output / "recomp-stdin.txt";
+    if (const char* supplied_input = std::getenv("RECOMP_STDIN_FILE")) {
+      if (supplied_input[0] != '\0' && std::filesystem::is_regular_file(supplied_input)) {
+        const auto supplied_path = std::filesystem::absolute(supplied_input);
+        const auto project_path = std::filesystem::absolute(project_input);
+        if (supplied_path != project_path) {
+          std::error_code error;
+          std::filesystem::copy_file(supplied_path, project_path,
+                                     std::filesystem::copy_options::overwrite_existing, error);
+          if (error) throw std::runtime_error("cannot copy RECOMP_STDIN_FILE into the project: " + error.message());
+        }
+        path_ = project_path;
+        if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
+          throw std::runtime_error("cannot configure captured stdin");
+        active_ = true;
+        return;
+      }
+    }
+    if (std::filesystem::is_regular_file(project_input)) {
+      path_ = std::filesystem::absolute(project_input);
+      if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
+        throw std::runtime_error("cannot configure captured stdin");
+      active_ = true;
+      return;
+    }
+    if (::isatty(STDIN_FILENO) != 0) return;
+    std::ostringstream contents;
+    contents << std::cin.rdbuf();
+    path_ = output / ".recomp-stdin.capture";
+    std::ofstream file(path_, std::ios::binary | std::ios::trunc);
+    if (!file) throw std::runtime_error("cannot capture piped stdin at " + path_.string());
+    file << contents.str();
+    file.close();
+    if (!file) throw std::runtime_error("cannot write captured stdin at " + path_.string());
+    if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
+      throw std::runtime_error("cannot configure captured stdin");
+    remove_on_exit_ = true;
+    active_ = true;
+  }
+  ~StdinCapture() {
+    if (active_) ::unsetenv("RECOMP_STDIN_FILE");
+    if (remove_on_exit_ && !path_.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove(path_, ignored);
+    }
+  }
+  StdinCapture(const StdinCapture&) = delete;
+  StdinCapture& operator=(const StdinCapture&) = delete;
+
+ private:
+  std::filesystem::path path_;
+  bool active_{};
+  bool remove_on_exit_{};
+};
+
 // Detect the host the studio is running on and map it to a target name. This is
 // runtime detection through uname rather than a compile-time guess, so the
 // reported target is what the machine actually is.
@@ -776,6 +846,8 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
   const bool animate = stdout_is_a_terminal() && !json;
   const bool colour = colour_is_enabled(animate);
   std::filesystem::create_directories(output);
+  std::unique_ptr<StdinCapture> stdin_capture;
+  if (build_and_run) stdin_capture = std::make_unique<StdinCapture>(output);
   const auto log_path = output / "autorecomp.log";
   std::ofstream log_file(log_path, std::ios::trunc);
   if (!log_file) throw std::runtime_error("cannot open the log file " + log_path.string());
@@ -978,6 +1050,9 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
       const auto result = recomp::verification::compare_project(output, configuration);
       verified = result.verified();
       display.note("reference executed " + std::to_string(result.executed_instructions) + " instructions");
+      display.note("exact guest-state checkpoints matched " + std::to_string(result.checkpoints_matched) + "/" +
+                   std::to_string(result.checkpoints_total) + " (" +
+                   std::to_string(result.checkpoint_match_percent()) + "%)");
       if (!result.diagnosis.empty()) display.note(result.diagnosis);
       display.finish(verified, verified
                                   ? "outputs match byte for byte"
@@ -1064,7 +1139,10 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << "  imports     " << missing_imports << " without shims\n";
     if (!built_executable.empty()) std::cout << "  executable  " << built_executable.string() << "\n";
     if (build_and_run) std::cout << "  run         exit code " << run_exit_code << "\n";
-    if (build_and_run) std::cout << "  verified    " << (verified ? "yes" : "no") << "\n";
+    // ALWAYS printed. Guarded by `build_and_run`, a plain `autorecomp` printed
+    // AUTORECOMP COMPLETE and exited 0 without ever saying whether anything was verified,
+    // and "complete" then reads as a stronger claim than "the stages I ran finished".
+    std::cout << "  verified    " << (build_and_run ? (verified ? "yes" : "no") : "not run (build only)") << "\n";
     if (repair) std::cout << "  repaired    " << (repaired ? "yes" : "no") << "\n";
     std::cout << "  log         " << log_path.string() << "\n";
     if (!ok) std::cout << "\n" << (colour ? kRed : "") << "error: " << failure << (colour ? kReset : "") << "\n";
@@ -1341,6 +1419,8 @@ int main(int argc, char** argv) {
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
         if (option == "--budget" && index + 1 < argc) { budget = std::stoul(argv[++index]); continue; }
+        if (option == "--timeout" && index + 1 < argc) { ::setenv("RECOMP_RUN_TIMEOUT", argv[++index], 1); continue; }
+        if (option.rfind("--timeout=", 0) == 0) { ::setenv("RECOMP_RUN_TIMEOUT", option.substr(10).c_str(), 1); continue; }
         if (image.empty()) image = argv[index];
       }
       if (image.empty()) return fail("autorecomp requires an image path", json);
@@ -1389,8 +1469,16 @@ int main(int argc, char** argv) {
       return command_build(project, config, json);
     }
     if (command == "run") {
-      if (argc < 3) return fail("run requires a project directory", json);
-      return command_run(argv[2], json);
+      std::filesystem::path project;
+      for (int index = 2; index < argc; ++index) {
+        const std::string option{argv[index]};
+        if (option == "--json") continue;
+        if (option == "--timeout" && index + 1 < argc) { ::setenv("RECOMP_RUN_TIMEOUT", argv[++index], 1); continue; }
+        if (option.rfind("--timeout=", 0) == 0) { ::setenv("RECOMP_RUN_TIMEOUT", option.substr(10).c_str(), 1); continue; }
+        if (project.empty()) project = argv[index];
+      }
+      if (project.empty()) return fail("run requires a project directory", json);
+      return command_run(project, json);
     }
     if (command == "verify") {
       std::filesystem::path project, config;

@@ -1181,7 +1181,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
 
   if (mnemonic == "nop" || mnemonic.rfind("nop", 0) == 0 || mnemonic == "endbr64" || mnemonic == "endbr32" ||
-      mnemonic == "pause")
+      mnemonic == "pause" || mnemonic == "cli" || mnemonic == "sti")
     return;
 
   if (mnemonic == "mov" || mnemonic == "movabs") {

@@ -8,8 +8,10 @@ and prints a PASS/FAIL line per application, so the state of the real corpus is
 visible in the suite rather than only in a report.
 
 The corpus lives outside the repository and is not redistributable, so when it
-is absent this test prints SKIP and exits 0. Set RECOMP_APPS_DIR to point at it,
-or pass the directory as the second argument.
+is absent this test prints SKIP and returns CTest's not-run code (77). Set
+RECOMP_APPS_DIR to point at it, or pass the directory as the second argument.
+CI can make the corpus mandatory with RECOMP_REQUIRE_APPS=1; in that mode an
+absent or empty corpus is a failure rather than a skip.
 
 Two things it will not do, deliberately:
 
@@ -44,6 +46,7 @@ EXTRA_APPS = [Path(argument) for argument in sys.argv[3:]]
 # own fixtures and call that the real-application corpus.
 _APPS_ENVIRONMENT = os.environ.get("RECOMP_APPS_DIR", "").strip()
 APPS_DIRECTORY = Path(_APPS_ENVIRONMENT) if _APPS_ENVIRONMENT else None
+REQUIRE_APPS = os.environ.get("RECOMP_REQUIRE_APPS", "") == "1"
 
 # Translating and compiling a real application is genuinely slow, so those stages get a
 # generous budget. Running one is not: the corpus applications are small, and a
@@ -145,8 +148,12 @@ def main() -> int:
     applications = discover()
     if not applications:
         where = APPS_DIRECTORY if APPS_DIRECTORY is not None else "<RECOMP_APPS_DIR unset>"
-        print(f"SKIP: no applications found under {where}; "
-              "set RECOMP_APPS_DIR to the directory holding the Windows corpus")
+        message = (f"no applications found under {where}; "
+                   "set RECOMP_APPS_DIR to the directory holding the Windows corpus")
+        if REQUIRE_APPS:
+            print(f"FAIL: {message}; RECOMP_REQUIRE_APPS=1 requires a real corpus", file=sys.stderr)
+            return 1
+        print(f"SKIP: {message}")
         # 77 is ctest's convention for "not run". Returning 0 reported the absence of the
         # corpus as a PASS, so ctest was green without ever exercising a real application
         # and this test's own honesty checks never executed.

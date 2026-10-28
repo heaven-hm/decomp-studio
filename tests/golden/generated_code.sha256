@@ -2,6 +2,7 @@
 # The IR work must not change the C++ backend's output; this is what proves it.
 #
 # Columns: fixture  input-sha256  generated-sha256  generated-bytes
+# packed.exe was rebuilt to add a memory-source PSHUFB regression fixture.
 #
 # The INPUT digest is pinned as well as the output. Without it a rebuilt fixture
 # reports as a changed compiler -- a misdiagnosis in the one test whose whole job
@@ -17,7 +18,7 @@ eflags.exe  5a35f8e1b7e19549f2564b9de2009fa6e0219cb40f18a1f497d042c1b272b966  6c
 flagprobe.exe  deb939046658226610e19289c9c24667d90fd46fc88f155c850f2c3459a79bc6  de3e478833c9ec34d1cc0ad904d24abee312105777ed9d5b5a942529f5093f7b  160362
 heap.exe  5a54849970b6304e3d400ab911274a4e241253b5e922782b689466e588d7b2d1  d64beafbf719a2eddadeb5db8c5ef2e3fd03ddda518809f1fb5248425817accf  144535
 memory.exe  e5c16a5bc295edc1f38ebcc9bf1a200806771577b4d45fa186f3836919e323b4  b6e74ff413f418b9c92156cc7a0a8557920a21876c36a8041f808b56502aaac2  178864
-packed.exe  09e8b50bb4c75f06504072718dd379b07f70f235d140343e5faabaf6ecd0d346  cf232ad0b1c19dbe73420c791e49131f9e3771672660de2df73b55d10e2d4c45  614706
+packed.exe  cfc60a9dc5ad41b32039b790dcba4d54ddb1cb43a49808f2f01ccd3922cf683a  1e4681faa5deb0f1f6514f5583258437d626b3c37e82b83844ff25d990ff1602  619768
 pe32_abi.exe  f54af9b0bcb7e9a97085f7b5708df80fcd1d260b2597d1eab9daa89515f2e498  1cba0800d8a787478068f787e801de8e0e362b020d96568fa1ff8b682ddeeb36  182959
 pe32_arith.exe  9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6  83168d6e5bb27d7246e75ca916c523027700767a86f628e60ec18c911e652c78  253746
 pe32_simd_convert.exe  f94187a30503a9ec228eb8126659d3fc084fc116fcda7d7baca377b2f675e997  6889f008357ec23f420ab58a671df69e6a52166a4b7bd9444aabbcf067416ecc  225148

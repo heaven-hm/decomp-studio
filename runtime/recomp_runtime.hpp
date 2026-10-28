@@ -289,6 +289,29 @@ inline void update_zero_sign_parity(GuestContext* context, std::uint64_t result,
       static_cast<std::uint32_t>(__builtin_parity(static_cast<unsigned>(result & 0xff)) ^ 1);
 }
 
+// DAA follows the pre-adjust AL value and the incoming carry from the preceding
+// decimal add. OF is undefined by the ISA, so leave the modeled value untouched.
+inline std::uint8_t decimal_adjust_after_addition(GuestContext* context, std::uint8_t value) {
+  const auto old_value = value;
+  const auto old_carry = context->carry_flag;
+  std::uint8_t correction = 0;
+  if ((old_value & 0x0fu) > 9 || context->auxiliary_flag != 0) {
+    correction = static_cast<std::uint8_t>(correction + 0x06u);
+    context->auxiliary_flag = 1;
+  } else {
+    context->auxiliary_flag = 0;
+  }
+  if (old_value > 0x99u || old_carry != 0) {
+    correction = static_cast<std::uint8_t>(correction + 0x60u);
+    context->carry_flag = 1;
+  } else {
+    context->carry_flag = 0;
+  }
+  value = static_cast<std::uint8_t>(old_value + correction);
+  update_zero_sign_parity(context, value, 1);
+  return value;
+}
+
 inline std::uint64_t add_with_flags(GuestContext* context, std::uint64_t left, std::uint64_t right, int width) {
   const auto mask = value_mask(width);
   const auto result = (left + right) & mask;
@@ -605,6 +628,20 @@ inline std::uint64_t vector_get_low(GuestContext* context, int vector_index, int
   std::uint64_t value = 0;
   std::memcpy(&value, context->vector_registers[vector_index], static_cast<std::size_t>(byte_count));
   return value;
+}
+
+inline void vector_set_low_qword_preserve(GuestContext* context, int vector_index, std::uint64_t value) {
+  std::memcpy(context->vector_registers[vector_index], &value, sizeof(value));
+}
+
+inline std::uint64_t vector_get_high_qword(const GuestContext* context, int vector_index) {
+  std::uint64_t value = 0;
+  std::memcpy(&value, context->vector_registers[vector_index] + 8, sizeof(value));
+  return value;
+}
+
+inline void vector_set_high_qword(GuestContext* context, int vector_index, std::uint64_t value) {
+  std::memcpy(context->vector_registers[vector_index] + 8, &value, sizeof(value));
 }
 
 inline void vector_set_double(GuestContext* context, int vector_index, double value) {
@@ -968,6 +1005,18 @@ inline void vector_shuffle_bytes(GuestContext* context, int destination, int sou
   std::memcpy(context->vector_registers[destination], result, 16);
 }
 
+inline void vector_shuffle_bytes_memory(GuestContext* context, int destination, std::uint64_t address) {
+  std::uint8_t indices[16];
+  std::uint8_t values[16];
+  for (int index = 0; index < 16; ++index)
+    indices[index] = static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+  std::memcpy(values, context->vector_registers[destination], 16);
+  std::uint8_t result[16];
+  for (int index = 0; index < 16; ++index)
+    result[index] = (indices[index] & 0x80u) != 0 ? 0 : values[indices[index] & 0x0fu];
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
 // PSHUFLW/PSHUFHW: shuffle the low or high four words by an immediate.
 inline void vector_shuffle_low_words(GuestContext* context, int destination, int control) {
   std::uint16_t words[8];
@@ -1265,6 +1314,28 @@ inline void vector_shuffle_single_memory(GuestContext* context, int destination,
   for (int index = 0; index < 4; ++index)
     lanes[index] = static_cast<std::uint32_t>(load_guest_memory(context, address + index * 4, 4));
   vector_shuffle_single_lanes(context, destination, lanes, control);
+}
+
+inline void vector_shuffle_doubles_lanes(GuestContext* context, int destination,
+                                         const std::uint64_t* source, int control) {
+  std::uint64_t old_destination[2], result[2];
+  std::memcpy(old_destination, context->vector_registers[destination], sizeof(old_destination));
+  result[0] = old_destination[control & 1];
+  result[1] = source[(control >> 1) & 1];
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
+inline void vector_shuffle_doubles(GuestContext* context, int destination, int source, int control) {
+  std::uint64_t lanes[2];
+  std::memcpy(lanes, context->vector_registers[source], sizeof(lanes));
+  vector_shuffle_doubles_lanes(context, destination, lanes, control);
+}
+
+inline void vector_shuffle_doubles_memory(GuestContext* context, int destination,
+                                          std::uint64_t address, int control) {
+  std::uint64_t lanes[2] = {load_guest_memory(context, address, 8),
+                            load_guest_memory(context, address + 8, 8)};
+  vector_shuffle_doubles_lanes(context, destination, lanes, control);
 }
 
 inline void vector_unpack_dwords(GuestContext* context, int destination, int source, int high) {

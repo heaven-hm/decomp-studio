@@ -3577,6 +3577,159 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
   return accepted < 0 ? 0 : output.size();
 }
 
+// The rest of the CRT tail the corpus asks for. Each is small; together they are the
+// only batch in the triage that actually CLOSES applications rather than merely reducing a
+// missing-symbol count.
+
+void msvcrt_memchr(GuestContext* context) {
+  const auto address = import_argument(context, 0);
+  const auto wanted = static_cast<std::uint8_t>(import_argument(context, 1) & 0xffu);
+  const auto length = import_argument(context, 2);
+  for (std::uint64_t offset = 0; offset < length; ++offset) {
+    if (static_cast<std::uint8_t>(load_guest_memory(context, address + offset, 1)) == wanted) {
+      set_import_result(context, address + offset);
+      return;
+    }
+  }
+  set_import_result(context, 0);
+}
+
+// The character classifiers. They take an int and return non-zero or zero; the host's C
+// locale is the C locale, which is what the guest's default is too.
+#define RECOMP_CLASSIFIER(NAME, FUNCTION)                                                     \
+  void msvcrt_##NAME(GuestContext* context) {                                                 \
+    set_import_result(context, FUNCTION(static_cast<int>(import_argument(context, 0) & 0xffu)) != 0); \
+  }
+RECOMP_CLASSIFIER(isalpha, std::isalpha)
+RECOMP_CLASSIFIER(isdigit, std::isdigit)
+RECOMP_CLASSIFIER(isalnum, std::isalnum)
+RECOMP_CLASSIFIER(isupper, std::isupper)
+RECOMP_CLASSIFIER(islower, std::islower)
+RECOMP_CLASSIFIER(ispunct, std::ispunct)
+RECOMP_CLASSIFIER(isxdigit, std::isxdigit)
+RECOMP_CLASSIFIER(iscntrl, std::iscntrl)
+#undef RECOMP_CLASSIFIER
+
+// The single-precision math functions, returned as a float's bit pattern in the low half
+// of the result register -- which is where the guest reads XMM0 from.
+void msvcrt_math_float(GuestContext* context, float (*operation)(float)) {
+  const auto argument = load_guest_float(context, context->registers[4] + 4);
+  const auto result = operation(argument);
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &result, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_sqrtf(GuestContext* context) { msvcrt_math_float(context, std::sqrt); }
+void msvcrt_roundf(GuestContext* context) { msvcrt_math_float(context, std::round); }
+void msvcrt_floorf(GuestContext* context) { msvcrt_math_float(context, std::floor); }
+void msvcrt_ceilf(GuestContext* context) { msvcrt_math_float(context, std::ceil); }
+void msvcrt_fabsf(GuestContext* context) { msvcrt_math_float(context, std::fabs); }
+void msvcrt_sinf(GuestContext* context) { msvcrt_math_float(context, std::sin); }
+void msvcrt_cosf(GuestContext* context) { msvcrt_math_float(context, std::cos); }
+
+// The two-argument double functions. The second argument follows the first in the guest's
+// argument list, which for a shim means reading it the same way.
+void msvcrt_math_double2(GuestContext* context, double (*operation)(double, double)) {
+  const auto first = load_guest_double(context, context->registers[4] + 4);
+  const auto second = load_guest_double(context, context->registers[4] + 12);
+  const auto result = operation(first, second);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &result, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_pow(GuestContext* context) { msvcrt_math_double2(context, std::pow); }
+void msvcrt_atan2(GuestContext* context) { msvcrt_math_double2(context, std::atan2); }
+void msvcrt_fmod(GuestContext* context) { msvcrt_math_double2(context, std::fmod); }
+
+// qsort calls a GUEST comparator, so it is a callback rather than a library call. The
+// sort itself is the host's, with a comparator that marshals the two elements into guest
+// memory and calls the guest's function -- which is the only way a host sort can compare
+// guest data with the guest's own ordering.
+// A scratch buffer the comparator reads its two elements from. Allocated once and grown
+// as needed; the sort is the host's, so the guest's own buffers cannot be used.
+std::uint64_t guest_sort_scratch = 0;
+
+GuestContext* guest_sort_context = nullptr;
+std::uint64_t guest_sort_comparator = 0;
+std::uint64_t guest_sort_element_bytes = 0;
+
+int guest_sort_compare(const void* left, const void* right) {
+  auto* context = guest_sort_context;
+  if (context == nullptr || guest_sort_comparator == 0) return 0;
+  const auto function = lookup_guest_function(guest_sort_comparator);
+  if (function == nullptr) {
+    std::fprintf(stderr, "recomp: the qsort comparator at 0x%llx was not recompiled, so it did not run\n",
+                 static_cast<unsigned long long>(guest_sort_comparator));
+    return 0;
+  }
+  const auto stack_pointer = context->registers[4];
+  const auto left_address = guest_sort_scratch;
+  const auto right_address = guest_sort_scratch + guest_sort_element_bytes;
+  std::memcpy(guest_memory + left_address, left, static_cast<std::size_t>(guest_sort_element_bytes));
+  std::memcpy(guest_memory + right_address, right, static_cast<std::size_t>(guest_sort_element_bytes));
+  push_guest_stack(context, right_address);
+  push_guest_stack(context, left_address);
+  push_guest_stack(context, 0);
+  function(context);
+  const auto result = static_cast<std::int32_t>(context->registers[0]);
+  context->registers[4] = stack_pointer;
+  return result;
+}
+
+void msvcrt_qsort(GuestContext* context) {
+  const auto base = import_argument(context, 0);
+  const auto count = import_argument(context, 1);
+  const auto element_bytes = import_argument(context, 2);
+  const auto comparator = import_argument(context, 3);
+  if (count < 2 || element_bytes == 0 || comparator == 0) return;
+  // The comparator needs somewhere to read the two elements from, and the guest's own
+  // buffers cannot be used because the sort is the host's.
+  if (guest_sort_scratch == 0 || guest_sort_element_bytes < element_bytes) {
+    guest_sort_scratch = heap_allocate(element_bytes * 2 + 16);
+    guest_sort_element_bytes = element_bytes;
+  }
+  if (guest_sort_scratch == 0) return;
+  guest_sort_context = context;
+  guest_sort_comparator = comparator;
+  std::qsort(guest_memory + base, static_cast<std::size_t>(count), static_cast<std::size_t>(element_bytes),
+             guest_sort_compare);
+  guest_sort_context = nullptr;
+  guest_sort_comparator = 0;
+}
+
+// The onexit table. `_initialize_onexit_table` prepares it, `_register_onexit_function`
+// adds to it, and `_c_exit` runs what was registered -- the same handlers `atexit`
+// collects, which this runtime already runs at exit.
+void msvcrt_initialize_onexit_table(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_register_onexit_function(GuestContext* context) {
+  const auto table = import_argument(context, 0);
+  const auto function = import_argument(context, 1);
+  (void)table;
+  if (function != 0) guest_atexit_handlers.push_back(function);
+  set_import_result(context, 0);
+}
+void msvcrt_c_exit(GuestContext* context) {
+  run_guest_atexit_handlers(context);
+  set_import_result(context, 0);
+}
+void msvcrt_terminate(GuestContext* context) {
+  // `terminate` is called when no exception handler claims a throw. Reaching it is a real
+  // event and the program cannot continue, so it stops and says so.
+  terminate_with_message("std::terminate was called (ip=0x%" PRIx64 ")", context->instruction_pointer);
+}
+void msvcrt_wassert(GuestContext* context) {
+  terminate_with_message("assertion failed: %s (%s:%u)", read_guest_string(import_argument(context, 0)).c_str(),
+                         read_guest_string(import_argument(context, 1)).c_str(),
+                         static_cast<unsigned>(import_argument(context, 2) & 0xffffffffu));
+}
+void msvcrt_seh_filter_exe(GuestContext* context) {
+  // The C runtime's top-level exception filter. Its return value says whether the
+  // exception was handled; reporting "continue searching" is what lets the guest's own
+  // handler, if any, see it.
+  (void)context;
+  set_import_result(context, 1);
+}
+
 // The Win32 WINDOW AND MESSAGE surface.
 //
 // A console program needs none of this; a GUI program needs all of it before it can do
@@ -4869,6 +5022,32 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "isspace", msvcrt_isspace},
     {"msvcrt.dll", "clock", msvcrt_clock},
     {"msvcrt.dll", "getenv", msvcrt_getenv},
+    {"msvcrt.dll", "memchr", msvcrt_memchr},
+    {"msvcrt.dll", "isalpha", msvcrt_isalpha},
+    {"msvcrt.dll", "isdigit", msvcrt_isdigit},
+    {"msvcrt.dll", "isalnum", msvcrt_isalnum},
+    {"msvcrt.dll", "isupper", msvcrt_isupper},
+    {"msvcrt.dll", "islower", msvcrt_islower},
+    {"msvcrt.dll", "ispunct", msvcrt_ispunct},
+    {"msvcrt.dll", "isxdigit", msvcrt_isxdigit},
+    {"msvcrt.dll", "iscntrl", msvcrt_iscntrl},
+    {"msvcrt.dll", "sqrtf", msvcrt_sqrtf},
+    {"msvcrt.dll", "roundf", msvcrt_roundf},
+    {"msvcrt.dll", "floorf", msvcrt_floorf},
+    {"msvcrt.dll", "ceilf", msvcrt_ceilf},
+    {"msvcrt.dll", "fabsf", msvcrt_fabsf},
+    {"msvcrt.dll", "sinf", msvcrt_sinf},
+    {"msvcrt.dll", "cosf", msvcrt_cosf},
+    {"msvcrt.dll", "pow", msvcrt_pow},
+    {"msvcrt.dll", "atan2", msvcrt_atan2},
+    {"msvcrt.dll", "fmod", msvcrt_fmod},
+    {"msvcrt.dll", "qsort", msvcrt_qsort},
+    {"msvcrt.dll", "_initialize_onexit_table", msvcrt_initialize_onexit_table},
+    {"msvcrt.dll", "_register_onexit_function", msvcrt_register_onexit_function},
+    {"msvcrt.dll", "_c_exit", msvcrt_c_exit},
+    {"msvcrt.dll", "terminate", msvcrt_terminate},
+    {"msvcrt.dll", "_wassert", msvcrt_wassert},
+    {"msvcrt.dll", "_seh_filter_exe", msvcrt_seh_filter_exe},
     {"user32.dll", "RegisterClassA", msvcrt_register_class_a},
     {"user32.dll", "CreateWindowExA", msvcrt_create_window_ex_a},
     {"user32.dll", "DestroyWindow", msvcrt_destroy_window},

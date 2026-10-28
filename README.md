@@ -130,4 +130,5 @@ security issues and [LICENSE](LICENSE) for licensing terms.
 
 Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md), run
 `./scripts/test.sh` before submitting changes, and keep unsupported behavior
-explicit. Release history is maintained in [CHANGELOG.md](CHANGELOG.md).
+explicit. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for project contributors.
+Release history is maintained in [CHANGELOG.md](CHANGELOG.md).

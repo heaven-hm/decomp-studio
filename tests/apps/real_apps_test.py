@@ -147,7 +147,10 @@ def main() -> int:
         where = APPS_DIRECTORY if APPS_DIRECTORY is not None else "<RECOMP_APPS_DIR unset>"
         print(f"SKIP: no applications found under {where}; "
               "set RECOMP_APPS_DIR to the directory holding the Windows corpus")
-        return 0
+        # 77 is ctest's convention for "not run". Returning 0 reported the absence of the
+        # corpus as a PASS, so ctest was green without ever exercising a real application
+        # and this test's own honesty checks never executed.
+        return 77
 
     baseline = {}
     if BASELINE_PATH.exists():

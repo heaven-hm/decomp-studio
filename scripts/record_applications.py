@@ -43,21 +43,66 @@ def host_description(cli: str) -> str:
 
 
 def describe(cli: str, executable: pathlib.Path):
-    """Source architecture and OS, taken from the binary rather than assumed."""
+    """Source architecture and OS, plus the studio's own verdict on the input.
+
+    The verdict is the CLI's message, not a phrase invented here. Reporting an ARM64
+    image or a managed one as "not a readable PE image" hides the fact that the studio
+    read it perfectly and refused it for a stated reason -- which is the difference
+    between a diagnostic and a shrug.
+    """
     report = subprocess.run([cli, "inspect", str(executable), "--json"],
                             text=True, capture_output=True)
     if report.returncode != 0:
-        return None
+        message = (report.stdout + report.stderr).strip().splitlines()
+        return None, (message[-1] if message else "the studio refused this input")
     try:
         payload = json.loads(report.stdout)
     except json.JSONDecodeError:
-        return None
+        return None, "the studio produced no readable report for this input"
     architecture = payload.get("architecture", "?")
     fmt = payload.get("format", "")
     # A PE is a Windows executable by construction; say so from the format rather than
     # from a guess about the filename.
     operating_system = "windows" if "PE" in fmt else "?"
-    return architecture, operating_system
+    return (architecture, operating_system), None
+
+
+# The COFF machine field, which is the one place a PE states its own architecture. Read
+# directly so that an input the studio REFUSES still appears in the table with its real
+# architecture rather than a question mark: "arm64, refused" is a finding, "?, refused"
+# is a gap in the record.
+PE_MACHINE_NAMES = {
+    0x014c: "x86", 0x8664: "x86_64", 0xaa64: "arm64", 0x01c0: "arm", 0x01c4: "armv7",
+    0x0200: "ia64", 0x5032: "riscv32", 0x5064: "riscv64", 0x5128: "riscv128",
+    0x0166: "mips", 0x01f0: "powerpc", 0x01f1: "powerpc-fp",
+}
+
+
+def pe_machine(executable: pathlib.Path) -> str:
+    try:
+        blob = executable.read_bytes()[:0x1000]
+        pe_offset = int.from_bytes(blob[0x3C:0x40], "little")
+        machine = int.from_bytes(blob[pe_offset + 4:pe_offset + 6], "little")
+    except (OSError, ValueError, IndexError):
+        return "?"
+    return PE_MACHINE_NAMES.get(machine, f"machine-{machine:#06x}")
+
+
+def detect_language(executable: pathlib.Path) -> str:
+    """The implementation language, from the binary's own contents.
+
+    Read from the image rather than guessed from the filename: a managed image carries
+    the CLR header and mscorlib reference, and a native one names its C++ runtime in the
+    imports if it has one.
+    """
+    blob = executable.read_bytes()
+    if b"mscorlib" in blob or b"System.Private.CoreLib" in blob or b"BSJB" in blob:
+        return ".NET / C#"
+    if b"java/lang" in blob or b"JNI_" in blob or b"jvm.dll" in blob:
+        return "Java"
+    if b"libstdc++" in blob or b"msvcprt" in blob or b"_ZSt" in blob or b"libc++" in blob:
+        return "C++"
+    return "C"
 
 
 def port(cli: str, executable: pathlib.Path, workspace: pathlib.Path):
@@ -142,28 +187,46 @@ def main() -> int:
 
     ported, rejected = [], []
     for executable in executables:
-        described = describe(cli, executable)
+        # The CLI's plain-text report carries the verdict even when it declines to
+        # produce JSON, so it is asked for that rather than being inferred.
+        verdict = subprocess.run([cli, "inspect", str(executable)],
+                                 text=True, capture_output=True)
+        described, refusal = describe(cli, executable)
         if described is None:
-            rejected.append((executable.name, "not a readable PE image"))
+            reason = next((line.split(":", 1)[1].strip() for line in verdict.stdout.splitlines()
+                           if line.startswith("detected:")), refusal)
+            # A structured error is unwrapped to its message: the envelope is the
+            # transport, the sentence is the diagnosis.
+            try:
+                parsed = json.loads(reason)
+                if isinstance(parsed, dict) and "message" in parsed:
+                    reason = parsed["message"]
+            except (json.JSONDecodeError, TypeError):
+                pass
+            rejected.append((executable.name, pe_machine(executable),
+                             detect_language(executable), reason))
             continue
         architecture, operating_system = described
         with tempfile.TemporaryDirectory() as workspace:
             ok, output, detail = port(cli, executable, pathlib.Path(workspace))
         if not ok:
-            rejected.append((executable.name, detail))
+            rejected.append((executable.name, architecture, detect_language(executable), detail))
             continue
-        screenshot = screenshots / (executable.stem + ".png")
+        # The same program built for two architectures must not overwrite its own
+        # evidence, so the architecture is part of the name.
+        screenshot = screenshots / f"{executable.stem}-{architecture}.png"
         rendered = render(output, executable.name, screenshot)
         ported.append({
             "application": executable.name,
             "source_arch": architecture,
             "source_os": operating_system,
+            "language": detect_language(executable),
             "target_host": host,
             "output_bytes": len(output),
             "screenshot": screenshot.name if rendered else "",
         })
         print(f"PORTED   {executable.name} ({architecture}, {operating_system})")
-    for name, why in rejected:
+    for name, _arch, _language, why in rejected:
         print(f"refused  {name}: {why}")
 
     lines = [
@@ -187,13 +250,13 @@ def main() -> int:
     ]
     if ported:
         lines += [
-            "| application | source arch | source OS | target host | output | screenshot |",
-            "|---|---|---|---|---|---|",
+            "| application | source arch | source OS | language | target host | output | screenshot |",
+            "|---|---|---|---|---|---|---|",
         ]
         for row in ported:
             shot = (f"[view](screenshots/{row['screenshot']})" if row["screenshot"] else "not captured")
             lines.append(f"| `{row['application']}` | {row['source_arch']} | {row['source_os']} | "
-                         f"{row['target_host']} | {row['output_bytes']} bytes | {shot} |")
+                         f"{row['language']} | {row['target_host']} | {row['output_bytes']} bytes | {shot} |")
     else:
         lines.append("No application has been ported end to end yet.")
     lines += [
@@ -205,9 +268,9 @@ def main() -> int:
         "",
     ]
     if rejected:
-        lines += ["| application | reason |", "|---|---|"]
-        for name, why in rejected:
-            lines.append(f"| `{name}` | {why.replace('|', '/')} |")
+        lines += ["| application | source arch | language | reason |", "|---|---|---|---|"]
+        for name, arch, language, why in rejected:
+            lines.append(f"| `{name}` | {arch} | {language} | {why.replace('|', '/')} |")
     else:
         lines.append("None.")
     lines.append("")

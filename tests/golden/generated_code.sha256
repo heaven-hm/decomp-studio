@@ -1,9 +1,14 @@
-# Generated guest.cpp digests for the current IR-backed C++ renderer.
-# These pin deterministic renderer output after the architecture and CRT work.
+# Generated guest.cpp digests, captured before the IR refactor began.
+# The IR work must not change the C++ backend's output; this is what proves it.
 #
 # Columns: fixture  input-sha256  generated-sha256  generated-bytes
-# The input digest is pinned beside the generated code, so a changed fixture
-# cannot be mistaken for a compiler regression.
+# packed.exe was rebuilt to add a memory-source PSHUFB regression fixture.
+#
+# The INPUT digest is pinned as well as the output. Without it a rebuilt fixture
+# reports as a changed compiler -- a misdiagnosis in the one test whose whole job
+# is to tell those apart, and it happened: the fixtures were rebuilt 25 minutes
+# after this baseline was first captured and all 22 entries failed as though the
+# lifter had changed.
 aliasing.exe 821b287ccd7d9d358b1e0f9364f4f8d65e4aec859d8e38be1d5cde6760dae834 671a247a61fb41fc047c579f69f5a2ec1578bbddbc56394214da57eed774b21e 281318
 arith.exe bb67ed0c581a1a00cfce9fd324c4003a970d4869829bb472e5f91b4ee476be3c a4f8a9591347a942dfa55a01a2567f3001b58d617614fe96a31f48d4d138b651 1120885
 bitops.exe 4267ea13a679f8f22c124fd4335660099c46b510f50c8892c359c10ff8bce8b6 8934403d32c646ef8c6fdff02422057a82bd402973aff76b8d7f7b177ce5b2a8 321395
@@ -13,7 +18,7 @@ eflags.exe 5a35f8e1b7e19549f2564b9de2009fa6e0219cb40f18a1f497d042c1b272b966 304a
 flagprobe.exe deb939046658226610e19289c9c24667d90fd46fc88f155c850f2c3459a79bc6 c5817221356752463ca27c9832aba2eefb502f43644218eab5076e934bac73ce 207140
 heap.exe 5a54849970b6304e3d400ab911274a4e241253b5e922782b689466e588d7b2d1 feb382b7f0dd3f4ad535766c9de68aedb992b51a6849d306017abbda7b689d04 351819
 memory.exe e5c16a5bc295edc1f38ebcc9bf1a200806771577b4d45fa186f3836919e323b4 eb5a5380defa8f43e6a5ad7b8284654e82e609a4dff98fabbb925862b107c4a2 543130
-packed.exe cfc60a9dc5ad41b32039b790dcba4d54ddb1cb43a49808f2f01ccd3922cf683a 68e9093bf318c1eb25e46e326b6c4940637c4c34a6fd0ef962dbfbf3e771f99e 39931078
+packed.exe 09e8b50bb4c75f06504072718dd379b07f70f235d140343e5faabaf6ecd0d346 94452be025d85cf10156e7d4dc806398f9cb7cf70f5bc90c2e707e01fe30b1dd 39054163
 pe32_abi.exe f54af9b0bcb7e9a97085f7b5708df80fcd1d260b2597d1eab9daa89515f2e498 3e3525806820b24b7b63eebfa511c916535aee59dea094b4c4da32a98439be15 235539
 pe32_arith.exe 9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6 44790fc4606f9065b80e7886dd1b0ab5c66c8e5356eb11e54e11be1fb6c5c7e5 888681
 pe32_simd_convert.exe f94187a30503a9ec228eb8126659d3fc084fc116fcda7d7baca377b2f675e997 b28b6416219993139dac4f519e642fbeba2f1eb8944ba372a095c6a3d6ce1328 324386

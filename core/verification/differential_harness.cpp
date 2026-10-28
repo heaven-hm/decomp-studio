@@ -598,6 +598,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // when the guest reaches ExitProcess. The proper place for a limit is the harness's
   // wall-clock handling, which would also catch a candidate stuck outside guest code;
   // this catches the case that was actually observed.
+  // A wall-clock limit on the candidate as well as an instruction ceiling. The ceiling
+  // only catches a GUEST loop; a candidate blocked on input, a shim, or the host itself
+  // is not executing guest instructions at all and ran unbounded. Neither `verify` nor
+  // `autorecomp` set this, so the limit was never in force.
+  if (std::getenv("RECOMP_RUN_TIMEOUT") == nullptr) ::setenv("RECOMP_RUN_TIMEOUT", "120", 1);
+
   // Overridable, so the mechanism can be exercised with a small ceiling instead of
   // waiting for a billion instructions to prove it works.
   if (std::getenv("RECOMP_INSTRUCTION_BUDGET") == nullptr)
@@ -666,8 +672,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     // Assigned BEFORE the return: the verdict reads it, and leaving it false here made a
     // truncated reference report NOT_RUN instead of INCOMPLETE.
     result.truncated = reference.truncated;
-    result.diagnosis = "the candidate was NOT run: the reference execution did not complete (" +
-                       reference.failure_reason + ")";
+    const auto not_run = "the candidate was NOT run: the reference execution did not complete (" +
+                         reference.failure_reason + ")";
+    // APPENDED, not assigned: the reference's own note says what the emulator could not
+    // do, which is a different fact from why the candidate was not run, and both belong
+    // in the diagnosis.
+    result.diagnosis = result.diagnosis.empty() ? not_run : result.diagnosis + "; " + not_run;
     return result;
   }
 
@@ -677,15 +687,25 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   const auto checkpoint_path = project_directory / "reports" / "candidate-checkpoints.txt";
   std::filesystem::create_directories(project_directory / "reports");
   std::filesystem::remove(checkpoint_path);
+  const auto dirty_pages_path = project_directory / "reports" / "candidate-dirty-pages.txt";
+  std::filesystem::remove(dirty_pages_path);
+  ::setenv("RECOMP_DIRTY_PAGES", dirty_pages_path.string().c_str(), 1);
   ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
   ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
 
+  // Cleared before the run and checked after, so a marker left by an earlier run cannot
+  // make a complete run look truncated.
+  const auto truncation_marker = project_directory / "reports" / "candidate-truncated";
+  std::filesystem::remove(truncation_marker);
+  ::setenv("RECOMP_TRUNCATION_MARKER", truncation_marker.string().c_str(), 1);
+
   const auto candidate = pipeline::run(project_directory);
 
+  ::unsetenv("RECOMP_DIRTY_PAGES");
   ::unsetenv("RECOMP_CHECKPOINT");
   ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.truncated = reference.truncated ||
-                     candidate.standard_error.find("instruction budget") != std::string::npos;
+                     std::filesystem::exists(truncation_marker);
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
   result.candidate_ran = true;
@@ -696,6 +716,54 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     std::ofstream(project_directory / "reports" / "reference.txt") << result.reference_output;
     std::ofstream(project_directory / "reports" / "candidate.txt") << result.candidate_output;
   }
+  // The measured value. A candidate that failed to run is reported through its own
+  // fields; overwriting this one with false destroyed the comparison that was made.
+  // The pages the CANDIDATE wrote, hashed in the reference's memory and compared.
+  //
+  // This is the coverage the fixed windows never had: 68 KiB of stack and image, against a
+  // 128 MiB heap that takes 74% of the stores in the one allocating fixture. A buffer
+  // written and never printed was compared by nothing, so a silent heap corruption could
+  // not be detected at all.
+  //
+  // The set of pages decides WHAT to compare and never whether the two sides agree -- which
+  // is what an earlier attempt got wrong by folding the set into the digest itself.
+  {
+    std::ifstream dirty_input(dirty_pages_path);
+    std::string line;
+    std::size_t pages_compared = 0;
+    std::string first_difference;
+    while (std::getline(dirty_input, line)) {
+      std::istringstream fields(line);
+      std::uint64_t checkpoint_index = 0;
+      std::uint64_t page = 0;
+      std::string expected_digest;
+      if (!(fields >> checkpoint_index >> page >> expected_digest)) continue;
+      const auto address = page << 12;
+      if (address + 0x1000 > guest_memory_size) continue;
+      // The reference's memory is the one this process holds, so the same digest function
+      // is applied to the same addresses.
+      std::uint64_t hash = 14695981039346656037ull;
+      const auto* bytes = guest_memory + address;
+      for (std::uint64_t offset = 0; offset < 0x1000; ++offset) {
+        hash ^= bytes[offset];
+        hash *= 1099511628211ull;
+      }
+      std::ostringstream rendered;
+      rendered << std::hex << hash;
+      ++pages_compared;
+      if (rendered.str() != expected_digest && first_difference.empty()) {
+        first_difference = "checkpoint " + std::to_string(checkpoint_index / 1000) + ": guest page at 0x" +
+                           hex_text(address) + " differs (candidate " + expected_digest + ", reference " +
+                           rendered.str() + ")";
+      }
+    }
+    result.dirty_pages_compared = pages_compared;
+    if (!first_difference.empty()) {
+      result.memory_match = false;
+      result.memory_diagnosis = first_difference;
+    }
+  }
+
   result.outputs_match = result.reference_output == result.candidate_output;
 
   // Byte-level memory comparison, when both sides produced windows. A difference is
@@ -879,6 +947,14 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         result.state_diagnosis = "checkpoint stream lengths differ (reference " +
                                  std::to_string(reference.checkpoints.size()) + ", candidate " +
                                  std::to_string(candidate_checkpoints.size()) + ")";
+      // NOT `checkpoints_matched == checkpoints_compared`. The counts legitimately
+      // differ: `checkpoints_matched` counts BIT-EXACT matches, and a checkpoint whose
+      // only difference is the documented x87 one-ULP class is deliberately not one of
+      // them. Tying state_match to the counts made the `x87` fixture fail with
+      // "checkpoints 8 of 10" while memory_match was true and the difference was
+      // classified -- i.e. it reported DIVERGED for the one case the classification
+      // exists to permit. The diagnosis is the right input: it is empty exactly when
+      // nothing UNEXPLAINED was found.
       result.state_match = result.state_diagnosis.empty() &&
                            reference.checkpoints.size() == candidate_checkpoints.size();
     } else if (!reference.checkpoints.empty()) {
@@ -887,7 +963,10 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     }
   }
   if (!result.candidate_completed) {
-    result.outputs_match = false;
+    // `outputs_match` keeps the value that was measured. Setting it false here made "the
+    // outputs were compared and differed" indistinguishable from "the candidate produced
+    // nothing to compare" -- and the latter is already said by candidate_completed and
+    // candidate_exit_code, which is where a reader looks for it.
     result.diagnosis = "candidate execution failed with exit code " + std::to_string(candidate.exit_code) +
                        (candidate.standard_error.empty() ? "" : ": " + candidate.standard_error);
     return result;
@@ -931,7 +1010,11 @@ TraceComparison compare_execution_traces(const std::filesystem::path& project_di
   const auto trace_path = project_directory / "candidate.trace";
   const auto executable_path = project_directory / "recomp-guest";
   std::string command = "RECOMP_TRACE='" + trace_path.string() + "' '" + executable_path.string() + "' > /dev/null 2>&1";
-  std::system(command.c_str());
+  const auto status = std::system(command.c_str());
+  // The status was discarded. A candidate that never ran then left an EMPTY trace, which
+  // the comparison below reported as a divergence with `candidate_address = 0` -- a
+  // finding about the translation, produced by the candidate not having run at all.
+  if (status != 0) return comparison;
 
   std::vector<std::uint64_t> candidate_trace;
   std::ifstream trace_input(trace_path, std::ios::binary);
@@ -941,6 +1024,9 @@ TraceComparison compare_execution_traces(const std::filesystem::path& project_di
            trace_input.read(reinterpret_cast<char*>(&address), sizeof(address)))
       candidate_trace.push_back(address);
   }
+  // No trace at all is not a divergence either; it is the absence of something to
+  // compare, and `available` is how this function says so.
+  if (candidate_trace.empty()) return comparison;
 
   comparison.reference_steps = reference.trace.size();
   comparison.candidate_steps = candidate_trace.size();

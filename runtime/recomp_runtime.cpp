@@ -2233,11 +2233,11 @@ void msvcrt_rand(GuestContext* context) {
   set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
 }
 
-// The bytes the guest reads as stdin, when a run supplies them. A file rather than an
-// environment variable so that both sides of a verification read the SAME input: the
-// reference runs in this process and the candidate in a subprocess, and if both read the
-// real stdin the first consumes it and the second sees EOF. They would then differ for a
-// reason that has nothing to do with the translation.
+// The bytes the guest reads as stdin. The reference runs in this process and the
+// candidate in a subprocess, so a capture that is set only here would leave the candidate
+// reading the real stdin -- which the capture has already consumed -- and the two would
+// disagree for a reason that has nothing to do with the translation. This is called from
+// `initialize_guest_state`, which BOTH sides pass through, so the file reaches both.
 std::string guest_input_storage;
 
 void load_guest_input_from_environment() {
@@ -3531,17 +3531,15 @@ void msvcrt_getenv(GuestContext* context) {
   set_import_result(context, 0);
 }
 
-// Win64 passes scalar floating-point arguments and results in XMM0. The 32-bit
-// MSVC ABI passes a double on the stack and returns it in the x87 register stack.
+// The double-precision math functions. The result is returned as its bit pattern
+// because the guest reads it out of XMM0, and the host's `double` is the same IEEE-754
+// value the instruction produces.
 void msvcrt_math_double(GuestContext* context, double (*operation)(double)) {
-  const bool wide_guest = guest_pointer_width >= 8;
-  const auto argument = wide_guest ? vector_get_double(context, 0)
-                                   : load_guest_double(context, context->registers[4] + 4);
+  const auto argument = load_guest_double(context, context->registers[4] + 4);
   const auto result = operation(argument);
-  if (wide_guest)
-    vector_set_double(context, 0, result);
-  else
-    x87_push(context, result);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &result, sizeof(bits));
+  set_import_result(context, bits);
 }
 void msvcrt_cos(GuestContext* context) { msvcrt_math_double(context, std::cos); }
 void msvcrt_sin(GuestContext* context) { msvcrt_math_double(context, std::sin); }
@@ -3638,21 +3636,12 @@ void msvcrt_vscprintf(GuestContext* context) {
 
 // The UCRT spellings of the same two, which take the options word first.
 void msvcrt_stdio_common_vsprintf(GuestContext* context) {
-  const bool wide_guest = guest_pointer_width >= 8;
-  const auto sp = context->registers[4];
-  const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
-  const auto buffer = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
-  const auto limit = static_cast<std::size_t>(wide_guest ? import_argument(context, 2)
-                                                        : load_guest_memory(context, sp + 16, 4));
-  const auto format_address = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
-  const auto arguments = wide_guest ? import_argument(context, 5) : load_guest_memory(context, sp + 28, 4);
-  const auto format = read_guest_string(format_address);
-  // UCRT defines these six bits for legacy termination, snprintf, wide-specifier,
-  // MSVCRT compatibility, exponent, and standard-rounding modes. The narrow
-  // formatter below already uses the host's standard formatting rules; accepting
-  // the documented mask avoids rejecting MinGW's normal 0x26 option word.
-  constexpr std::uint64_t kUcrtPrintfOptions = 0x3f;
-  if ((options & ~kUcrtPrintfOptions) != 0)
+  const auto options = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
+  const auto format = read_guest_string(import_argument(context, 3));
+  const auto arguments = import_argument(context, 4);
+  if ((options & ~std::uint64_t{2}) != 0)
     terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
                            static_cast<unsigned long long>(options));
   const auto output = msvcrt_format_arguments(context, format, arguments);
@@ -3668,30 +3657,19 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
 // a program is free to pass a GlobalAlloc block to free().
 void msvcrt_global_alloc(GuestContext* context) {
   const auto flags = import_argument(context, 0);
-  // GMEM_MOVEABLE returns a handle rather than a directly usable guest pointer.
-  if ((flags & 0x0002u) != 0) {
+  // GMEM_FIXED is the only mode that returns a usable pointer; the movable modes
+  // return a HANDLE that must be locked first, and pretending otherwise would hand the
+  // guest an address it would dereference directly.
+  if ((flags & 0x0002u) == 0 && (flags & 0x0040u) == 0) {
     terminate_with_message("GlobalAlloc: only GMEM_FIXED is implemented (flags=0x%llx)",
                            static_cast<unsigned long long>(flags));
   }
-  const auto pointer = heap_allocate(import_argument(context, 1));
-  if (pointer != 0 && (flags & 0x0040u) != 0) {
-    const auto size = import_argument(context, 1);
-    for (std::uint64_t offset = 0; offset < size; ++offset) store_guest_memory(context, pointer + offset, 0, 1);
-  }
-  set_import_result(context, pointer);
+  set_import_result(context, heap_allocate(import_argument(context, 1)));
 }
 void msvcrt_global_lock(GuestContext* context) { set_import_result(context, import_argument(context, 0)); }
-void msvcrt_global_unlock(GuestContext* context) { set_import_result(context, 0); }
-void msvcrt_global_free(GuestContext* context) {
-  const auto pointer = import_argument(context, 0);
-  if (pointer != 0) heap_release(context, pointer);
-  set_import_result(context, 0);
-}
-void msvcrt_local_free(GuestContext* context) {
-  const auto pointer = import_argument(context, 0);
-  if (pointer != 0) heap_release(context, pointer);
-  set_import_result(context, 0);
-}
+void msvcrt_global_unlock(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_global_free(GuestContext* context) { (void)context; }
+void msvcrt_local_free(GuestContext* context) { (void)context; }
 
 // The legacy msvcrt spellings of the standard C library.
 //
@@ -3909,65 +3887,6 @@ void msvcrt_stdio_common_vfscanf(GuestContext* context) {
   // On this platform a va_list is a pointer, so an array of translated destinations
   // IS a valid argument list -- the same representation the guest uses.
   const auto result = vfctscanf_(getch, ungetch, stdin, format.c_str(),
-                                 reinterpret_cast<va_list>(translated.data()));
-  set_import_result(context, static_cast<std::uint32_t>(result));
-}
-
-// This has the same UCRT guest-va_list bridge as vfscanf above, but reads from a
-// guest character buffer. It delegates conversion to the vendored upstream scanf
-// implementation (`vfctscanf_`) rather than parsing C conversion syntax again.
-void msvcrt_stdio_common_vsscanf(GuestContext* context) {
-  const bool wide_guest = guest_pointer_width >= 8;
-  const auto sp = context->registers[4];
-  const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
-  const auto input_address = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
-  const auto input_count = wide_guest ? import_argument(context, 2) : load_guest_memory(context, sp + 16, 4);
-  const auto format_address = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
-  const auto locale = wide_guest ? import_argument(context, 4) : load_guest_memory(context, sp + 24, 4);
-  const auto arguments = wide_guest ? import_argument(context, 5) : load_guest_memory(context, sp + 28, 4);
-  const auto format = read_guest_string(format_address);
-  // _CRT_INTERNAL_SCANF_SECURECRT adds buffer-size arguments to the va_list, so
-  // retain the existing vfscanf rule and reject it until those are represented.
-  constexpr std::uint64_t kUcrtScanfSupportedOptions = 0x6;
-  if ((options & ~kUcrtScanfSupportedOptions) != 0 || locale != 0)
-    terminate_with_message("__stdio_common_vsscanf: unsupported options=0x%" PRIx64
-                           " locale=0x%" PRIx64 " format='%s'",
-                           options, locale, format.c_str());
-
-  std::string input;
-  const auto available = input_address < guest_memory_size ? guest_memory_size - input_address : 0;
-  const auto bounded_count = std::min(input_count, available);
-  for (std::uint64_t index = 0; index < bounded_count; ++index) {
-    const auto byte = static_cast<char>(load_guest_memory(context, input_address + index, 1));
-    if (byte == '\0') break;
-    input.push_back(byte);
-  }
-  const auto count = scanf_destination_count(format);
-  std::vector<std::uint8_t*> translated;
-  translated.reserve(count);
-  for (std::size_t index = 0; index < count; ++index) {
-    const auto guest_pointer =
-        load_guest_memory(context, arguments + index * guest_pointer_width, guest_pointer_width);
-    if (guest_pointer == 0)
-      terminate_with_message("__stdio_common_vsscanf: null destination for conversion %zu of '%s'",
-                             index + 1, format.c_str());
-    (void)load_guest_memory(context, guest_pointer, 1);
-    translated.push_back(guest_memory + guest_pointer);
-  }
-  struct StringCursor {
-    const std::string* text;
-    std::size_t position;
-  } cursor{&input, 0};
-  const auto getch = [](void* opaque) {
-    auto* cursor = static_cast<StringCursor*>(opaque);
-    if (cursor->position >= cursor->text->size()) return EOF;
-    return static_cast<int>(static_cast<unsigned char>((*cursor->text)[cursor->position++]));
-  };
-  const auto ungetch = [](int character, void* opaque) {
-    auto* cursor = static_cast<StringCursor*>(opaque);
-    if (character != EOF && cursor->position != 0) --cursor->position;
-  };
-  const auto result = vfctscanf_(getch, ungetch, &cursor, format.c_str(),
                                  reinterpret_cast<va_list>(translated.data()));
   set_import_result(context, static_cast<std::uint32_t>(result));
 }
@@ -4417,7 +4336,6 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__acrt_iob_func", msvcrt_acrt_iob_func},
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
     {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
-    {"msvcrt.dll", "__stdio_common_vsscanf", msvcrt_stdio_common_vsscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
     {"msvcrt.dll", "fflush", msvcrt_fflush},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},
@@ -4724,6 +4642,16 @@ std::uint64_t guest_instruction_budget = 0;
 void note_executed_instruction() {
   if (guest_instruction_budget == 0) return;
   if (++guest_executed_instructions <= guest_instruction_budget) return;
+  // A dedicated marker, so the harness does not have to recognise a MESSAGE. Searching
+  // stderr for "instruction budget" made the verdict depend on wording: rewording this
+  // line, or a program that happened to print the same phrase, would change whether a
+  // truncated run was reported as truncated.
+  if (const char* marker = std::getenv("RECOMP_TRUNCATION_MARKER")) {
+    if (std::FILE* file = std::fopen(marker, "w")) {
+      std::fprintf(file, "%llu\n", static_cast<unsigned long long>(guest_executed_instructions));
+      std::fclose(file);
+    }
+  }
   terminate_with_message("instruction budget exhausted after %llu guest instructions",
                          static_cast<unsigned long long>(guest_executed_instructions));
 }
@@ -5137,11 +5065,20 @@ void open_guest_memory_windows(const char* path) {
   guest_memory_windows = std::fopen(path, "wb");
 }
 
+std::FILE* guest_dirty_page_log = nullptr;
+
+void open_guest_dirty_page_log(const char* path) {
+  if (path == nullptr || path[0] == '\0') return;
+  guest_dirty_page_log = std::fopen(path, "w");
+}
+
 void open_guest_store_log(const char* path) {
   if (path == nullptr) return;
   guest_store_log = std::fopen(path, "w");
   guest_store_logging = guest_store_log != nullptr;
 }
+
+std::uint8_t* guest_page_dirty = nullptr;
 
 std::uint64_t guest_memory_digest(const GuestContext* context) {
   // The window starts AT the stack pointer, not below it. Memory below the stack
@@ -5172,6 +5109,20 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
   checkpoint.x87_control_word = context->x87_control_word;
   checkpoint.x87_status_word = x87_status_value(context);
   checkpoint.memory_digest = guest_memory_digest(context);
+  // The pages this run has written, exported so the harness can hash the SAME addresses in
+  // both memories. The set decides what to compare; it never decides whether the two sides
+  // agree -- which is what the first attempt got wrong.
+  if (guest_dirty_page_log != nullptr && guest_page_dirty != nullptr) {
+    for (std::uint64_t page = 0; page < (guest_memory_size >> kGuestPageShift); ++page) {
+      if (guest_page_dirty[page] == 0) continue;
+      // The PAGE's digest, not its address alone. The candidate has exited by the time the
+      // harness compares, so its memory is gone; a per-page digest is what lets the
+      // reference's memory be hashed over the SAME pages and the two compared.
+      const auto page_digest = digest_bytes(14695981039346656037ull, page << kGuestPageShift, kGuestPageBytes);
+      std::fprintf(guest_dirty_page_log, "%llu %llu %llx\n", static_cast<unsigned long long>(index),
+                   static_cast<unsigned long long>(page), static_cast<unsigned long long>(page_digest));
+    }
+  }
   const auto checkpoint_number = index / guest_checkpoint_interval;
   if (guest_memory_windows != nullptr &&
       checkpoint_number < kMemoryWindowSampleLimit) {
@@ -5283,6 +5234,9 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
 bool map_guest_memory(std::uint64_t bytes) {
   if (guest_memory != nullptr) return true;
   guest_memory_size = bytes;
+  // One byte per 4 KiB page: 2 MiB for the 8 GiB space, against the mapping it describes.
+  guest_page_dirty = static_cast<std::uint8_t*>(std::calloc(
+      static_cast<std::size_t>(guest_memory_size >> kGuestPageShift), sizeof(std::uint8_t)));
   guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
                                                  PROT_READ | PROT_WRITE,
                                                  MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0));
@@ -5364,6 +5318,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   // The differential comparison asks for guest-state checkpoints at a fixed
   // interval; the reference uses the same one, so the two streams line up.
   open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
+  open_guest_dirty_page_log(std::getenv("RECOMP_DIRTY_PAGES"));
   open_guest_memory_windows(std::getenv("RECOMP_MEMORY_WINDOWS"));
   open_guest_mxcsr_log(std::getenv("RECOMP_MXCSR_LOG"));
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))

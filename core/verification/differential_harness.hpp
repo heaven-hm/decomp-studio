@@ -29,14 +29,28 @@ struct ReferenceRun {
   std::vector<std::vector<std::uint8_t>> memory_windows;
 };
 
-// What a verification run actually established. A false boolean cannot distinguish
-// a disagreement from an unsupported reference or a run that stopped at a budget.
+// What a verification run actually established. Issue #11 asks for an explicit verdict
+// rather than a boolean, and the reason is in the list: "the two sides agreed" and "the
+// reference could not model this program" and "the run was cut off at a budget" are
+// three different findings that a single `false` reports identically, and the reader
+// cannot tell which one they are looking at.
 enum class Verdict {
+  // The reference and the candidate reached an equivalent terminal condition and agreed
+  // on output, machine state, memory and control registers at every checkpoint.
   VERIFIED,
+  // Both sides ran and disagreed. This is a finding about the translation.
   DIVERGED,
+  // The reference could not model something (an import it does not implement, an
+  // instruction the emulator cannot execute). This says NOTHING about the translation:
+  // there was no usable oracle.
   REFERENCE_UNSUPPORTED,
+  // The candidate could not run -- a missing import, an unsupported instruction at
+  // runtime, a crash. Again not a statement about correctness.
   CANDIDATE_UNSUPPORTED,
+  // The run stopped before either side reached a terminal condition, so what was
+  // compared is a prefix. Never a pass.
   INCOMPLETE,
+  // The candidate was never executed, so nothing about it was established at all.
   NOT_RUN,
 };
 
@@ -77,6 +91,9 @@ struct DifferentialResult {
   // to be loosened until it catches nothing, and both are worse than naming the
   // class.
   std::size_t x87_precision_differences{};
+  // Pages outside the fixed windows that were compared because the candidate wrote them.
+  // Reported so a PASS says how much of the writable set it actually covered.
+  std::size_t dirty_pages_compared{};
   // Control registers -- MXCSR and the x87 control and status words -- compared at
   // every checkpoint and reported, not gated. Two of the last three divergences
   // found were control registers that a guest read and that disagreed between the
@@ -115,17 +132,34 @@ struct DifferentialResult {
   // verdict issued without the measurement it claims to rest on. Any program that
   // executes at least one guest instruction records checkpoint 0, so requiring one
   // cannot reject a genuinely verified run.
+  // The ONE place a verdict is decided. `verify`, `autorecomp` and the repair harness
+  // all read this, so they cannot disagree about what a run established -- which they
+  // could when each computed its own answer from the booleans.
   Verdict verdict() const {
+    // Not run is checked first: it is the strongest statement available, and every
+    // other field is a default that would otherwise be read as a measurement.
+    // TRUNCATION IS CHECKED FIRST, before both NOT_RUN and the unsupported cases. A run
+    // cut off at the shared ceiling did not fail to run and did not fail to be modelled
+    // -- it ran, for exactly as long as it was allowed to, and what it did can be
+    // compared. Both other orders were tried and both were wrong: after the unsupported
+    // cases it reported a budget as CANDIDATE_UNSUPPORTED, and after NOT_RUN it reported a
+    // truncated reference as NOT_RUN. `truncated` is the strongest and most specific fact
+    // available, so it decides.
+    if (truncated) return Verdict::INCOMPLETE;
     if (!candidate_ran) return Verdict::NOT_RUN;
+    // A reference that could not model the program leaves no oracle. This is reported
+    // as such rather than as a divergence, because calling it a divergence would blame
+    // the translation for a gap in the reference.
     if (!reference_completed) return Verdict::REFERENCE_UNSUPPORTED;
     if (!candidate_completed) return Verdict::CANDIDATE_UNSUPPORTED;
-    if (truncated || checkpoints_compared == 0) return Verdict::INCOMPLETE;
+    if (checkpoints_compared == 0) return Verdict::INCOMPLETE;
     if (!outputs_match || !state_match || !memory_match || !control_registers_match)
       return Verdict::DIVERGED;
     return Verdict::VERIFIED;
   }
 
   bool verified() const { return verdict() == Verdict::VERIFIED; }
+
 };
 
 struct TraceComparison {

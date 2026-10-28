@@ -83,7 +83,12 @@ std::string escape_shell(const std::filesystem::path& value) {
 
 RunReport capture_process(const std::string& command, const std::filesystem::path& error_path) {
   RunReport report;
-  std::string invocation = command + " 2> " + escape_shell(error_path);
+  // The generated guest and the timeout supervisor must start even when Codex,
+  // CI, or a parent terminal exports a locale that is not installed on this
+  // host (for example C.UTF-8 on macOS).  A C locale is available on every
+  // supported POSIX host and keeps the guest's default CRT locale deterministic.
+  std::string invocation = "env LC_ALL=C LANG=C sh -c " +
+                           escape_shell(command + " 2> " + escape_shell(error_path));
   // The runtime loads RECOMP_STDIN_FILE into the guest-side input capture during
   // initialization. Do not also append a shell redirection here: a stale path would
   // make `/bin/sh` exit before the generated guest starts, hiding the actual guest
@@ -94,7 +99,7 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
       // Keep the supervisor alive while its child runs. `exec` here would replace
       // Perl before the alarm fires, so the handler could not kill a guest that hangs
       // waiting for input; it would instead leave that child orphaned.
-      invocation = "perl -e 'my $t=shift; my $pid=fork(); die \"fork failed\" unless defined $pid; "
+      invocation = "env LC_ALL=C LANG=C perl -e 'my $t=shift; my $pid=fork(); die \"fork failed\" unless defined $pid; "
                    "if (!$pid) { setpgrp; exec @ARGV; exit 127; } my $expired=0; "
                    "$SIG{ALRM}=sub { $expired=1; kill 9, -$pid; }; alarm $t; waitpid($pid,0); "
                    "my $status=$?; alarm 0; exit($expired ? 124 : (($status & 127) ? "

@@ -24,6 +24,14 @@ def main() -> int:
 
         environment = os.environ.copy()
         environment["RECOMP_STDIN_FILE"] = str(project / "missing-input.txt")
+        # The runner has a Perl-based timeout supervisor.  Its own process and
+        # the generated guest must not fail merely because a parent supplied a
+        # locale this host does not have (C.UTF-8 is common on Linux but absent
+        # from several macOS installations).
+        environment["LC_ALL"] = "C.UTF-8"
+        environment["LANG"] = "C.UTF-8"
+        environment["LC_CTYPE"] = "C.UTF-8"
+        environment["RECOMP_RUN_TIMEOUT"] = "5"
         executed = subprocess.run(
             [str(cli), "run", str(project)],
             text=True,

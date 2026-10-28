@@ -64,6 +64,17 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "VirtualFree", 3, true},
     {"kernel32.dll", "VirtualQuery", 3, true},
     {"kernel32.dll", "VirtualProtect", 4, true},
+    // User32 message-loop calls used by legacy GUI startup. These are stdcall on
+    // PE32 and register-based on PE32+, so the table still documents x86 cleanup.
+    {"user32.dll", "DefWindowProcA", 4, true},
+    {"user32.dll", "DispatchMessageA", 1, true},
+    {"user32.dll", "GetMessageA", 4, true},
+    {"user32.dll", "MessageBeep", 1, true},
+    {"user32.dll", "PostQuitMessage", 1, true},
+    {"user32.dll", "ShowWindow", 2, true},
+    {"user32.dll", "SetForegroundWindow", 1, true},
+    {"user32.dll", "TranslateMessage", 1, true},
+    {"user32.dll", "LoadIconA", 2, true},
     // libstdc++ is cdecl: the caller pops. The mangled names are the ABI, so
     // they are reproduced exactly as the linker records them.
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", 3, false, true},
@@ -200,6 +211,10 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "_assert", 3, true},
     {"msvcrt.dll", "MulDiv", 3, true},
     {"kernel32.dll", "MulDiv", 3, true},
+    // Legacy comctl32 exports InitCommonControls by ordinal #17. Registration is
+    // process-global on Windows; the native runtime has no control class registry,
+    // so a successful no-op is the compatible startup behavior for console-safe paths.
+    {"comctl32.dll", "#17", 0, false},
     {"kernel32.dll", "GlobalAlloc", 2, true},
     {"kernel32.dll", "GlobalLock", 1, true},
     {"kernel32.dll", "GlobalUnlock", 1, true},
@@ -250,6 +265,11 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "memcpy", 3, false},
     {"msvcrt.dll", "memmove", 3, false},
     {"msvcrt.dll", "memset", 3, false},
+    {"vcruntime140.dll", "memcmp", 3, false},
+    {"vcruntime140.dll", "memcpy", 3, false},
+    {"vcruntime140.dll", "memset", 3, false},
+    {"vcruntime140.dll", "strchr", 2, false},
+    {"vcruntime140.dll", "strrchr", 2, false},
     {"msvcrt.dll", "_strdup", 1, false},
     {"msvcrt.dll", "srand", 1, false},
     {"msvcrt.dll", "rand", 0, false},
@@ -307,8 +327,11 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "EnterCriticalSection", 1, true},
     {"kernel32.dll", "LeaveCriticalSection", 1, true},
     {"kernel32.dll", "InitializeCriticalSectionAndSpinCount", 2, true},
+    {"kernel32.dll", "InitializeCriticalSectionEx", 3, true},
     {"kernel32.dll", "GetSystemTimeAsFileTime", 1, true},
     {"kernel32.dll", "GetStartupInfoA", 1, true},
+    {"kernel32.dll", "GetStartupInfoW", 1, true},
+    {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", 0, true},
     {"kernel32.dll", "GetCommandLineA", 0, true},
     {"kernel32.dll", "GetEnvironmentStrings", 0, true},
     {"kernel32.dll", "FreeEnvironmentStringsA", 1, true},
@@ -327,6 +350,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "FlsFree", 1, true},
     {"kernel32.dll", "FlsSetValue", 2, true},
     {"kernel32.dll", "FlsGetValue", 1, true},
+    {"kernel32.dll", "FlsGetValue2", 1, true},
     {"kernel32.dll", "TlsAlloc", 0, true},
     {"kernel32.dll", "TlsFree", 1, true},
     {"kernel32.dll", "TlsSetValue", 2, true},
@@ -336,6 +360,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "GetProcAddress", 2, true},
     {"kernel32.dll", "LoadLibraryA", 1, true},
     {"kernel32.dll", "LoadLibraryW", 1, true},
+    {"kernel32.dll", "LoadLibraryExW", 3, true},
     {"kernel32.dll", "FreeLibrary", 1, true},
     // kernel32 file services. CreateFileA is stdcall with seven arguments, and
     // the seventh is the one a program that does not care about template files

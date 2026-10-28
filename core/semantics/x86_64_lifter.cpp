@@ -106,7 +106,8 @@ const std::map<std::string, int>& string_operation_sizes() {
 const std::map<std::string, std::string>& vector_bitwise_helpers() {
   static const std::map<std::string, std::string> helpers = {
       {"xorps", "vector_bitwise_xor"}, {"xorpd", "vector_bitwise_xor"}, {"pxor", "vector_bitwise_xor"},
-      {"andps", "vector_bitwise_and"}, {"andpd", "vector_bitwise_and"}, {"pand", "vector_bitwise_and"},
+      {"andps", "vector_bitwise_and"}, {"andpd", "vector_bitwise_and"}, {"andnps", "vector_bitwise_and_not"},
+      {"pand", "vector_bitwise_and"},
       {"orps", "vector_bitwise_or"},   {"orpd", "vector_bitwise_or"},   {"por", "vector_bitwise_or"}};
   return helpers;
 }
@@ -610,6 +611,38 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
   }
 
+  // FMSUB has no two-operand SSE equivalent, so it must be handled before the
+  // generic VEX rewrite path. Keep the scalar and packed forms on the same
+  // fused helpers; a memory third operand is common in compiler-generated code.
+  if (mnemonic.rfind("vfmsub", 0) == 0 && operands.size() == 3 &&
+      is_vector_register(operands[0])) {
+    const bool doubles = mnemonic.size() >= 2 && mnemonic.substr(mnemonic.size() - 2) == "pd";
+    const bool scalar_double = mnemonic.size() >= 2 && mnemonic.substr(mnemonic.size() - 2) == "sd";
+    const bool scalar_float = mnemonic.size() >= 2 && mnemonic.substr(mnemonic.size() - 2) == "ss";
+    const bool packed_float = mnemonic.size() >= 2 && mnemonic.substr(mnemonic.size() - 2) == "ps";
+    if (doubles || scalar_double || scalar_float || packed_float) {
+      std::string digits;
+      for (const auto& candidate : {std::string("132"), std::string("213"), std::string("231")}) {
+        if (mnemonic.find(candidate) != std::string::npos) { digits = candidate; break; }
+      }
+      if (!digits.empty() && is_vector_register(operands[1])) {
+        const auto helper = "vector_fmsub" + digits + (doubles || scalar_double ? "_doubles" : "_floats");
+        const auto destination = std::to_string(vector_index(operands[0]));
+        const auto source = std::to_string(vector_index(operands[1]));
+        if (is_vector_register(operands[2])) {
+          emit(helper + "(context, " + destination + ", " + source + ", " +
+               std::to_string(vector_index(operands[2])) + ");");
+          return;
+        }
+        if (operands[2].kind == discovery::Operand::Kind::Memory) {
+          emit(helper + "_memory(context, " + destination + ", " + source + ", " +
+               effective_address_expression(instruction, operands[2]) + ");");
+          return;
+        }
+      }
+    }
+  }
+
   // SSE2 packed integer. These are element-wise over 128 bits; the runtime
   // generates a register and a memory form of each helper together. The shift
   // family additionally accepts an immediate count.
@@ -993,6 +1026,49 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     if (operands[1].kind == discovery::Operand::Kind::Memory) {
       emit("convert_dwords_to_floats_from_memory(context, " + destination + ", " +
            effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
+  }
+  if (mnemonic == "cvttps2dq" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    if (is_vector_register(operands[1])) {
+      emit("vector_convert_truncated_floats_to_dwords(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_convert_truncated_floats_to_dwords_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
+  }
+  if (mnemonic == "roundsd" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto immediate = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("round_scalar_double_register(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("round_scalar_double_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + immediate + ");");
+      return;
+    }
+  }
+  if (mnemonic == "pcmpistri" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto immediate = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_pcmpistri_register(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_pcmpistri_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + immediate + ");");
       return;
     }
   }
@@ -1386,16 +1462,21 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // decoration: `213` and `231` compute different products from the same three registers.
   {
     static const std::map<std::string, std::string> fma_orderings = {
-        {"132", "fma132"}, {"213", "fma213"}, {"231", "fma231"}};
-    const auto digits = mnemonic.size() >= 9 ? mnemonic.substr(mnemonic.size() - 5, 3) : std::string{};
+        {"132", "132"}, {"213", "213"}, {"231", "231"}};
+    std::string digits;
+    for (const auto& candidate : {std::string("132"), std::string("213"), std::string("231")}) {
+      if (mnemonic.find(candidate) != std::string::npos) { digits = candidate; break; }
+    }
     const auto width_suffix = mnemonic.size() >= 2 ? mnemonic.substr(mnemonic.size() - 2) : std::string{};
-    const bool is_fma = mnemonic.rfind("vfmadd", 0) == 0;
+    const bool is_fma = mnemonic.rfind("vfmadd", 0) == 0 || mnemonic.rfind("vfmsub", 0) == 0;
     const bool fma_width_ok = width_suffix == "ps" || width_suffix == "pd" ||
                               width_suffix == "ss" || width_suffix == "sd";
     if (is_fma && fma_orderings.count(digits) != 0 && operands.size() == 3 &&
         is_vector_register(operands[0]) && is_vector_register(operands[1]) && fma_width_ok) {
       const bool doubles = width_suffix == "pd" || width_suffix == "sd";
-      const auto helper = "vector_" + fma_orderings.at(digits) + (doubles ? "_doubles" : "_floats");
+      const auto operation = mnemonic.rfind("vfmsub", 0) == 0 ? "fmsub" : "fma";
+      const auto helper = std::string("vector_") + operation + fma_orderings.at(digits) +
+                          (doubles ? "_doubles" : "_floats");
       if (is_vector_register(operands[2])) {
         emit(helper + "(context, " + std::to_string(vector_index(operands[0])) + ", " +
              std::to_string(vector_index(operands[1])) + ", " + std::to_string(vector_index(operands[2])) +
@@ -1430,6 +1511,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            effective_address_expression(instruction, operands[1]) + ");");
     }
     return;
+  }
+  if (mnemonic == "vinsertf128" && operands.size() == 4 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1]) && operands[3].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto source = std::to_string(vector_index(operands[1]));
+    const auto immediate = std::to_string(operands[3].immediate_value & 0xff);
+    if (is_vector_register(operands[2])) {
+      emit("vector_insert_128(context, " + destination + ", " + source + ", " +
+           std::to_string(vector_index(operands[2])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[2].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_insert_128_memory(context, " + destination + ", " + source + ", " +
+           effective_address_expression(instruction, operands[2]) + ", " + immediate + ");");
+      return;
+    }
   }
   if ((mnemonic == "vinsertf128" || mnemonic == "vextractf128") && operands.size() == 3 &&
       is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
@@ -1670,7 +1767,8 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // register_write_statement already models.
   // CVTDQ2PD converts the low two signed dwords to two doubles, unlike
   // CVTDQ2PS which converts four dwords to four floats.
-  if (mnemonic == "cvtdq2pd" && operands.size() == 2 && is_vector_register(operands[0])) {
+  if ((mnemonic == "cvtdq2pd" || mnemonic == "vcvtdq2pd") && operands.size() == 2 &&
+      is_vector_register(operands[0])) {
     const auto destination = std::to_string(vector_index(operands[0]));
     if (is_vector_register(operands[1])) {
       emit("vector_convert_dwords_to_doubles(context, " + destination + ", " +

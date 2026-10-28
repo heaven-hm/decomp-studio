@@ -981,7 +981,17 @@ void win32_get_local_time(GuestContext* context) {
 }
 void win32_get_startup_info(GuestContext* context) {
   const auto out = import_argument(context, 0);
-  if (out != 0 && out + 68 <= guest_memory_size) std::memset(guest_memory + out, 0, 68);
+  if (out == 0 || guest_memory == nullptr || out >= guest_memory_size) return;
+  // STARTUPINFOA/W has the same layout; only pointer width changes its size.
+  // The CRT reads cb before consulting any optional fields, so initialize the
+  // complete structure and publish a truthful size for the guest ABI.
+  const std::uint64_t size = guest_pointer_width >= 8 ? 104u : 68u;
+  if (size > guest_memory_size - out) return;
+  std::memset(guest_memory + out, 0, static_cast<std::size_t>(size));
+  store_guest_memory(context, out, size, 4);
+}
+void win32_get_startup_info_w(GuestContext* context) {
+  win32_get_startup_info(context);
 }
 void win32_get_command_line(GuestContext* context) {
   set_import_result(context, guest_reserved_top() - 0x500000);
@@ -3800,13 +3810,16 @@ void msvcrt_initterm(GuestContext* context) {
     if (entry == 0) continue;
     if (auto function = lookup_guest_function(entry)) {
       function(context);
-    } else if (std::getenv("RECOMP_DEBUG_INITTERM") != nullptr) {
-      std::fprintf(stderr, "DEBUG initterm: begin=0x%llx end=0x%llx slot=0x%llx entry=0x%llx width=%d\n",
-                   (unsigned long long)begin, (unsigned long long)end, (unsigned long long)slot,
-                   (unsigned long long)entry, guest_pointer_width);
-      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     } else {
-      terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
+      // Recovery can leave CRT table entries that point at compiler/runtime
+      // helpers outside the discovered guest function set. Skipping one is the
+      // only safe default for startup: calling an unknown address would jump into
+      // data, while aborting prevents every GUI/CRT-heavy binary from reaching its
+      // first real import. Strict verification can retain the old fail-closed
+      // behavior with RECOMP_STRICT_INITTERM=1.
+      std::fprintf(stderr, "recomp: _initterm skipped unrecovered initializer 0x%" PRIx64 "\n", entry);
+      if (std::getenv("RECOMP_STRICT_INITTERM") != nullptr)
+        terminate_with_message("_initterm: initialiser 0x%" PRIx64 " was not recovered as a function", entry);
     }
   }
   set_import_result(context, 0);
@@ -4296,6 +4309,18 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "VirtualFree", win32_virtual_free},
     {"kernel32.dll", "VirtualQuery", win32_virtual_query},
     {"kernel32.dll", "VirtualProtect", win32_virtual_protect},
+    // Minimal message-loop surface. These shims deliberately avoid claiming a
+    // native window exists; they let startup and deterministic headless paths
+    // advance until a real window/GDI provider is required.
+    {"user32.dll", "DefWindowProcA", win32_zero},
+    {"user32.dll", "DispatchMessageA", win32_zero},
+    {"user32.dll", "GetMessageA", win32_zero},
+    {"user32.dll", "MessageBeep", win32_one},
+    {"user32.dll", "PostQuitMessage", win32_zero},
+    {"user32.dll", "ShowWindow", win32_zero},
+    {"user32.dll", "SetForegroundWindow", win32_one},
+    {"user32.dll", "TranslateMessage", win32_zero},
+    {"user32.dll", "LoadIconA", win32_one},
     // libstdc++, cdecl: the caller pops.
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", cxx_ifstream_construct},
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE5closeEv", cxx_file_stream_close},
@@ -4353,6 +4378,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LCMapStringA", win32_lc_map_string_a},
     {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
     {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
+    {"comctl32.dll", "#17", win32_zero},
     // msvcrt: cdecl, so the caller pops and callee_cleans_stack is false below.
     {"msvcrt.dll", "_initterm", msvcrt_initterm},
     {"msvcrt.dll", "_initterm_e", msvcrt_initterm_e},
@@ -4360,6 +4386,11 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
     {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
+    {"vcruntime140.dll", "memcmp", msvcrt_memcmp},
+    {"vcruntime140.dll", "memcpy", msvcrt_memcpy},
+    {"vcruntime140.dll", "memset", msvcrt_memset},
+    {"vcruntime140.dll", "strchr", msvcrt_strchr},
+    {"vcruntime140.dll", "strrchr", msvcrt_strrchr},
     {"msvcrt.dll", "fflush", msvcrt_fflush},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},
     {"msvcrt.dll", "_set_new_mode", msvcrt_return_zero},
@@ -4539,8 +4570,11 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "EnterCriticalSection", win32_ignore},
     {"kernel32.dll", "LeaveCriticalSection", win32_ignore},
     {"kernel32.dll", "InitializeCriticalSectionAndSpinCount", win32_one},
+    {"kernel32.dll", "InitializeCriticalSectionEx", win32_one},
     {"kernel32.dll", "GetSystemTimeAsFileTime", win32_get_system_time_as_file_time},
     {"kernel32.dll", "GetStartupInfoA", win32_get_startup_info},
+    {"kernel32.dll", "GetStartupInfoW", win32_get_startup_info_w},
+    {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", win32_get_command_line},
     {"kernel32.dll", "GetCommandLineA", win32_get_command_line},
     {"kernel32.dll", "GetEnvironmentStrings", win32_get_environment_strings},
     {"kernel32.dll", "FreeEnvironmentStringsA", win32_one},
@@ -4559,6 +4593,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "FlsFree", win32_one},
     {"kernel32.dll", "FlsSetValue", win32_one},
     {"kernel32.dll", "FlsGetValue", win32_zero},
+    {"kernel32.dll", "FlsGetValue2", win32_zero},
     {"kernel32.dll", "TlsAlloc", win32_zero},
     {"kernel32.dll", "TlsFree", win32_one},
     {"kernel32.dll", "TlsSetValue", win32_one},
@@ -4568,6 +4603,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "GetProcAddress", win32_get_proc_address},
     {"kernel32.dll", "LoadLibraryA", win32_load_library_a},
     {"kernel32.dll", "LoadLibraryW", win32_load_library_w},
+    {"kernel32.dll", "LoadLibraryExW", win32_load_library_w},
     {"kernel32.dll", "FreeLibrary", win32_free_library},
     // kernel32 file services, all of which go through the handle table and the
     // app-directory policy rather than touching a host path directly.
@@ -4689,6 +4725,14 @@ void report_divide_error(GuestContext* context) {
 }
 
 const ShimDescriptor* find_win32_shim(const char* library_name, const char* symbol_name) {
+  // Windows API-set DLLs forward core process/thread/heap exports to kernel32.
+  // Preserve that forwarding behavior for GetProcAddress probes instead of
+  // requiring one duplicate table row for every API-set spelling.
+  if (library_name != nullptr &&
+      (std::strncmp(library_name, "api-ms-win-core-", 16) == 0 ||
+       std::strncmp(library_name, "ext-ms-win-", 11) == 0)) {
+    if (const auto* found = find_win32_shim("kernel32.dll", symbol_name)) return found;
+  }
   // The Universal CRT's API sets carry the standard C library symbols, so a name
   // that is not found under an api-ms-win-crt-* library is retried as msvcrt.
   if (win32_is_universal_crt_library(library_name)) {

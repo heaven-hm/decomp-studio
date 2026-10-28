@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <random>
 #include <limits>
@@ -757,6 +758,108 @@ inline void vector_set_double_lane(GuestContext* context, int vector_index, int 
   std::memcpy(context->vector_registers[vector_index] + lane * 8, &value, 8);
 }
 
+// PCMPISTRI is used by compiler CRT string routines. This models the common
+// implicit-length forms without relying on host SSE4.2 (the host may be ARM64).
+// It produces the selected match index in ECX and the architectural CF/ZF/SF/OF
+// predicates consumed by those routines.
+inline void vector_pcmpistri(GuestContext* context, int destination, const std::uint8_t* source,
+                             int immediate) {
+  const bool words = (immediate & 1) != 0;
+  const int count = words ? 8 : 16;
+  const int width = words ? 2 : 1;
+  const int aggregation = immediate & 0x0c;
+  const bool signed_elements = (immediate & 2) != 0;
+  bool matches[16]{};
+  bool destination_zero = false;
+  bool source_zero = false;
+  auto load_element = [&](const std::uint8_t* bytes, int index) -> std::int64_t {
+    std::uint64_t value = 0;
+    std::memcpy(&value, bytes + index * width, static_cast<std::size_t>(width));
+    if (width == 1) return signed_elements ? static_cast<std::int8_t>(value) : static_cast<std::uint8_t>(value);
+    return signed_elements ? static_cast<std::int16_t>(value) : static_cast<std::uint16_t>(value);
+  };
+  const auto* destination_bytes = context->vector_registers[destination];
+  for (int index = 0; index < count; ++index) {
+    destination_zero |= load_element(destination_bytes, index) == 0;
+    source_zero |= load_element(source, index) == 0;
+  }
+  if (aggregation == 0) {
+    for (int index = 0; index < count; ++index)
+      for (int other = 0; other < count; ++other)
+        matches[index] |= load_element(destination_bytes, index) == load_element(source, other);
+  } else if (aggregation == 4) {
+    for (int index = 0; index < count; ++index) {
+      const auto value = load_element(destination_bytes, index);
+      for (int other = 0; other + 1 < count; other += 2)
+        matches[index] |= value >= load_element(source, other) && value <= load_element(source, other + 1);
+    }
+  } else if (aggregation == 8) {
+    for (int index = 0; index < count; ++index)
+      matches[index] = load_element(destination_bytes, index) == load_element(source, index);
+  } else {
+    for (int start = 0; start < count; ++start) {
+      matches[start] = true;
+      for (int offset = 0; start + offset < count && offset < count; ++offset)
+        matches[start] &= load_element(destination_bytes, start + offset) == load_element(source, offset);
+    }
+  }
+  if ((immediate & 0x10) != 0)
+    for (int index = 0; index < count; ++index) matches[index] = !matches[index];
+  int selected = count;
+  if ((immediate & 0x40) == 0) {
+    for (int index = 0; index < count; ++index) if (matches[index]) { selected = index; break; }
+  } else {
+    for (int index = count - 1; index >= 0; --index) if (matches[index]) { selected = index; break; }
+  }
+  context->registers[1] = (context->registers[1] & ~0xffffffffull) |
+                           static_cast<std::uint32_t>(selected == count ? 0 : selected);
+  context->carry_flag = selected != count;
+  context->zero_flag = source_zero;
+  context->sign_flag = destination_zero;
+  context->overflow_flag = matches[0] ? 1u : 0u;
+}
+
+inline void vector_pcmpistri_register(GuestContext* context, int destination, int source, int immediate) {
+  vector_pcmpistri(context, destination, context->vector_registers[source], immediate);
+}
+
+inline void vector_pcmpistri_memory(GuestContext* context, int destination, std::uint64_t address,
+                                    int immediate) {
+  std::uint8_t source[16]{};
+  for (int index = 0; index < 16; ++index)
+    source[index] = static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+  vector_pcmpistri(context, destination, source, immediate);
+}
+
+// ROUNDSD rounds the low scalar double and preserves the destination's high
+// lane. Immediate bits 1:0 select nearest/down/up/truncate; bit 2 delegates to
+// MXCSR's rounding control.
+inline double round_scalar_double(const GuestContext* context, double value, int immediate) {
+  const int mode = (immediate & 4) != 0 ? static_cast<int>((context->mxcsr >> 13) & 3u)
+                                        : (immediate & 3);
+  switch (mode) {
+    case 1: return std::floor(value);
+    case 2: return std::ceil(value);
+    case 3: return std::trunc(value);
+    default: return std::nearbyint(value);
+  }
+}
+
+inline void round_scalar_double_register(GuestContext* context, int destination, int source,
+                                         int immediate) {
+  vector_set_double(context, destination,
+                    round_scalar_double(context, vector_get_double(context, source), immediate));
+}
+
+inline void round_scalar_double_memory(GuestContext* context, int destination, std::uint64_t address,
+                                       int immediate) {
+  const std::uint64_t bits = load_guest_memory(context, address, 8);
+  double value = 0.0;
+  std::memcpy(&value, &bits, sizeof(value));
+  vector_set_double(context, destination,
+                    round_scalar_double(context, value, immediate));
+}
+
 // COMISS / COMISD / UCOMISS / UCOMISD: flags only, no writeback.
 inline void compare_scalar_floats(GuestContext* context, double left, double right) {
   context->overflow_flag = context->sign_flag = context->auxiliary_flag = 0;
@@ -1042,6 +1145,9 @@ inline void vector_insert_qword(GuestContext* context, int destination, std::uin
 RECOMP_FMA_OP(fma132, std::fma(dst, src3, src2))
 RECOMP_FMA_OP(fma213, std::fma(src2, dst, src3))
 RECOMP_FMA_OP(fma231, std::fma(src2, src3, dst))
+RECOMP_FMA_OP(fmsub132, std::fma(dst, src3, -src2))
+RECOMP_FMA_OP(fmsub213, std::fma(src2, dst, -src3))
+RECOMP_FMA_OP(fmsub231, std::fma(src2, src3, -dst))
 #undef RECOMP_FMA_OP
 
 // The 256-bit forms. `vector_registers` is [16][32] -- 32 bytes, 256 bits -- and the
@@ -1096,6 +1202,19 @@ inline void vector_broadcast_float_memory(GuestContext* context, int destination
 inline void vector_insert_upper_128(GuestContext* context, int destination, int source, int immediate) {
   const int offset = (immediate & 1) != 0 ? 16 : 0;
   std::memcpy(context->vector_registers[destination] + 16, context->vector_registers[source] + offset, 16);
+}
+inline void vector_insert_128(GuestContext* context, int destination, int source1, int source2, int immediate) {
+  std::memcpy(context->vector_registers[destination], context->vector_registers[source1], 32);
+  const int offset = (immediate & 1) != 0 ? 16 : 0;
+  std::memcpy(context->vector_registers[destination] + offset,
+              context->vector_registers[source2] + (offset == 0 ? 0 : 0), 16);
+}
+inline void vector_insert_128_memory(GuestContext* context, int destination, int source1,
+                                     std::uint64_t address, int immediate) {
+  std::memcpy(context->vector_registers[destination], context->vector_registers[source1], 32);
+  const int offset = (immediate & 1) != 0 ? 16 : 0;
+  if (address + 16 > guest_memory_size) { report_guest_memory_fault(context, address, 16, 0); return; }
+  std::memcpy(context->vector_registers[destination] + offset, guest_memory + address, 16);
 }
 inline void vector_extract_upper_128(GuestContext* context, int destination, int source, int immediate) {
   const int offset = (immediate & 1) != 0 ? 16 : 0;
@@ -1441,6 +1560,36 @@ inline void vector_convert_dwords_to_doubles_memory(GuestContext* context, int d
   std::int32_t values[2];
   std::memcpy(values, guest_memory + address, 8);
   const double result[2] = {static_cast<double>(values[0]), static_cast<double>(values[1])};
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+// CVTTPS2DQ truncates four packed single-precision values toward zero. Values
+// outside the signed dword range (including NaN/infinity) produce the architectural
+// indefinite integer 0x80000000 rather than invoking host floating-point casts.
+inline std::int32_t truncate_float_to_dword(float value) {
+  if (!std::isfinite(value) || value >= 2147483648.0f || value < -2147483648.0f)
+    return std::numeric_limits<std::int32_t>::min();
+  return static_cast<std::int32_t>(std::trunc(value));
+}
+
+inline void vector_convert_truncated_floats_to_dwords(GuestContext* context, int destination, int source) {
+  float values[4];
+  std::int32_t result[4];
+  std::memcpy(values, context->vector_registers[source], 16);
+  for (int index = 0; index < 4; ++index) result[index] = truncate_float_to_dword(values[index]);
+  std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void vector_convert_truncated_floats_to_dwords_memory(GuestContext* context, int destination,
+                                                             std::uint64_t address) {
+  if (address + 16 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 16, 0);
+    return;
+  }
+  float values[4];
+  std::int32_t result[4];
+  std::memcpy(values, guest_memory + address, 16);
+  for (int index = 0; index < 4; ++index) result[index] = truncate_float_to_dword(values[index]);
   std::memcpy(context->vector_registers[destination], result, 16);
 }
 

@@ -542,6 +542,32 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // Byte-level memory windows are sampled sparsely because each one is 68 KiB.
   // The memory digest is still captured at every state checkpoint; the sampled
   // windows provide byte-level context without growing with every instruction.
+  // A project may carry the bytes the guest should read as stdin. Handing the SAME file
+  // to both sides is the whole point: the reference runs in this process and the
+  // candidate in a subprocess, so without it the first consumes the real stdin and the
+  // second sees EOF, and the two differ for a reason that is not the translation.
+  // A ceiling on the CANDIDATE, because the harness had none: `capture_process` reads
+  // until EOF, so a program that never exits hung `verify` forever with no diagnosis.
+  //
+  // The value is chosen from measurement, not taste. The largest fixture, `tictactoe`,
+  // legitimately executes 108,107,930 guest instructions, so a ceiling of 20,000,000
+  // truncated it and broke the end-to-end test. One billion is ten times the largest
+  // real run observed here, which leaves room for a bigger program while still stopping
+  // a program that never terminates.
+  //
+  // This is a safety net, not a matching budget: the reference is unbounded and stops
+  // when the guest reaches ExitProcess. The proper place for a limit is the harness's
+  // wall-clock handling, which would also catch a candidate stuck outside guest code;
+  // this catches the case that was actually observed.
+  ::setenv("RECOMP_INSTRUCTION_BUDGET", "1000000000", 1);
+
+  const auto stdin_path = project_directory / "recomp-stdin.txt";
+  if (std::filesystem::exists(stdin_path)) {
+    ::setenv("RECOMP_STDIN_FILE", stdin_path.string().c_str(), 1);
+  } else {
+    ::unsetenv("RECOMP_STDIN_FILE");
+  }
+
   const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
   ::setenv("RECOMP_MEMORY_WINDOWS", memory_windows_path.string().c_str(), 1);
   std::filesystem::remove(memory_windows_path);

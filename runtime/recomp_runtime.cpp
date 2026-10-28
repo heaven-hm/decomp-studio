@@ -1250,8 +1250,33 @@ void msvcrt_rand(GuestContext* context) {
   set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
 }
 
+// The bytes the guest reads as stdin, when a run supplies them. A file rather than an
+// environment variable so that both sides of a verification read the SAME input: the
+// reference runs in this process and the candidate in a subprocess, and if both read the
+// real stdin the first consumes it and the second sees EOF. They would then differ for a
+// reason that has nothing to do with the translation.
+std::string guest_input_storage;
 const std::string* guest_input_capture = nullptr;
 std::size_t guest_input_position = 0;
+
+// Loads the file named by RECOMP_STDIN_FILE, if any. Called once at startup.
+void load_guest_input_from_environment() {
+  const char* path = std::getenv("RECOMP_STDIN_FILE");
+  if (path == nullptr || path[0] == '\0') return;
+  std::FILE* file = std::fopen(path, "rb");
+  if (file == nullptr) {
+    // Fail loudly: silently reading the real stdin instead would make the two sides
+    // disagree in a way that looks like a translation bug.
+    std::fprintf(stderr, "recomp: RECOMP_STDIN_FILE=%s could not be opened\n", path);
+    return;
+  }
+  char buffer[4096];
+  std::size_t read = 0;
+  while ((read = std::fread(buffer, 1, sizeof(buffer), file)) != 0) guest_input_storage.append(buffer, read);
+  std::fclose(file);
+  guest_input_capture = &guest_input_storage;
+  guest_input_position = 0;
+}
 
 int guest_read_byte() {
   if (guest_input_capture != nullptr) {
@@ -2724,6 +2749,18 @@ void report_guest_memory_fault(GuestContext* context, std::uint64_t address, int
   terminate_with_message("guest %s fault at 0x%" PRIx64 " (width %d) ip=0x%" PRIx64,
                          is_write ? "write" : "read", address, width, context->instruction_pointer);
 }
+// The candidate's instruction budget. The reference has had one since it was written
+// (`instruction budget exhausted before ExitProcess`); the candidate had none, so a
+// program that never terminates hung verification instead of reporting anything.
+std::uint64_t guest_instruction_budget = 0;
+
+void note_executed_instruction() {
+  if (guest_instruction_budget == 0) return;
+  if (++guest_executed_instructions <= guest_instruction_budget) return;
+  terminate_with_message("instruction budget exhausted after %llu guest instructions",
+                         static_cast<unsigned long long>(guest_executed_instructions));
+}
+
 void recomp_trap(GuestContext* context, const char* reason) {
   terminate_with_message("trap '%s' at ip=0x%" PRIx64, reason, context->instruction_pointer);
 }
@@ -3250,6 +3287,11 @@ void arm_guest_file_sandbox() {
 }
 
 void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, std::uint64_t stack_top) {
+  // Both sides of a verification pass through here, so loading the supplied stdin once
+  // is enough for the reference and the candidate to read the same bytes.
+  load_guest_input_from_environment();
+  if (const char* budget = std::getenv("RECOMP_INSTRUCTION_BUDGET"))
+    guest_instruction_budget = std::strtoull(budget, nullptr, 10);
   recompiled_image_base = image_base;
   next_heap_address = heap_base;
   heap_initialize(heap_base, stack_top);

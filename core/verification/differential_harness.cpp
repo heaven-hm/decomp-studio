@@ -336,7 +336,11 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
     }
   }
   if (state.instruction_count > kInstructionBudget) {
-    state.finished = true;
+    // NOT `finished`: that flag means the guest reached ExitProcess, and the exit
+    // handler is the only thing entitled to set it. Setting it here made a truncated
+    // reference indistinguishable from a completed one, which let a truncated run be
+    // reported VERIFIED. `budget_reached` is what the verdict reads.
+    state.budget_reached = true;
     uc_emu_stop(engine);
   }
 }
@@ -659,6 +663,9 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     // Saying so is the point -- reporting the candidate's fields as zero made it look
     // like a program that started and produced nothing, which is a different claim.
     result.candidate_ran = false;
+    // Assigned BEFORE the return: the verdict reads it, and leaving it false here made a
+    // truncated reference report NOT_RUN instead of INCOMPLETE.
+    result.truncated = reference.truncated;
     result.diagnosis = "the candidate was NOT run: the reference execution did not complete (" +
                        reference.failure_reason + ")";
     return result;
@@ -759,6 +766,10 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
       memory_window_classifications[checkpoint_index] = classification;
       ++checkpoint;
     }
+    // The comparison ran over this checkpoint's window and found nothing unexplained.
+    // Recorded explicitly because the field now defaults to false: an agreement must be
+    // established, not inherited from a default.
+    if (unclassified == 0) result.memory_match = true;
     if (unclassified != 0) {
       result.memory_match = false;
       result.memory_diagnosis = first_unclassified;
@@ -831,6 +842,8 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         // reason the memory digest is: the divergence is not yet explained, and a
         // gate that fails for a reason nobody has diagnosed gets weakened or
         // ignored. It is recorded with its checkpoint so it cannot be lost.
+        if (!mxcsr_differs && !x87_control_differs && !x87_status_differs)
+          result.control_registers_match = true;
         if (result.control_diagnosis.empty() &&
             (mxcsr_differs || x87_control_differs || x87_status_differs)) {
           result.control_registers_match = false;

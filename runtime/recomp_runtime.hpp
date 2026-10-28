@@ -758,6 +758,79 @@ inline void vector_set_double_lane(GuestContext* context, int vector_index, int 
   std::memcpy(context->vector_registers[vector_index] + lane * 8, &value, 8);
 }
 
+// PCMPISTRI is used by compiler CRT string routines. This models the common
+// implicit-length forms without relying on host SSE4.2 (the host may be ARM64).
+// It produces the selected match index in ECX and the architectural CF/ZF/SF/OF
+// predicates consumed by those routines.
+inline void vector_pcmpistri(GuestContext* context, int destination, const std::uint8_t* source,
+                             int immediate) {
+  const bool words = (immediate & 1) != 0;
+  const int count = words ? 8 : 16;
+  const int width = words ? 2 : 1;
+  const int aggregation = immediate & 0x0c;
+  const bool signed_elements = (immediate & 2) != 0;
+  bool matches[16]{};
+  bool destination_zero = false;
+  bool source_zero = false;
+  auto load_element = [&](const std::uint8_t* bytes, int index) -> std::int64_t {
+    std::uint64_t value = 0;
+    std::memcpy(&value, bytes + index * width, static_cast<std::size_t>(width));
+    if (width == 1) return signed_elements ? static_cast<std::int8_t>(value) : static_cast<std::uint8_t>(value);
+    return signed_elements ? static_cast<std::int16_t>(value) : static_cast<std::uint16_t>(value);
+  };
+  const auto* destination_bytes = context->vector_registers[destination];
+  for (int index = 0; index < count; ++index) {
+    destination_zero |= load_element(destination_bytes, index) == 0;
+    source_zero |= load_element(source, index) == 0;
+  }
+  if (aggregation == 0) {
+    for (int index = 0; index < count; ++index)
+      for (int other = 0; other < count; ++other)
+        matches[index] |= load_element(destination_bytes, index) == load_element(source, other);
+  } else if (aggregation == 4) {
+    for (int index = 0; index < count; ++index) {
+      const auto value = load_element(destination_bytes, index);
+      for (int other = 0; other + 1 < count; other += 2)
+        matches[index] |= value >= load_element(source, other) && value <= load_element(source, other + 1);
+    }
+  } else if (aggregation == 8) {
+    for (int index = 0; index < count; ++index)
+      matches[index] = load_element(destination_bytes, index) == load_element(source, index);
+  } else {
+    for (int start = 0; start < count; ++start) {
+      matches[start] = true;
+      for (int offset = 0; start + offset < count && offset < count; ++offset)
+        matches[start] &= load_element(destination_bytes, start + offset) == load_element(source, offset);
+    }
+  }
+  if ((immediate & 0x10) != 0)
+    for (int index = 0; index < count; ++index) matches[index] = !matches[index];
+  int selected = count;
+  if ((immediate & 0x40) == 0) {
+    for (int index = 0; index < count; ++index) if (matches[index]) { selected = index; break; }
+  } else {
+    for (int index = count - 1; index >= 0; --index) if (matches[index]) { selected = index; break; }
+  }
+  context->registers[1] = (context->registers[1] & ~0xffffffffull) |
+                           static_cast<std::uint32_t>(selected == count ? 0 : selected);
+  context->carry_flag = selected != count;
+  context->zero_flag = source_zero;
+  context->sign_flag = destination_zero;
+  context->overflow_flag = matches[0] ? 1u : 0u;
+}
+
+inline void vector_pcmpistri_register(GuestContext* context, int destination, int source, int immediate) {
+  vector_pcmpistri(context, destination, context->vector_registers[source], immediate);
+}
+
+inline void vector_pcmpistri_memory(GuestContext* context, int destination, std::uint64_t address,
+                                    int immediate) {
+  std::uint8_t source[16]{};
+  for (int index = 0; index < 16; ++index)
+    source[index] = static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+  vector_pcmpistri(context, destination, source, immediate);
+}
+
 // ROUNDSD rounds the low scalar double and preserves the destination's high
 // lane. Immediate bits 1:0 select nearest/down/up/truncate; bit 2 delegates to
 // MXCSR's rounding control.
@@ -1129,6 +1202,19 @@ inline void vector_broadcast_float_memory(GuestContext* context, int destination
 inline void vector_insert_upper_128(GuestContext* context, int destination, int source, int immediate) {
   const int offset = (immediate & 1) != 0 ? 16 : 0;
   std::memcpy(context->vector_registers[destination] + 16, context->vector_registers[source] + offset, 16);
+}
+inline void vector_insert_128(GuestContext* context, int destination, int source1, int source2, int immediate) {
+  std::memcpy(context->vector_registers[destination], context->vector_registers[source1], 32);
+  const int offset = (immediate & 1) != 0 ? 16 : 0;
+  std::memcpy(context->vector_registers[destination] + offset,
+              context->vector_registers[source2] + (offset == 0 ? 0 : 0), 16);
+}
+inline void vector_insert_128_memory(GuestContext* context, int destination, int source1,
+                                     std::uint64_t address, int immediate) {
+  std::memcpy(context->vector_registers[destination], context->vector_registers[source1], 32);
+  const int offset = (immediate & 1) != 0 ? 16 : 0;
+  if (address + 16 > guest_memory_size) { report_guest_memory_fault(context, address, 16, 0); return; }
+  std::memcpy(context->vector_registers[destination] + offset, guest_memory + address, 16);
 }
 inline void vector_extract_upper_128(GuestContext* context, int destination, int source, int immediate) {
   const int offset = (immediate & 1) != 0 ? 16 : 0;

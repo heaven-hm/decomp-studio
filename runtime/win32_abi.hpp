@@ -358,6 +358,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "GetProcAddress", 2, true},
     {"kernel32.dll", "LoadLibraryA", 1, true},
     {"kernel32.dll", "LoadLibraryW", 1, true},
+    {"kernel32.dll", "LoadLibraryExW", 3, true},
     {"kernel32.dll", "FreeLibrary", 1, true},
     // kernel32 file services. CreateFileA is stdcall with seven arguments, and
     // the seventh is the one a program that does not care about template files

@@ -1479,6 +1479,60 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          std::to_string(operands[2].immediate_value & 0xff) + ");");
     return;
   }
+  // The remaining 128-bit SSE/AVX forms the triage listed as blocking real applications.
+  if ((mnemonic == "movmskps" || mnemonic == "movmskpd" || mnemonic == "vmovmskps" ||
+       mnemonic == "vmovmskpd") &&
+      operands.size() == 2 && operands[0].kind == discovery::Operand::Kind::Register &&
+      is_vector_register(operands[1])) {
+    const bool doubles = mnemonic.find("pd") != std::string::npos;
+    operand_write(output, instruction, operands[0],
+                  std::string(doubles ? "vector_move_mask_doubles" : "vector_move_mask_floats") +
+                      "(context, " + std::to_string(vector_index(operands[1])) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
+  if ((mnemonic == "pmovzxdq" || mnemonic == "vpmovzxdq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_dwords_to_qwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxwd" || mnemonic == "vpmovzxwd") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_words_to_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxbw" || mnemonic == "vpmovzxbw") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_bytes_to_words(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxbq" || mnemonic == "vpmovzxbq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_bytes_to_qwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "pminub" || mnemonic == "vpminub") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_min_unsigned_bytes(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "pmuldq" || mnemonic == "vpmuldq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_multiply_signed_dwords_to_qwords(context, " + std::to_string(vector_index(operands[0])) +
+         ", " + std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "ptest" || mnemonic == "vptest") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_test_bits(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
   // The VEX form of a two-operand SSE instruction has THREE operands, and the first two
   // are its sources: `vpmaddubsw xmm1, xmm2, xmm3` computes xmm1 = xmm2 op xmm3, where
   // `pmaddubsw xmm1, xmm2` computes xmm1 = xmm1 op xmm2. Normalising the MNEMONIC does not

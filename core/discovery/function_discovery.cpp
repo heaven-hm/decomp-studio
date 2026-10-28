@@ -204,6 +204,12 @@ void FunctionDiscovery::discover() {
       const auto instruction = decode(address);
       if (instruction.size == 0 || instruction.mnemonic.empty()) return false;
       address += static_cast<std::uint32_t>(instruction.size);
+      // Compiler-generated callback/metadata thunks are often only a
+      // RIP-relative load followed by a tail jump (or a single return).  They
+      // are real callable entries but intentionally shorter than the old
+      // eight-instruction confidence window, so accept a bounded sequence once
+      // it reaches an unconditional terminator.
+      if (kTerminators.count(instruction.mnemonic) != 0) return true;
     }
     return true;
   };
@@ -348,12 +354,45 @@ void FunctionDiscovery::discover() {
   // lives there, so skipping code sections missed exactly the entries the
   // program calls on the way out.
   for (const auto& section : executable_.sections) {
+    // On x64, the PE exception directory (.pdata) is an authoritative table of
+    // RUNTIME_FUNCTION records.  Its first DWORD is the RVA of every function
+    // covered by unwind metadata, including leaf/tail-call entries that may be
+    // reached only through a runtime-generated function pointer.  Recursive
+    // descent and data-pointer scans cannot recover those entries reliably.
+    // Treat the table as metadata, not as ordinary data: malformed records are
+    // ignored and the start/end RVAs must describe a code-range in this image.
+    if (section.name == ".pdata" && executable_.is_64_bit && section.raw_size >= 12) {
+      for (std::uint32_t offset = 0; offset + 12 <= section.raw_size; offset += 12) {
+        const auto begin = executable_.read_u32(section.virtual_address + offset);
+        const auto end = executable_.read_u32(section.virtual_address + offset + 4);
+        if (!begin || !end || *begin >= *end || !contains_code(*begin) || !contains_code(*end - 1))
+          continue;
+        pending_entries.push_back(executable_.image_base + *begin);
+      }
+    }
     if (section.raw_size < 4) continue;
     const bool in_code_section = section.is_executable();
     for (std::uint32_t offset = 0; offset + 4 <= section.raw_size; offset += 4) {
       const auto value = executable_.read_u32(section.virtual_address + offset);
       if (!value || !decodes_as_code(*value, in_code_section)) continue;
       pending_entries.push_back(*value);
+    }
+    if (in_code_section) {
+      // MSVC emits tiny address-taken thunks as `lea reg,[rip+disp32]; jmp
+      // rel32`, often with no unwind record.  Their only static evidence is
+      // the alignment padding immediately before the entry.  Recognize that
+      // exact two-instruction shape so callback targets are not lost while
+      // avoiding a broad scan of arbitrary instruction boundaries.
+      for (std::uint32_t offset = 1; offset + 12 <= section.raw_size; ++offset) {
+        const auto previous = executable_.read_rva(section.virtual_address + offset - 1, 1);
+        if (previous.empty() || (previous[0] != 0xcc && previous[0] != 0x90 && previous[0] != 0x00))
+          continue;
+        const auto first = decode(section.virtual_address + offset);
+        if (first.mnemonic != "lea" || first.size == 0) continue;
+        const auto second = decode(section.virtual_address + offset + first.size);
+        if (second.mnemonic != "jmp" || second.size == 0) continue;
+        pending_entries.push_back(executable_.image_base + section.virtual_address + offset);
+      }
     }
   }
 

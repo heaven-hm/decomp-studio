@@ -448,10 +448,20 @@ void FunctionDiscovery::discover() {
         pending_entries.push_back(executable_.image_base + *begin);
       }
     }
-    if (section.raw_size < 4) continue;
+    // Initializer and callback arrays store full virtual addresses.  PE32+
+    // entries are eight bytes; scanning them as DWORDs sees only the low RVA
+    // half and loses the high image-base bits before `decodes_as_code` can
+    // validate a perfectly real constructor.
+    const auto pointer_bytes = executable_.is_64_bit ? 8u : 4u;
+    if (section.raw_size < pointer_bytes) continue;
     const bool in_code_section = section.is_executable();
-    for (std::uint32_t offset = 0; offset + 4 <= section.raw_size; offset += 4) {
-      const auto value = executable_.read_u32(section.virtual_address + offset);
+    for (std::uint32_t offset = 0; offset + pointer_bytes <= section.raw_size; offset += pointer_bytes) {
+      std::optional<std::uint64_t> value;
+      if (executable_.is_64_bit) {
+        value = executable_.read_u64(section.virtual_address + offset);
+      } else if (const auto entry = executable_.read_u32(section.virtual_address + offset)) {
+        value = *entry;
+      }
       if (!value || !decodes_as_code(*value, in_code_section)) continue;
       pending_entries.push_back(*value);
     }

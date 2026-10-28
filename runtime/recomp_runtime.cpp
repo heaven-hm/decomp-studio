@@ -3647,7 +3647,12 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
   const auto format_address = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
   const auto arguments = wide_guest ? import_argument(context, 5) : load_guest_memory(context, sp + 28, 4);
   const auto format = read_guest_string(format_address);
-  if ((options & ~std::uint64_t{2}) != 0)
+  // UCRT defines these six bits for legacy termination, snprintf, wide-specifier,
+  // MSVCRT compatibility, exponent, and standard-rounding modes. The narrow
+  // formatter below already uses the host's standard formatting rules; accepting
+  // the documented mask avoids rejecting MinGW's normal 0x26 option word.
+  constexpr std::uint64_t kUcrtPrintfOptions = 0x3f;
+  if ((options & ~kUcrtPrintfOptions) != 0)
     terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
                            static_cast<unsigned long long>(options));
   const auto output = msvcrt_format_arguments(context, format, arguments);
@@ -3904,6 +3909,65 @@ void msvcrt_stdio_common_vfscanf(GuestContext* context) {
   // On this platform a va_list is a pointer, so an array of translated destinations
   // IS a valid argument list -- the same representation the guest uses.
   const auto result = vfctscanf_(getch, ungetch, stdin, format.c_str(),
+                                 reinterpret_cast<va_list>(translated.data()));
+  set_import_result(context, static_cast<std::uint32_t>(result));
+}
+
+// This has the same UCRT guest-va_list bridge as vfscanf above, but reads from a
+// guest character buffer. It delegates conversion to the vendored upstream scanf
+// implementation (`vfctscanf_`) rather than parsing C conversion syntax again.
+void msvcrt_stdio_common_vsscanf(GuestContext* context) {
+  const bool wide_guest = guest_pointer_width >= 8;
+  const auto sp = context->registers[4];
+  const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
+  const auto input_address = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
+  const auto input_count = wide_guest ? import_argument(context, 2) : load_guest_memory(context, sp + 16, 4);
+  const auto format_address = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
+  const auto locale = wide_guest ? import_argument(context, 4) : load_guest_memory(context, sp + 24, 4);
+  const auto arguments = wide_guest ? import_argument(context, 5) : load_guest_memory(context, sp + 28, 4);
+  const auto format = read_guest_string(format_address);
+  // _CRT_INTERNAL_SCANF_SECURECRT adds buffer-size arguments to the va_list, so
+  // retain the existing vfscanf rule and reject it until those are represented.
+  constexpr std::uint64_t kUcrtScanfSupportedOptions = 0x6;
+  if ((options & ~kUcrtScanfSupportedOptions) != 0 || locale != 0)
+    terminate_with_message("__stdio_common_vsscanf: unsupported options=0x%" PRIx64
+                           " locale=0x%" PRIx64 " format='%s'",
+                           options, locale, format.c_str());
+
+  std::string input;
+  const auto available = input_address < guest_memory_size ? guest_memory_size - input_address : 0;
+  const auto bounded_count = std::min(input_count, available);
+  for (std::uint64_t index = 0; index < bounded_count; ++index) {
+    const auto byte = static_cast<char>(load_guest_memory(context, input_address + index, 1));
+    if (byte == '\0') break;
+    input.push_back(byte);
+  }
+  const auto count = scanf_destination_count(format);
+  std::vector<std::uint8_t*> translated;
+  translated.reserve(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto guest_pointer =
+        load_guest_memory(context, arguments + index * guest_pointer_width, guest_pointer_width);
+    if (guest_pointer == 0)
+      terminate_with_message("__stdio_common_vsscanf: null destination for conversion %zu of '%s'",
+                             index + 1, format.c_str());
+    (void)load_guest_memory(context, guest_pointer, 1);
+    translated.push_back(guest_memory + guest_pointer);
+  }
+  struct StringCursor {
+    const std::string* text;
+    std::size_t position;
+  } cursor{&input, 0};
+  const auto getch = [](void* opaque) {
+    auto* cursor = static_cast<StringCursor*>(opaque);
+    if (cursor->position >= cursor->text->size()) return EOF;
+    return static_cast<int>(static_cast<unsigned char>((*cursor->text)[cursor->position++]));
+  };
+  const auto ungetch = [](int character, void* opaque) {
+    auto* cursor = static_cast<StringCursor*>(opaque);
+    if (character != EOF && cursor->position != 0) --cursor->position;
+  };
+  const auto result = vfctscanf_(getch, ungetch, &cursor, format.c_str(),
                                  reinterpret_cast<va_list>(translated.data()));
   set_import_result(context, static_cast<std::uint32_t>(result));
 }
@@ -4353,6 +4417,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__acrt_iob_func", msvcrt_acrt_iob_func},
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
     {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
+    {"msvcrt.dll", "__stdio_common_vsscanf", msvcrt_stdio_common_vsscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
     {"msvcrt.dll", "fflush", msvcrt_fflush},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},

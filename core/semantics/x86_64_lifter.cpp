@@ -309,6 +309,9 @@ ParsedMnemonic parse_mnemonic(const std::string& raw) {
     parsed.has_repeat_prefix = true;
   }
   if (parsed.mnemonic.compare(0, 5, "lock ") == 0) parsed.mnemonic = parsed.mnemonic.substr(5);
+  // MPX `bnd` is a non-semantic bounds hint when MPX is disabled; ordinary
+  // branches prefixed with it execute exactly like their unprefixed form.
+  if (parsed.mnemonic.compare(0, 4, "bnd ") == 0) parsed.mnemonic = parsed.mnemonic.substr(4);
   return parsed;
 }
 

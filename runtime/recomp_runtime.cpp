@@ -3539,6 +3539,269 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
   return accepted < 0 ? 0 : output.size();
 }
 
+// The Win32 WINDOW AND MESSAGE surface.
+//
+// A console program needs none of this; a GUI program needs all of it before it can do
+// anything at all, which is why a GUI application stops at its first `GetForegroundWindow`
+// rather than somewhere informative. What is here is a GENERAL single-window model -- a
+// registered class, a window, a message queue and WndProc re-entry -- with no application's
+// geometry or behaviour in it. The structure follows the approach used by the MIT
+// `project-igi-browser` host layer, re-expressed for this runtime's ABI: arguments come
+// through `import_argument`, and the stack is popped centrally, so these do NOT pop.
+//
+// There is no real window and no real input. Saying so plainly matters: a program that
+// creates a window here gets a handle and a message loop that runs, and NOT a visible
+// window, and the diagnostics must not let that be mistaken for GUI support.
+
+struct GuestWindowState {
+  std::uint64_t window{};
+  std::uint64_t instance{};
+  std::uint64_t wndproc{};
+  std::uint64_t class_name{};
+  int width{640};
+  int height{480};
+  bool created{};
+  std::uint64_t dc{};
+};
+
+GuestWindowState guest_window;
+
+// A ring of queued messages. `PeekMessage` returns them one at a time and
+// `DispatchMessage` hands them to the guest's WndProc.
+struct GuestMessage {
+  std::uint64_t window{};
+  std::uint32_t message{};
+  std::uint64_t wparam{};
+  std::uint64_t lparam{};
+};
+constexpr std::size_t kMessageQueueSize = 256;
+GuestMessage guest_message_queue[kMessageQueueSize];
+std::size_t guest_message_head = 0;
+std::size_t guest_message_tail = 0;
+
+void post_guest_message(std::uint64_t window, std::uint32_t message, std::uint64_t wparam,
+                        std::uint64_t lparam) {
+  const auto next = (guest_message_tail + 1) % kMessageQueueSize;
+  if (next == guest_message_head) return;  // full: dropping is better than overwriting
+  guest_message_queue[guest_message_tail] = {window, message, wparam, lparam};
+  guest_message_tail = next;
+}
+
+bool take_guest_message(GuestMessage* out) {
+  if (guest_message_head == guest_message_tail) return false;
+  *out = guest_message_queue[guest_message_head];
+  guest_message_head = (guest_message_head + 1) % kMessageQueueSize;
+  return true;
+}
+
+// A WndProc is a GUEST function, so it is called through the same dispatch the guest uses.
+// The return sentinel is what stops the call when the guest executes `ret`.
+void call_guest_window_proc(GuestContext* context, std::uint64_t window, std::uint32_t message,
+                            std::uint64_t wparam, std::uint64_t lparam) {
+  if (guest_window.wndproc == 0) return;
+  const auto function = lookup_guest_function(guest_window.wndproc);
+  if (function == nullptr) {
+    // Named rather than skipped: a window procedure that did not run is a behaviour
+    // difference the guest cannot observe any other way.
+    std::fprintf(stderr, "recomp: the window procedure at 0x%llx was not recompiled, so it did not run\n",
+                 static_cast<unsigned long long>(guest_window.wndproc));
+    return;
+  }
+  // The same shape the atexit runner uses: arguments pushed right to left, then a return
+  // address of zero for the callee's `ret` to pop. The generated code RETURNS from the
+  // call rather than jumping, so this needs no sentinel address to exist.
+  const std::uint64_t arguments[4] = {window, message, wparam, lparam};
+  const auto stack_pointer = context->registers[4];
+  for (int index = 3; index >= 0; --index)
+    push_guest_stack(context, arguments[index]);
+  push_guest_stack(context, 0);
+  function(context);
+  context->registers[4] = stack_pointer;
+}
+
+void msvcrt_register_class_a(GuestContext* context) {
+  // The class structure's second field is the WndProc on 32-bit and the third on 64-bit,
+  // because the first field is a style DWORD followed by padding. Reading the wrong slot
+  // would register a callback that is not a function.
+  const auto structure = import_argument(context, 0);
+  guest_window.wndproc = load_guest_memory(context, structure + (guest_pointer_width >= 8 ? 8 : 4),
+                                           guest_pointer_width);
+  set_import_result(context, 1);
+}
+
+void msvcrt_create_window_ex_a(GuestContext* context) {
+  (void)import_argument(context, 0);  // extended style
+  guest_window.class_name = import_argument(context, 1);
+  guest_window.width = static_cast<int>(import_argument(context, 6) & 0xffffu);
+  guest_window.height = static_cast<int>(import_argument(context, 7) & 0xffffu);
+  guest_window.instance = import_argument(context, 10);
+  // A fixed handle rather than an allocation: the guest only compares it and passes it
+  // back, and a value that is stable across a run is easier to read in a diagnosis.
+  guest_window.window = 0x00010001ull;
+  guest_window.created = true;
+  set_import_result(context, guest_window.window);
+}
+
+void msvcrt_destroy_window(GuestContext* context) {
+  guest_window.created = false;
+  set_import_result(context, 1);
+}
+void msvcrt_unregister_class_a(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_show_window(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_update_window(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_invalidate_rect(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_set_focus(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_set_window_pos(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_set_window_text_a(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_set_foreground_window(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_show_cursor(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_adjust_window_rect(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_client_to_screen(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_set_window_long_a(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_get_window_long_a(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_post_quit_message(GuestContext* context) {
+  // WM_QUIT is what ends the message loop. Queueing it is what makes `GetMessage` return
+  // zero and the program reach its own shutdown instead of looping forever.
+  post_guest_message(0, 0x0012u, import_argument(context, 0), 0);
+  (void)context;
+}
+void msvcrt_get_foreground_window(GuestContext* context) {
+  set_import_result(context, guest_window.created ? guest_window.window : 0);
+}
+void msvcrt_get_dc(GuestContext* context) {
+  guest_window.dc = 0x00020001ull;
+  set_import_result(context, guest_window.dc);
+}
+void msvcrt_release_dc(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_load_icon_a(GuestContext* context) { set_import_result(context, 0x00030001ull); }
+void msvcrt_load_cursor_a(GuestContext* context) { set_import_result(context, 0x00030002ull); }
+void msvcrt_get_system_metrics(GuestContext* context) {
+  // The real screen size, so a program that sizes itself to the display gets a sensible
+  // answer rather than the fixed 640x480 a game happened to use.
+  const auto metric = import_argument(context, 0);
+  int value = 0;
+  switch (metric) {
+    case 0: value = guest_window.width; break;    // SM_CXSCREEN
+    case 1: value = guest_window.height; break;   // SM_CYSCREEN
+    default: value = 0; break;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(value));
+}
+void msvcrt_get_client_rect(GuestContext* context) {
+  const auto rectangle = import_argument(context, 1);
+  store_guest_memory(context, rectangle + 0, 0, 4);
+  store_guest_memory(context, rectangle + 4, 0, 4);
+  store_guest_memory(context, rectangle + 8, static_cast<std::uint64_t>(guest_window.width), 4);
+  store_guest_memory(context, rectangle + 12, static_cast<std::uint64_t>(guest_window.height), 4);
+  set_import_result(context, 1);
+}
+void msvcrt_def_window_proc_a(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_post_message_a(GuestContext* context) {
+  post_guest_message(import_argument(context, 0), static_cast<std::uint32_t>(import_argument(context, 1)),
+                     import_argument(context, 2), import_argument(context, 3));
+  set_import_result(context, 1);
+}
+
+// The message loop. `GetMessage` blocks until a message exists; with no real input there
+// is nothing to block on, so when the queue is empty this reports WM_QUIT and lets the
+// program leave its loop rather than spin. Saying that in the diagnosis matters: a
+// program that exits here did so because this runtime has no input, not because the
+// translation is wrong.
+void msvcrt_get_message_a(GuestContext* context) {
+  const auto message = import_argument(context, 0);
+  GuestMessage queued;
+  if (!take_guest_message(&queued)) {
+    store_guest_memory(context, message + 0, 0, guest_pointer_width);
+    store_guest_memory(context, message + 4 * guest_pointer_width, 0x0012u, 4);  // WM_QUIT
+    set_import_result(context, 0);
+    return;
+  }
+  store_guest_memory(context, message + 0, queued.window, guest_pointer_width);
+  store_guest_memory(context, message + 4 * guest_pointer_width, queued.message, 4);
+  store_guest_memory(context, message + 4 * guest_pointer_width + 4, queued.wparam, guest_pointer_width);
+  store_guest_memory(context, message + 4 * guest_pointer_width + 4 + guest_pointer_width,
+                     queued.lparam, guest_pointer_width);
+  set_import_result(context, 1);
+}
+
+void msvcrt_peek_message_a(GuestContext* context) {
+  const auto message = import_argument(context, 0);
+  GuestMessage queued;
+  if (!take_guest_message(&queued)) {
+    set_import_result(context, 0);
+    return;
+  }
+  store_guest_memory(context, message + 0, queued.window, guest_pointer_width);
+  store_guest_memory(context, message + 4 * guest_pointer_width, queued.message, 4);
+  store_guest_memory(context, message + 4 * guest_pointer_width + 4, queued.wparam, guest_pointer_width);
+  store_guest_memory(context, message + 4 * guest_pointer_width + 4 + guest_pointer_width,
+                     queued.lparam, guest_pointer_width);
+  set_import_result(context, 1);
+}
+
+void msvcrt_dispatch_message_a(GuestContext* context) {
+  const auto message = import_argument(context, 0);
+  const auto window = load_guest_memory(context, message + 0, guest_pointer_width);
+  const auto identifier = static_cast<std::uint32_t>(load_guest_memory(context, message + 4 * guest_pointer_width, 4));
+  const auto wparam = load_guest_memory(context, message + 4 * guest_pointer_width + 4, guest_pointer_width);
+  const auto lparam = load_guest_memory(context, message + 4 * guest_pointer_width + 4 + guest_pointer_width,
+                                        guest_pointer_width);
+  call_guest_window_proc(context, window, identifier, wparam, lparam);
+  set_import_result(context, 0);
+}
+
+void msvcrt_translate_message_a(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_message_box_a(GuestContext* context) {
+  // The text is REPORTED rather than swallowed. A program that tells the user something
+  // through a message box has said it, and a run that discards it hides the program's own
+  // diagnosis of why it stopped.
+  const auto text = read_guest_string(import_argument(context, 1));
+  const auto caption = read_guest_string(import_argument(context, 2));
+  std::fprintf(stderr, "recomp: MessageBox(\"%s\", \"%s\")\n", caption.c_str(), text.c_str());
+  set_import_result(context, 1);
+}
+
+// Defined below, next to the scanf bridge that uses it.
+std::size_t scanf_destination_count(const std::string& format);
+
+// __stdio_common_vsscanf is the SAME operation as __stdio_common_vfscanf with the input
+// coming from a STRING instead of a stream, and it is the single most-requested missing
+// symbol in the application corpus: 104 of 127 import-blocked inputs need it, and for 11
+// of them it is the ONLY thing missing. The report claimed it had been fixed; it was not
+// in the tree, which is why those inputs kept failing.
+//
+// The bridging is identical -- the guest's destinations are translated one at a time
+// because the vendored scanf takes a host va_list of host pointers -- with the difference
+// that the source is read from guest memory and the return is the number of conversions.
+void msvcrt_stdio_common_vsscanf(GuestContext* context) {
+  const auto options = import_argument(context, 0);
+  const auto source_address = import_argument(context, 1);
+  const auto format_address = import_argument(context, 2);
+  const auto locale = import_argument(context, 3);
+  const auto arguments = import_argument(context, 4);
+  const auto format = read_guest_string(format_address);
+  if ((options & ~std::uint64_t{2}) != 0 || locale != 0)
+    terminate_with_message("__stdio_common_vsscanf: unsupported options=0x%llx locale=0x%llx",
+                           static_cast<unsigned long long>(options),
+                           static_cast<unsigned long long>(locale));
+  const auto source = read_guest_string(source_address);
+  const auto count = scanf_destination_count(format);
+  std::vector<std::uint8_t*> translated;
+  translated.reserve(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto guest_pointer =
+        load_guest_memory(context, arguments + index * guest_pointer_width, guest_pointer_width);
+    if (guest_pointer == 0)
+      terminate_with_message("__stdio_common_vsscanf: null destination for conversion %zu of '%s'",
+                             index + 1, format.c_str());
+    (void)load_guest_memory(context, guest_pointer, 1);
+    translated.push_back(guest_memory + guest_pointer);
+  }
+  const auto result = vsscanf_(source.c_str(), format.c_str(),
+                               reinterpret_cast<va_list>(translated.data()));
+  set_import_result(context, static_cast<std::uint32_t>(result));
+}
+
 // The rest of the console C runtime the corpus asks for.
 //
 // A GUI application needs user32 and gdi32, which this build does not provide and does
@@ -4399,6 +4662,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__acrt_iob_func", msvcrt_acrt_iob_func},
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
     {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
+    {"msvcrt.dll", "__stdio_common_vsscanf", msvcrt_stdio_common_vsscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
     {"vcruntime140.dll", "memcmp", msvcrt_memcmp},
     {"vcruntime140.dll", "memcpy", msvcrt_memcpy},
@@ -4460,6 +4724,37 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "isspace", msvcrt_isspace},
     {"msvcrt.dll", "clock", msvcrt_clock},
     {"msvcrt.dll", "getenv", msvcrt_getenv},
+    {"user32.dll", "RegisterClassA", msvcrt_register_class_a},
+    {"user32.dll", "CreateWindowExA", msvcrt_create_window_ex_a},
+    {"user32.dll", "DestroyWindow", msvcrt_destroy_window},
+    {"user32.dll", "UnregisterClassA", msvcrt_unregister_class_a},
+    {"user32.dll", "ShowWindow", msvcrt_show_window},
+    {"user32.dll", "UpdateWindow", msvcrt_update_window},
+    {"user32.dll", "InvalidateRect", msvcrt_invalidate_rect},
+    {"user32.dll", "SetFocus", msvcrt_set_focus},
+    {"user32.dll", "SetWindowPos", msvcrt_set_window_pos},
+    {"user32.dll", "SetWindowTextA", msvcrt_set_window_text_a},
+    {"user32.dll", "SetForegroundWindow", msvcrt_set_foreground_window},
+    {"user32.dll", "ShowCursor", msvcrt_show_cursor},
+    {"user32.dll", "AdjustWindowRect", msvcrt_adjust_window_rect},
+    {"user32.dll", "ClientToScreen", msvcrt_client_to_screen},
+    {"user32.dll", "SetWindowLongA", msvcrt_set_window_long_a},
+    {"user32.dll", "GetWindowLongA", msvcrt_get_window_long_a},
+    {"user32.dll", "PostQuitMessage", msvcrt_post_quit_message},
+    {"user32.dll", "GetForegroundWindow", msvcrt_get_foreground_window},
+    {"user32.dll", "GetDC", msvcrt_get_dc},
+    {"user32.dll", "ReleaseDC", msvcrt_release_dc},
+    {"user32.dll", "LoadIconA", msvcrt_load_icon_a},
+    {"user32.dll", "LoadCursorA", msvcrt_load_cursor_a},
+    {"user32.dll", "GetSystemMetrics", msvcrt_get_system_metrics},
+    {"user32.dll", "GetClientRect", msvcrt_get_client_rect},
+    {"user32.dll", "DefWindowProcA", msvcrt_def_window_proc_a},
+    {"user32.dll", "PostMessageA", msvcrt_post_message_a},
+    {"user32.dll", "GetMessageA", msvcrt_get_message_a},
+    {"user32.dll", "PeekMessageA", msvcrt_peek_message_a},
+    {"user32.dll", "DispatchMessageA", msvcrt_dispatch_message_a},
+    {"user32.dll", "TranslateMessage", msvcrt_translate_message_a},
+    {"user32.dll", "MessageBoxA", msvcrt_message_box_a},
     {"msvcrt.dll", "vsprintf", msvcrt_vsprintf},
     {"msvcrt.dll", "_vsnprintf", msvcrt_vsnprintf},
     {"msvcrt.dll", "vsnprintf", msvcrt_vsnprintf},

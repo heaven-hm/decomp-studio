@@ -221,3 +221,6 @@ set_tests_properties(autorecomp_pipeline PROPERTIES TIMEOUT 1800)
 set_tests_properties(vex_encoding_values PROPERTIES TIMEOUT 900)
 set_tests_properties(guest_heap PROPERTIES TIMEOUT 900)
 set_tests_properties(real_application_corpus PROPERTIES TIMEOUT 5400)
+
+add_test(NAME real_application_required_policy
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/apps/required_corpus_policy_test.py)

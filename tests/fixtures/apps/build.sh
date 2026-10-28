@@ -18,10 +18,13 @@ CC32="${CC32:-i686-w64-mingw32-gcc}"
 mkdir -p "$out"
 
 # Fixtures that must build and pass for the 64-bit target.
-FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert vecmove heap packed backward_entry unpack remill_movhalf movhps shufpd"
+FIXTURES_X64="arith tictactoe snake aliasing eflags calls memory flagprobe wide byteops bitops x87 simd_convert vecmove heap packed backward_entry unpack remill_movhalf movhps shufpd pinsrw pextrw"
 
 # VEX/AVX fixture: needs -mavx so the compiler emits genuine VEX encodings.
 FIXTURES_AVX="vex"
+
+# AVX2 fixture: VPBROADCASTB has genuine 256-bit VEX forms.
+FIXTURES_AVX2="vpbroadcast"
 
 # Fixtures that must build and pass for the 32-bit target, as source:output pairs
 # so they never collide with the 64-bit fixture built from the same source.
@@ -62,6 +65,14 @@ for name in $FIXTURES_AVX; do
     exit 1
   fi
   build_one "$CC" "$name" "$name" "-mavx"
+done
+
+for name in $FIXTURES_AVX2; do
+  if ! command -v "$CC" >/dev/null 2>&1; then
+    echo "error: $CC not found; cannot build required fixture $name" >&2
+    exit 1
+  fi
+  build_one "$CC" "$name" "$name" "-mavx2"
 done
 
 # 32-bit fixtures are built when the i686 toolchain is present. They are used by

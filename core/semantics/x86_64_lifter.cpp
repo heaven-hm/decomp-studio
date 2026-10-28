@@ -308,6 +308,12 @@ ParsedMnemonic parse_mnemonic(const std::string& raw) {
     parsed.has_repeat_prefix = true;
   }
   if (parsed.mnemonic.compare(0, 5, "lock ") == 0) parsed.mnemonic = parsed.mnemonic.substr(5);
+  // `bnd` is the MPX bounds prefix. It is a HINT: on a processor without MPX, or with it
+  // disabled, the instruction it prefixes executes exactly as if the prefix were absent.
+  // A program compiled with MPX emits it on ordinary branches (`bnd jae`), so refusing it
+  // refuses the program over a prefix that does nothing -- and the report names it as one
+  // of the reasons real applications fail. Dropping it is what the hardware does.
+  if (parsed.mnemonic.compare(0, 4, "bnd ") == 0) parsed.mnemonic = parsed.mnemonic.substr(4);
   return parsed;
 }
 
@@ -728,6 +734,47 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "pmovmskb" && operands.size() == 2 && is_vector_register(operands[1])) {
     operand_write(output, instruction, operands[0],
          "vector_move_byte_mask(context, " + std::to_string(vector_index(operands[1])) + ")", 4);
+    return;
+  }
+  // Adapted from Remill's Apache-2.0 PINSRW semantics: retain the prior XMM
+  // value, replace only one 16-bit lane, and reduce the immediate to eight
+  // lanes. PINSRW's scalar source is a general register or a 16-bit memory
+  // operand, never another XMM register.
+  if (mnemonic == "pinsrw" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      !is_wide_vector_register(operands[0].register_name) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate &&
+      (operands[1].kind == discovery::Operand::Kind::Register ||
+       operands[1].kind == discovery::Operand::Kind::Memory)) {
+    const auto source = operand_read_expression(instruction, operands[1], 2);
+    emit("vector_insert_word(context, " + std::to_string(vector_index(operands[0])) +
+         ", static_cast<std::uint16_t>(" + source + "), " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  // Adapted from Remill's Apache-2.0 PEXTRW semantics: select one 16-bit XMM
+  // lane modulo eight and zero-extend it into the general-register output.
+  if (mnemonic == "pextrw" && operands.size() == 3 && is_vector_register(operands[1]) &&
+      !is_wide_vector_register(operands[1].register_name) &&
+      operands[0].kind == discovery::Operand::Kind::Register &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    operand_write(output, instruction, operands[0],
+                  "vector_extract_word(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                      std::to_string(operands[2].immediate_value & 0xff) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
+  // Adapted from Remill's Apache-2.0 AVX semantics: VPBROADCASTB takes the
+  // low byte of an XMM or memory source and fills each 128- or 256-bit
+  // destination lane. The helper also clears the unused upper YMM half for a
+  // VEX.128 destination.
+  if (mnemonic == "vpbroadcastb" && operands.size() == 2 && is_vector_register(operands[0]) &&
+      (is_vector_register(operands[1]) || operands[1].kind == discovery::Operand::Kind::Memory)) {
+    const auto source = is_vector_register(operands[1])
+        ? "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", 1)"
+        : "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", 1)";
+    const int byte_count = is_wide_vector_register(operands[0].register_name) ? 32 : 16;
+    emit("vector_broadcast_byte(context, " + std::to_string(vector_index(operands[0])) +
+         ", static_cast<std::uint8_t>(" + source + "), " + std::to_string(byte_count) + ");");
     return;
   }
 

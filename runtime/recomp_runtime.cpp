@@ -4586,6 +4586,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "lstrlenW", win32_lstrlen_w},
     {"kernel32.dll", "lstrcpyA", win32_lstrcpy_a},
     {"kernel32.dll", "GetACP", win32_code_page},
+    {"kernel32.dll", "IsValidCodePage", win32_one},
     {"kernel32.dll", "GetLocalTime", win32_get_local_time},
     {"kernel32.dll", "IsDBCSLeadByte", win32_is_dbcs_lead_byte},
     {"kernel32.dll", "GetOEMCP", win32_code_page},

@@ -35,6 +35,8 @@ runtime scope. See the [full application audit](reports/apps-running-results.md)
 for the complete 166-row ledger, logs, limitations, and evidence links.
 Use the [verified-port inventory](reports/ported-apps.md) as the skip list for
 new compatibility work; it contains only end-to-end verified native ports.
+The generated [shim inventory](SHIM_INVENTORY.md) lists every unresolved import
+in the supplied corpus and is the prioritized source for new shim work.
 See [DESIGN.md](DESIGN.md) for the external-project integration policy and
 deferred Wine/Remill/runtime backlog.
 

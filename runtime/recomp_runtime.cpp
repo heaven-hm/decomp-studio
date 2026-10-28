@@ -996,6 +996,9 @@ void win32_get_startup_info_w(GuestContext* context) {
 void win32_get_command_line(GuestContext* context) {
   set_import_result(context, guest_reserved_top() - 0x500000);
 }
+void win32_get_command_line_w(GuestContext* context) {
+  set_import_result(context, guest_reserved_top() - 0x600000);
+}
 // Environment blocks. Windows hands the guest a double-NUL-terminated block of
 // "NAME=value" strings; the ANSI and wide shims must describe the same content.
 // Both live in a reserved region at the top of guest memory.
@@ -4576,6 +4579,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "GetStartupInfoW", win32_get_startup_info_w},
     {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", win32_get_command_line},
     {"kernel32.dll", "GetCommandLineA", win32_get_command_line},
+    {"kernel32.dll", "GetCommandLineW", win32_get_command_line_w},
     {"kernel32.dll", "GetEnvironmentStrings", win32_get_environment_strings},
     {"kernel32.dll", "FreeEnvironmentStringsA", win32_one},
     {"kernel32.dll", "lstrlenA", win32_lstrlen_a},
@@ -5283,6 +5287,11 @@ void initialize_guest_state(std::uint64_t image_base, std::uint64_t heap_base, s
   build_environment_blocks();
   const char* command_line = "recomp-guest";
   std::memcpy(guest_memory + guest_reserved_top() - 0x500000, command_line, std::strlen(command_line) + 1);
+  const std::uint64_t wide_command_line = guest_reserved_top() - 0x600000;
+  for (std::size_t index = 0; index < std::strlen(command_line); ++index)
+    store_guest_memory(nullptr, wide_command_line + index * 2,
+                       static_cast<std::uint8_t>(command_line[index]), 2);
+  store_guest_memory(nullptr, wide_command_line + std::strlen(command_line) * 2, 0, 2);
   msvcrt_initialize();
   cxx_initialize();
 }

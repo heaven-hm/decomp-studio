@@ -282,11 +282,25 @@ void FunctionDiscovery::discover() {
                               instruction.operands[1].displacement;
           if (target >= 0) table_address = static_cast<std::uint64_t>(target);
         }
+        // MSVC's optimized memset/memcpy helpers use an image-base register
+        // directly: mov r11d, [r10 + index*4 + table_rva]. The table entries
+        // are absolute RVAs, handled below alongside relative entries.
+        if (instruction.mnemonic == "mov" && instruction.operands.size() >= 2 &&
+            instruction.operands[0].kind == Operand::Kind::Register &&
+            instruction.operands[1].kind == Operand::Kind::Memory &&
+            instruction.operands[1].scale == 4 && !instruction.operands[1].index_register_name.empty() &&
+            instruction.operands[1].displacement > 0x1000 && !table_address) {
+          table_address = executable_.image_base +
+                          static_cast<std::uint64_t>(instruction.operands[1].displacement);
+        }
       }
-      if (!table_address || !bound_input_register) continue;
+      if (!table_address) {
+        continue;
+      }
 
       std::optional<std::uint32_t> entry_count;
       for (const auto* instruction : previous) {
+        if (!bound_input_register) break;
         if (instruction->mnemonic != "cmp" || instruction->operands.size() < 2 ||
             instruction->operands[0].kind != Operand::Kind::Register ||
             instruction->operands[1].kind != Operand::Kind::Immediate ||
@@ -297,6 +311,10 @@ void FunctionDiscovery::discover() {
           entry_count = static_cast<std::uint32_t>(maximum_index) + 1;
         break;
       }
+      // Unrolled CRT helpers bound the index by the remaining byte count rather
+      // than a literal compare. A zero table entry terminates the scan below,
+      // so a conservative cap is safe when no explicit compare is available.
+      if (!entry_count && table_address) entry_count = 64;
       if (!entry_count) continue;
 
       std::vector<std::uint64_t> targets;
@@ -304,8 +322,17 @@ void FunctionDiscovery::discover() {
         const auto offset = executable_.read_u32(static_cast<std::uint32_t>(*table_address - executable_.image_base) +
                                                  index * 4);
         if (!offset) break;
-        const auto relative = static_cast<std::int32_t>(*offset);
-        const auto target = static_cast<std::int64_t>(*table_address) + relative;
+        // MSVC emits both signed offsets from the table and absolute image
+        // RVAs. Prefer the latter when the raw entry names executable code;
+        // otherwise retain the established relative-table interpretation.
+        std::int64_t target = 0;
+        const auto absolute_rva = static_cast<std::uint64_t>(*offset);
+        if (absolute_rva <= std::numeric_limits<std::uint32_t>::max() &&
+            contains_code(static_cast<std::uint32_t>(absolute_rva))) {
+          target = static_cast<std::int64_t>(executable_.image_base + absolute_rva);
+        } else {
+          target = static_cast<std::int64_t>(*table_address) + static_cast<std::int32_t>(*offset);
+        }
         if (target < static_cast<std::int64_t>(executable_.image_base) ||
             !contains_code(static_cast<std::uint32_t>(target - static_cast<std::int64_t>(executable_.image_base))))
           continue;
@@ -420,6 +447,10 @@ void FunctionDiscovery::discover() {
             for (const auto case_target : relative_jump_table_targets(function, address)) {
               function.block_starts.insert(case_target);
               pending_blocks.push_back(case_target);
+              // Computed jumps do not push a return address. Registering each
+              // case as an entry gives the runtime an exact continuation
+              // function for jump_guest_indirect to dispatch to.
+              if (known_entries.insert(case_target).second) pending_entries.push_back(case_target);
             }
           }
           break;

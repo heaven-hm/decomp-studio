@@ -1384,17 +1384,33 @@ void msvcrt_strcat(GuestContext* context) {
                        index < tail.size() ? static_cast<std::uint8_t>(tail[index]) : 0, 1);
   set_import_result(context, destination);
 }
+// `strchr(s, 0)` is defined to return a pointer to the TERMINATING NUL, not null. The
+// string read here stops before the terminator, so searching for a zero character found
+// nothing and returned null -- wrong for a case callers really use, because
+// `strchr(s, 0)` is the standard way to get a pointer to the end of a string.
 void msvcrt_strchr(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = import_argument(context, 0);
+  const auto text = read_guest_string(base);
   const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  if (character == '\0') {
+    set_import_result(context, base + text.size());
+    return;
+  }
   const auto found = text.find(character);
-  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+  set_import_result(context, found == std::string::npos ? 0 : base + found);
 }
 void msvcrt_strrchr(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = import_argument(context, 0);
+  const auto text = read_guest_string(base);
   const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  // The same rule for the reverse search: the terminator is the LAST occurrence of a
+  // zero character, and the search stops there.
+  if (character == '\0') {
+    set_import_result(context, base + text.size());
+    return;
+  }
   const auto found = text.rfind(character);
-  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+  set_import_result(context, found == std::string::npos ? 0 : base + found);
 }
 void msvcrt_strstr(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 0));

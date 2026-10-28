@@ -4301,6 +4301,7 @@ void msvcrt_math_double(GuestContext* context, double (*operation)(double)) {
   set_import_result(context, bits);
 }
 void msvcrt_cos(GuestContext* context) { msvcrt_math_double(context, std::cos); }
+void msvcrt_acos(GuestContext* context) { msvcrt_math_double(context, std::acos); }
 void msvcrt_sin(GuestContext* context) { msvcrt_math_double(context, std::sin); }
 void msvcrt_sqrt(GuestContext* context) { msvcrt_math_double(context, std::sqrt); }
 void msvcrt_log(GuestContext* context) { msvcrt_math_double(context, std::log); }
@@ -5294,6 +5295,13 @@ const ShimDescriptor kShims[] = {
     {"vcruntime140.dll", "memset", msvcrt_memset},
     {"vcruntime140.dll", "strchr", msvcrt_strchr},
     {"vcruntime140.dll", "strrchr", msvcrt_strrchr},
+    {"vcruntime140.dll", "__C_specific_handler", win32_zero},
+    {"vcruntime140.dll", "__current_exception", win32_zero},
+    {"vcruntime140.dll", "__current_exception_context", win32_zero},
+    {"vcruntime140.dll", "memchr", msvcrt_memchr},
+    {"kernel32.dll", "RtlCaptureContext", win32_zero},
+    {"kernel32.dll", "RtlLookupFunctionEntry", win32_zero},
+    {"kernel32.dll", "RtlVirtualUnwind", win32_zero},
     {"msvcrt.dll", "fflush", msvcrt_fflush},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},
     {"msvcrt.dll", "_set_new_mode", msvcrt_return_zero},
@@ -5445,6 +5453,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_vscprintf", msvcrt_vscprintf},
     {"msvcrt.dll", "__stdio_common_vsprintf", msvcrt_stdio_common_vsprintf},
     {"msvcrt.dll", "cos", msvcrt_cos},
+    {"msvcrt.dll", "acos", msvcrt_acos},
     {"msvcrt.dll", "sin", msvcrt_sin},
     {"msvcrt.dll", "sqrt", msvcrt_sqrt},
     {"msvcrt.dll", "log", msvcrt_log},

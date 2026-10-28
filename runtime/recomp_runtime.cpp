@@ -3967,6 +3967,195 @@ void msvcrt_message_box_a(GuestContext* context) {
   set_import_result(context, 1);
 }
 
+// Copy host bytes into guest memory one at a time. `store_guest_memory` writes a value of
+// a given width; this writes a RUN of bytes, which is what a formatted message and a
+// tokenised string both need.
+void store_guest_bytes(GuestContext* context, std::uint64_t address, const char* bytes,
+                       std::size_t count) {
+  for (std::size_t index = 0; index < count; ++index)
+    store_guest_memory(context, address + index, static_cast<std::uint8_t>(bytes[index]), 1);
+}
+
+// FormatMessageA. Needed by 103 of the 127 import-blocked applications -- nearly every GUI
+// binary and every CRT error path -- because it is how a program turns a GetLastError code
+// into text a user can read. A program that cannot format its own error message usually
+// stops at the point where it would have printed one.
+//
+// The text comes from the HOST's strerror for system errors, which is the same wording the
+// guest's own CRT would produce for the errno values that map onto it, and a NAMED
+// placeholder for the ranges that have no host equivalent. Returning an empty string would
+// be worse than either: the caller cannot tell "no message" from "no error".
+void win32_format_message_a(GuestContext* context) {
+  const auto flags = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto message_id = static_cast<std::uint32_t>(import_argument(context, 2));
+  const auto language = import_argument(context, 3);
+  const auto buffer = import_argument(context, 4);
+  const auto size = import_argument(context, 5);
+  const auto arguments = import_argument(context, 6);
+  (void)source;
+  (void)language;
+  (void)arguments;
+  std::string text;
+  if ((flags & 0x1000u) != 0) {
+    // FORMAT_MESSAGE_FROM_STRING: the "message" is a format string in guest memory.
+    text = read_guest_string(import_argument(context, 2));
+  } else if (message_id == 0) {
+    text = "The operation completed successfully.";
+  } else {
+    text = std::strerror(static_cast<int>(message_id));
+    if (text.empty() || text.find("Unknown error") != std::string::npos)
+      text = "Windows error " + std::to_string(message_id);
+  }
+  // ALLOCATE_BUFFER: the caller passes a POINTER TO a pointer and this allocates it.
+  if ((flags & 0x100u) != 0) {
+    const auto allocated = heap_allocate(text.size() + 1);
+    if (allocated != 0) {
+      store_guest_bytes(context, allocated, text.data(), text.size());
+      store_guest_bytes(context, allocated + text.size(), "\0", 1);
+      store_guest_memory(context, buffer, allocated, guest_pointer_width);
+    }
+    set_import_result(context, static_cast<std::uint64_t>(text.size()));
+    return;
+  }
+  if (buffer == 0 || size == 0) {
+    set_import_result(context, 0);
+    return;
+  }
+  // The buffer is in CHARACTERS including the terminator, and the result excludes it.
+  const auto capacity = static_cast<std::size_t>(size) - 1;
+  const auto written = text.size() < capacity ? text.size() : capacity;
+  store_guest_bytes(context, buffer, text.data(), written);
+  store_guest_bytes(context, buffer + written, "\0", 1);
+  set_import_result(context, static_cast<std::uint64_t>(written));
+}
+
+// The small CRT utilities. Each is a forwarder, and the ones that matter are the ones where
+// a naive implementation is wrong in a way the guest can see.
+void msvcrt_putenv(GuestContext* context) {
+  // `_putenv("NAME=value")` sets a variable in the PROCESS environment. It is applied to
+  // the host environment, because that is what later getenv calls read.
+  const auto setting = read_guest_string(import_argument(context, 0));
+  const auto separator = setting.find('=');
+  if (separator == std::string::npos) {
+    // No '=' means REMOVE the variable, which is the documented behaviour and easy to
+    // implement as a no-op by mistake.
+    ::unsetenv(setting.c_str());
+    set_import_result(context, 0);
+    return;
+  }
+  ::setenv(setting.substr(0, separator).c_str(), setting.substr(separator + 1).c_str(), 1);
+  set_import_result(context, 0);
+}
+
+void msvcrt_strpbrk(GuestContext* context) {
+  const auto text = import_argument(context, 0);
+  const auto accept = read_guest_string(import_argument(context, 1));
+  for (std::uint64_t offset = 0;; ++offset) {
+    const auto character = static_cast<char>(load_guest_memory(context, text + offset, 1));
+    if (character == 0) break;
+    if (accept.find(character) != std::string::npos) {
+      set_import_result(context, text + offset);
+      return;
+    }
+  }
+  set_import_result(context, 0);
+}
+
+// `strtok` keeps its position BETWEEN calls, which is the whole of its contract and the
+// reason a reimplementation that treats it as stateless is wrong.
+std::uint64_t guest_strtok_position = 0;
+void msvcrt_strtok(GuestContext* context) {
+  const auto text = import_argument(context, 0);
+  const auto delimiters = read_guest_string(import_argument(context, 1));
+  auto position = text != 0 ? text : guest_strtok_position;
+  if (position == 0) {
+    set_import_result(context, 0);
+    return;
+  }
+  // Skip leading delimiters, then terminate the token at the next one.
+  while (true) {
+    const auto character = static_cast<char>(load_guest_memory(context, position, 1));
+    if (character == 0) { guest_strtok_position = 0; set_import_result(context, 0); return; }
+    if (delimiters.find(character) == std::string::npos) break;
+    ++position;
+  }
+  const auto start = position;
+  while (true) {
+    const auto character = static_cast<char>(load_guest_memory(context, position, 1));
+    if (character == 0) { guest_strtok_position = 0; set_import_result(context, start); return; }
+    if (delimiters.find(character) != std::string::npos) {
+      store_guest_bytes(context, position, "\0", 1);
+      guest_strtok_position = position + 1;
+      set_import_result(context, start);
+      return;
+    }
+    ++position;
+  }
+}
+
+void msvcrt_isgraph(GuestContext* context) {
+  set_import_result(context, std::isgraph(static_cast<int>(import_argument(context, 0) & 0xffu)) != 0);
+}
+void msvcrt_setbuf(GuestContext* context) { (void)context; set_import_result(context, 0); }
+void msvcrt_isatty(GuestContext* context) {
+  // The guest's standard handles are the host's here, so the host's answer is the right one.
+  set_import_result(context, ::isatty(static_cast<int>(import_argument(context, 0))) != 0);
+}
+void msvcrt_getpid(GuestContext* context) {
+  set_import_result(context, static_cast<std::uint64_t>(::getpid()));
+}
+void msvcrt_ldexp(GuestContext* context) {
+  const auto value = load_guest_double(context, context->registers[4] + 4);
+  const auto exponent = static_cast<int>(load_guest_memory(context, context->registers[4] + 12, 4));
+  const auto result = std::ldexp(value, exponent);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &result, sizeof(bits));
+  set_import_result(context, bits);
+}
+
+// bsearch, like qsort, calls a GUEST comparator.
+void msvcrt_bsearch(GuestContext* context) {
+  const auto key = import_argument(context, 0);
+  const auto base = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  const auto element_bytes = import_argument(context, 3);
+  const auto comparator = import_argument(context, 4);
+  if (count == 0 || element_bytes == 0 || comparator == 0) {
+    set_import_result(context, 0);
+    return;
+  }
+  const auto function = lookup_guest_function(comparator);
+  if (function == nullptr) {
+    terminate_with_message("bsearch: the comparator at 0x%llx was not recompiled, so the "
+                           "search cannot run", static_cast<unsigned long long>(comparator));
+  }
+  if (guest_sort_scratch == 0 || guest_sort_element_bytes < element_bytes) {
+    guest_sort_scratch = heap_allocate(element_bytes * 2 + 16);
+    guest_sort_element_bytes = element_bytes;
+  }
+  if (guest_sort_scratch == 0) { set_import_result(context, 0); return; }
+  std::size_t low = 0;
+  std::size_t high = static_cast<std::size_t>(count);
+  while (low < high) {
+    const auto middle = low + (high - low) / 2;
+    const auto element = base + middle * element_bytes;
+    std::memcpy(guest_memory + guest_sort_scratch, guest_memory + key, static_cast<std::size_t>(element_bytes));
+    std::memcpy(guest_memory + guest_sort_scratch + element_bytes, guest_memory + element,
+                static_cast<std::size_t>(element_bytes));
+    const auto stack_pointer = context->registers[4];
+    push_guest_stack(context, guest_sort_scratch + element_bytes);
+    push_guest_stack(context, guest_sort_scratch);
+    push_guest_stack(context, 0);
+    function(context);
+    const auto order = static_cast<std::int32_t>(context->registers[0]);
+    context->registers[4] = stack_pointer;
+    if (order == 0) { set_import_result(context, element); return; }
+    if (order < 0) high = middle; else low = middle + 1;
+  }
+  set_import_result(context, 0);
+}
+
 // The WIDE-CHARACTER twins of the window surface.
 //
 // Every user32 entry point exists twice: an `A` form taking ANSI text and a `W` form taking
@@ -5031,7 +5220,6 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LCMapStringA", win32_lc_map_string_a},
     {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
     {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
-    {"kernel32.dll", "FormatMessageA", win32_zero},
     {"comctl32.dll", "InitCommonControls", win32_one},
     {"comdlg32.dll", "GetOpenFileNameA", win32_zero},
     {"comdlg32.dll", "GetSaveFileNameA", win32_zero},
@@ -5189,6 +5377,16 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_seh_filter_exe", msvcrt_seh_filter_exe},
     {"msvcrt.dll", "_register_thread_local_exe_atexit_callback", msvcrt_register_thread_local_exe_atexit_callback},
     {"msvcrt.dll", "isprint", msvcrt_isprint},
+    {"msvcrt.dll", "_putenv", msvcrt_putenv},
+    {"msvcrt.dll", "setbuf", msvcrt_setbuf},
+    {"msvcrt.dll", "strpbrk", msvcrt_strpbrk},
+    {"msvcrt.dll", "strtok", msvcrt_strtok},
+    {"msvcrt.dll", "bsearch", msvcrt_bsearch},
+    {"msvcrt.dll", "isgraph", msvcrt_isgraph},
+    {"msvcrt.dll", "ldexp", msvcrt_ldexp},
+    {"msvcrt.dll", "_isatty", msvcrt_isatty},
+    {"msvcrt.dll", "_getpid", msvcrt_getpid},
+    {"kernel32.dll", "FormatMessageA", win32_format_message_a},
     {"user32.dll", "RegisterClassA", msvcrt_register_class_a},
     {"user32.dll", "CreateWindowExA", msvcrt_create_window_ex_a},
     {"user32.dll", "DestroyWindow", msvcrt_destroy_window},

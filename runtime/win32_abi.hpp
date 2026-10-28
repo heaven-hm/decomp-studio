@@ -269,6 +269,8 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"user32.dll", "LoadCursorW", 2, true},
     {"user32.dll", "SetWindowLongW", 3, true},
     {"user32.dll", "SetWindowLongPtrW", 3, true},
+    {"user32.dll", "SetWindowLongPtrA", 3, true},
+    {"user32.dll", "GetWindowLongPtrA", 2, true},
     {"user32.dll", "GetWindowLongW", 2, true},
     {"user32.dll", "GetWindowLongPtrW", 2, true},
     {"user32.dll", "PostMessageW", 4, true},

@@ -5207,6 +5207,8 @@ const ShimDescriptor kShims[] = {
     {"user32.dll", "LoadCursorW", msvcrt_load_cursor_w},
     {"user32.dll", "SetWindowLongW", msvcrt_set_window_long_w},
     {"user32.dll", "SetWindowLongPtrW", msvcrt_set_window_long_w},
+    {"user32.dll", "SetWindowLongPtrA", msvcrt_set_window_long_w},
+    {"user32.dll", "GetWindowLongPtrA", msvcrt_get_window_long_w},
     {"user32.dll", "GetWindowLongW", msvcrt_get_window_long_w},
     {"user32.dll", "GetWindowLongPtrW", msvcrt_get_window_long_w},
     {"user32.dll", "PostMessageW", msvcrt_post_message_w},

@@ -31,7 +31,17 @@ binaries of that name were ported, and the architecture column is what distingui
 | 5 | `hangman_x64.exe` | x86_64 | windows | C | macos (macos-arm64) | 347 bytes | [view](screenshots/hangman_x64-x86_64.png) |
 | 6 | `hangman_x86.exe` | x86 | windows | C | macos (macos-arm64) | 178 bytes | [view](screenshots/hangman_x86-x86.png) |
 
-**Count: 6 ported binaries, from 4 distinct programs** (arith-calc, tetris, base64, hangman).
+| 7 | `g64_game2048.exe` | x86_64 | windows | C | macos (macos-arm64) | 353 bytes | not yet captured |
+
+**Count: 7 ported binaries, from 5 distinct programs** (arith-calc, tetris, base64, hangman,
+g64_game2048).
+
+Row 7 is the first port from OUTSIDE the shipped corpus: it comes from the
+`cricket07-browser` project's own Windows builds. It is listed with `AUTORECOMP COMPLETE`,
+exit code 0, 353 bytes of output, 2 of 2 guest-state checkpoints matched, and its output
+matching the reference byte for byte -- but with **no screenshot yet**, because the
+screenshot is rendered from a run rather than asserted. A row with a known gap is worth more
+than a row that quietly claims one it does not have.
 
 Two more were measured as reaching `AUTORECOMP COMPLETE` in the corpus sweep and are
 deliberately NOT listed here: `arith-calc` and `base64` from `windows/x64/apps/`, which are

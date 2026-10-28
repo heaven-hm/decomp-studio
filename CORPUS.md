@@ -30,6 +30,8 @@ regression check.
 | `hangman.exe` | x86 | `AUTORECOMP COMPLETE`, verified; 178 bytes |
 | `hangman.exe` | x86_64 | `AUTORECOMP COMPLETE`, verified; 347 bytes |
 
+| `g64_game2048.exe` | x86_64 | `AUTORECOMP COMPLETE`, VERIFIED, 353 bytes, 2/2 checkpoints |
+
 ## Refused -- correct, and NOT work
 
 | application | arch | reason |

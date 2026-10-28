@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/recomp-studio-logo.png" alt="Recomp Studio: executable blocks transform into a native-output arrow" width="260">
+</p>
+
 # Recomp Studio
 
 Recomp Studio is an experimental, open-source static recompilation CLI for

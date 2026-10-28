@@ -91,7 +91,10 @@ fi
 if command -v "$CC" >/dev/null 2>&1; then
   for name in $FIXTURES_NEGATIVE; do
     extra=""
-    [ "$name" = "unsupported_import" ] && extra="-luser32"
+    # The negative fixture must import a symbol the runtime genuinely lacks, so the
+    # library here tracks the symbol in unsupported_import.c. It was -luser32 while the
+    # fixture called MessageBoxA.
+    [ "$name" = "unsupported_import" ] && extra="-lshell32"
     "$CC" $COMMON_FLAGS -Wl,-e,recomp_entry -Wl,--subsystem,console \
         -o "$out/$name.exe" "$here/$name.c" -lkernel32 $extra -lgcc
     echo "built $out/$name.exe (negative)"

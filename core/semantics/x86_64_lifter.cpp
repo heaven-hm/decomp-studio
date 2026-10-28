@@ -730,6 +730,20 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          std::to_string(operands[2].immediate_value & 0xff) + ");");
     return;
   }
+  // Adapted from Remill's Apache-2.0 AVX semantics: VPBROADCASTB takes the
+  // low byte of an XMM or memory source and fills each 128- or 256-bit
+  // destination lane. The helper also clears the unused upper YMM half for a
+  // VEX.128 destination.
+  if (mnemonic == "vpbroadcastb" && operands.size() == 2 && is_vector_register(operands[0]) &&
+      (is_vector_register(operands[1]) || operands[1].kind == discovery::Operand::Kind::Memory)) {
+    const auto source = is_vector_register(operands[1])
+        ? "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", 1)"
+        : "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", 1)";
+    const int byte_count = is_wide_vector_register(operands[0].register_name) ? 32 : 16;
+    emit("vector_broadcast_byte(context, " + std::to_string(vector_index(operands[0])) +
+         ", static_cast<std::uint8_t>(" + source + "), " + std::to_string(byte_count) + ");");
+    return;
+  }
 
   // `movsd`/`cmpsd` are both SSE scalar-double instructions and string
   // operations. The string form has no operands; if any operand is an XMM

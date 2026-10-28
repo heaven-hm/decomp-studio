@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VEX (AVX) encoding regression, checked by value.
+"""VEX (AVX/AVX2) encoding regressions, checked by value.
 
 Why this test is not differential, unlike every other fixture test here.
 
@@ -46,22 +46,26 @@ CLI = sys.argv[1]
 APPS_DIRECTORY = Path(sys.argv[2])
 OPTIONAL_MODE = os.environ.get("RECOMP_OPTIONAL") == "1"
 
-FIXTURE = "vex"
-
-# Every line the fixture prints, with the value the Intel SDM requires. These are
-# literals on purpose: a regression has to change a number here, not silently
-# change what "correct" means.
-EXPECTED_LINES = [
-    "vex:start",
-    "vmulsd_lo=0",
-    "vmulsd_hi_x2=0",          # src1's upper half is zero (see the fixture note)
-    "vaddsd_lo=3",
-    "vaddsd_hi_x2=0",
-    "vmovdqu_checksum=-1810799853885296360",
-    "vpxor_checksum=6175760664974581504",
-    "vcvtsi2sd=-1234",
-    "vex:done",
-]
+# Every line each fixture prints, with the value the Intel SDM requires. These
+# are literals on purpose: a regression has to change a number here, not
+# silently change what "correct" means.
+FIXTURES = {
+    "vex": [
+        "vex:start",
+        "vmulsd_lo=0",
+        "vmulsd_hi_x2=0",          # src1's upper half is zero (see the fixture note)
+        "vaddsd_lo=3",
+        "vaddsd_hi_x2=0",
+        "vmovdqu_checksum=-1810799853885296360",
+        "vpxor_checksum=6175760664974581504",
+        "vcvtsi2sd=-1234",
+        "vex:done",
+    ],
+    "vpbroadcast": [
+        "vpbroadcast_register_ok=1",
+        "vpbroadcast_memory_ok=1",
+    ],
+}
 
 PASSES = []
 FAILURES = []
@@ -94,50 +98,53 @@ def main() -> int:
         root = Path(temporary)
         fixtures = root / "bin"
         build_fixtures(fixtures)
-        executable = fixtures / f"{FIXTURE}.exe"
-        if not executable.exists():
-            print(f"FAIL {FIXTURE}: fixture was not built", file=sys.stderr)
-            return 1
+        for fixture, expected_lines in FIXTURES.items():
+            executable = fixtures / f"{fixture}.exe"
+            if not executable.exists():
+                print(f"FAIL {fixture}: fixture was not built", file=sys.stderr)
+                return 1
 
-        # 1. It must lift completely, or nothing below can run.
-        census = run_cli(["coverage", str(executable), "--json"])
-        check("coverage/exit", census.returncode == 0, census.stderr.strip())
-        if census.returncode == 0:
-            report = json.loads(census.stdout)
-            check("coverage/complete", report["unsupported_instructions"] == 0,
-                  f"{report['unsupported_instructions']} unsupported: "
-                  f"{[e['mnemonic'] for e in report['unsupported']]}")
-            check("coverage/walked", report["total_instructions"] > 0,
-                  "the census walked no instructions")
+            # 1. It must lift completely, or nothing below can run.
+            census = run_cli(["coverage", str(executable), "--json"])
+            check(f"{fixture}/coverage/exit", census.returncode == 0, census.stderr.strip())
+            if census.returncode == 0:
+                report = json.loads(census.stdout)
+                check(f"{fixture}/coverage/complete", report["unsupported_instructions"] == 0,
+                      f"{report['unsupported_instructions']} unsupported: "
+                      f"{[e['mnemonic'] for e in report['unsupported']]}")
+                check(f"{fixture}/coverage/walked", report["total_instructions"] > 0,
+                      "the census walked no instructions")
 
-        # 2. It must translate and build.
-        project = root / "project"
-        translated = run_cli(["translate", str(executable), "--target", "macos-arm64",
-                              "--output", str(project), "--json"])
-        check("translate/exit", translated.returncode == 0,
-              (translated.stderr or translated.stdout).strip())
-        built = run_cli(["build", str(project), "--json"])
-        check("build/exit", built.returncode == 0, (built.stderr or built.stdout).strip())
+            # 2. It must translate and build.
+            project = root / f"project-{fixture}"
+            translated = run_cli(["translate", str(executable), "--target", "macos-arm64",
+                                  "--output", str(project), "--json"])
+            check(f"{fixture}/translate/exit", translated.returncode == 0,
+                  (translated.stderr or translated.stdout).strip())
+            built = run_cli(["build", str(project), "--json"])
+            check(f"{fixture}/build/exit", built.returncode == 0,
+                  (built.stderr or built.stdout).strip())
 
-        # 3. The values must be the ones the SDM requires.
-        execution = run_cli(["run", str(project)])
-        check("run/exit", execution.returncode == 0,
-              f"exit {execution.returncode}: {execution.stderr.strip()}")
-        produced = execution.stdout.splitlines()
-        for index, expected in enumerate(EXPECTED_LINES):
-            actual = produced[index] if index < len(produced) else "<missing>"
-            check(f"value/{expected.split('=')[0]}", actual == expected,
-                  f"expected {expected!r}, got {actual!r}")
-        check("value/line-count", len(produced) == len(EXPECTED_LINES),
-              f"expected {len(EXPECTED_LINES)} lines, got {len(produced)}")
+            # 3. The values must be the ones the SDM requires.
+            execution = run_cli(["run", str(project)])
+            check(f"{fixture}/run/exit", execution.returncode == 0,
+                  f"exit {execution.returncode}: {execution.stderr.strip()}")
+            produced = execution.stdout.splitlines()
+            for index, expected in enumerate(expected_lines):
+                actual = produced[index] if index < len(produced) else "<missing>"
+                check(f"{fixture}/value/{expected.split('=')[0]}", actual == expected,
+                      f"expected {expected!r}, got {actual!r}")
+            check(f"{fixture}/value/line-count", len(produced) == len(expected_lines),
+                  f"expected {len(expected_lines)} lines, got {len(produced)}")
 
-        # 4. The fixture must stay out of the differential suite, because the
-        #    reference cannot adjudicate it. If someone adds it there, the suite
-        #    would fail for the reference's reason and look like a regression.
+        # 4. The fixtures must stay out of the differential suite, because the
+        #    reference cannot adjudicate AVX/AVX2. If one is added there, the
+        #    suite would fail for the reference's reason and look like a regression.
         end_to_end = (APPS_DIRECTORY.parent.parent / "end-to-end" / "recompile_test.py").read_text()
-        check("suite/not-differential", f'("{FIXTURE}",' not in end_to_end,
-              f"{FIXTURE} is listed in the differential fixture suite, but Unicorn cannot "
-              "verify VEX; see the module docstring")
+        for fixture in FIXTURES:
+            check(f"{fixture}/suite/not-differential", f'("{fixture}",' not in end_to_end,
+                  f"{fixture} is listed in the differential fixture suite, but Unicorn cannot "
+                  "verify AVX; see the module docstring")
 
     for name in PASSES:
         print(f"PASS {name}")

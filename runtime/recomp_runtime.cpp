@@ -32,6 +32,7 @@ extern char** environ;
 #include <sys/mman.h>
 #include <unistd.h>
 #include <vector>
+#include <functional>
 
 // Compile the unmodified MIT scanner in callback mode. Its standard-input
 // wrappers are disabled; the guest adapter supplies the host stream explicitly.
@@ -3387,19 +3388,12 @@ void msvcrt_vfprintf(GuestContext* context) {
 // argument read at the width the guest's own length modifier asks for. What is left to
 // this function is the ABI, and what is left to the host is everything that is easy to
 // get wrong.
-std::string msvcrt_format_arguments(GuestContext* context, const std::string& format,
-                                    std::uint64_t arguments) {
+using GuestArgumentReader = std::function<std::uint64_t(int)>;
+
+std::string msvcrt_format_arguments_with_reader(GuestContext* context, const std::string& format,
+                                                const GuestArgumentReader& next) {
   std::string output;
   const int pointer_width = static_cast<int>(guest_pointer_width);
-
-  // Reads one argument from the guest's list. `slot` is the width the conversion asks
-  // for, which the guest's ABI advances by: a 32-bit guest's list is 4-byte slots and a
-  // 64-bit guest's is 8-byte, whatever the value's own width.
-  const auto next = [&arguments, context, pointer_width](int slot) -> std::uint64_t {
-    const auto value = load_guest_memory(context, arguments, slot);
-    arguments += static_cast<std::uint64_t>(pointer_width);
-    return value;
-  };
 
   for (std::size_t index = 0; index < format.size(); ++index) {
     if (format[index] != '%') { output.push_back(format[index]); continue; }
@@ -3495,6 +3489,33 @@ std::string msvcrt_format_arguments(GuestContext* context, const std::string& fo
     output.append(buffer, std::min<std::size_t>(static_cast<std::size_t>(written), sizeof(buffer) - 1));
   }
   return output;
+}
+
+// A v* CRT entry receives a guest va_list pointer. The list advances by one guest
+// pointer-width slot for every conversion, regardless of the value's native width.
+std::string msvcrt_format_arguments(GuestContext* context, const std::string& format,
+                                    std::uint64_t arguments) {
+  const int pointer_width = static_cast<int>(guest_pointer_width);
+  return msvcrt_format_arguments_with_reader(
+      context, format, [context, arguments, pointer_width](int slot) mutable {
+        const auto value = load_guest_memory(context, arguments, slot);
+        arguments += static_cast<std::uint64_t>(pointer_width);
+        return value;
+      });
+}
+
+// The non-v* CRT entry points carry variadic values inline after their fixed
+// arguments. Reading the first variadic value as a va_list pointer corrupts the
+// guest ABI (for example, printf("%d", 7) would dereference address 7), so these
+// calls walk the actual register/stack argument positions exposed by import_argument.
+std::string msvcrt_format_inline_arguments(GuestContext* context, const std::string& format,
+                                           int first_argument) {
+  int index = first_argument;
+  return msvcrt_format_arguments_with_reader(context, format, [context, &index](int slot) {
+    const auto value = import_argument(context, index);
+    index += guest_pointer_width >= 8 || slot <= 4 ? 1 : 2;
+    return value;
+  });
 }
 
 std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
@@ -3686,8 +3707,7 @@ void msvcrt_local_free(GuestContext* context) { (void)context; }
 // Each one forwards to the implementation that already exists. Nothing is reimplemented.
 void msvcrt_printf(GuestContext* context) {
   const auto format = read_guest_string(import_argument(context, 0));
-  const auto arguments = import_argument(context, 1);
-  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto output = msvcrt_format_inline_arguments(context, format, 1);
   const auto accepted = write_guest_output(1, output.data(), output.size());
   set_import_result(context, accepted < 0 ? 0 : output.size());
 }
@@ -3695,8 +3715,10 @@ void msvcrt_printf(GuestContext* context) {
 void msvcrt_fprintf(GuestContext* context) {
   const auto stream = import_argument(context, 0);
   const auto format = read_guest_string(import_argument(context, 1));
-  const auto arguments = import_argument(context, 2);
-  set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
+  const auto output = msvcrt_format_inline_arguments(context, format, 2);
+  const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  const auto accepted = write_guest_output(descriptor, output.data(), output.size());
+  set_import_result(context, accepted < 0 ? 0 : output.size());
 }
 
 // sprintf writes the formatted text into a GUEST buffer and appends a terminator. It
@@ -3705,8 +3727,7 @@ void msvcrt_fprintf(GuestContext* context) {
 void msvcrt_sprintf(GuestContext* context) {
   const auto buffer = import_argument(context, 0);
   const auto format = read_guest_string(import_argument(context, 1));
-  const auto arguments = import_argument(context, 2);
-  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto output = msvcrt_format_inline_arguments(context, format, 2);
   for (std::size_t index = 0; index < output.size(); ++index)
     store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
   store_guest_memory(context, buffer + output.size(), 0, 1);
@@ -3718,8 +3739,7 @@ void msvcrt_snprintf(GuestContext* context) {
   const auto buffer = import_argument(context, 0);
   const auto limit = static_cast<std::size_t>(import_argument(context, 1));
   const auto format = read_guest_string(import_argument(context, 2));
-  const auto arguments = import_argument(context, 3);
-  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto output = msvcrt_format_inline_arguments(context, format, 3);
   if (limit != 0) {
     const auto written = std::min(limit - 1, output.size());
     for (std::size_t index = 0; index < written; ++index)

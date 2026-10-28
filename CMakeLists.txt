@@ -165,6 +165,11 @@ add_test(NAME cli_options
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 
+add_test(NAME stdin_path_handling
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli/stdin_path_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
 add_test(NAME input_detection
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/detection/detection_test.py
           $<TARGET_FILE:recomp-studio>

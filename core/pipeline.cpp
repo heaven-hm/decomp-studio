@@ -84,8 +84,10 @@ std::string escape_shell(const std::filesystem::path& value) {
 RunReport capture_process(const std::string& command, const std::filesystem::path& error_path) {
   RunReport report;
   std::string invocation = command + " 2> " + escape_shell(error_path);
-  if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE"))
-    invocation += " < " + escape_shell(stdin_path);
+  // The runtime loads RECOMP_STDIN_FILE into the guest-side input capture during
+  // initialization. Do not also append a shell redirection here: a stale path would
+  // make `/bin/sh` exit before the generated guest starts, hiding the actual guest
+  // diagnostic (and turning a missing input file into a misleading exit code 1).
   if (const char* timeout_env = std::getenv("RECOMP_RUN_TIMEOUT")) {
     int seconds = std::atoi(timeout_env);
     if (seconds > 0) {

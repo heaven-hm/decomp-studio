@@ -1109,6 +1109,36 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       return;
     }
   }
+  if (mnemonic == "pcmpestri" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto immediate = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_pcmpistri_register(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_pcmpistri_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + immediate + ");");
+      return;
+    }
+  }
+  if (mnemonic == "vpmaskmovd" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto mask = std::to_string(vector_index(operands[1]));
+    if (is_vector_register(operands[2])) {
+      emit("vector_masked_move_dwords(context, " + destination + ", " + mask + ", " +
+           std::to_string(vector_index(operands[2])) + ");");
+      return;
+    }
+    if (operands[2].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_masked_load_dwords(context, " + destination + ", " + mask + ", " +
+           effective_address_expression(instruction, operands[2]) + ");");
+      return;
+    }
+  }
   if (mnemonic == "ptest" && operands.size() == 2 && is_vector_register(operands[0])) {
     const auto destination = std::to_string(vector_index(operands[0]));
     if (is_vector_register(operands[1])) {
@@ -1311,6 +1341,13 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     const auto width = operand_width(operands[0], 8);
     operand_write(output, instruction, operands[0],
          "count_trailing_zeros(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
+             std::to_string(width) + ")", width);
+    return;
+  }
+  if (mnemonic == "lzcnt" && operands.size() == 2) {
+    const auto width = operand_width(operands[0], 8);
+    operand_write(output, instruction, operands[0],
+         "count_leading_zeros(context, " + operand_read_expression(instruction, operands[1], width) + ", " +
              std::to_string(width) + ")", width);
     return;
   }

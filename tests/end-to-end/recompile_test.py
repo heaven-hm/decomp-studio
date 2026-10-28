@@ -40,6 +40,9 @@ FIXTURES = [
     ("tail_import", "x64 import tail-call stack restoration"),
     ("backward_entry", "function entry with a lower-address block"),
     ("remill_movhalf", "Remill half-register move semantics"),
+    ("movhps", "SSE upper-qword load preserving the lower half"),
+    ("file_streams", "CRT and Win32 file access through the guest runtime"),
+    ("shufpd", "SSE2 packed double shuffle register and memory forms"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -51,6 +54,10 @@ FIXTURES_PE32 = [
     ("teb32", "32-bit TEB access through fs:"),
     ("pe32_remill_movhalf", "32-bit Remill half-register move semantics"),
     ("pe32_remill_aas", "32-bit Remill ASCII adjust after subtraction"),
+    ("pe32_legacy32", "32-bit CBW sign extension"),
+    ("pe32_file_streams", "32-bit CRT and Win32 file access"),
+    ("pe32_shufpd", "32-bit SSE2 packed double shuffle forms"),
+    ("pe32_popal", "32-bit POPAL register and stack restoration"),
 ]
 
 EXPECTED_OUTPUT = {
@@ -58,6 +65,15 @@ EXPECTED_OUTPUT = {
     "tail_import": ["tail_stack_ok=1", "tail_rand_in_range=1"],
     "backward_entry": ["entry_zero=42", "entry_nonzero=7"],
     "remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
+    "movhps": ["movhps_low=1234605616436508552", "movhps_high=-7373874951294615808"],
+    "pe32_legacy32": ["cbw=-128", "daa=1", "daa_cf=1", "daa_af=1", "into_clear_continues=1"],
+    "file_streams": ["fopen_write=1", "matches_source=1", "handle_matches=1",
+                     "fopen_escape_null=1", "module_name_last_is_exe=1", "file_streams:done"],
+    "pe32_file_streams": ["fopen_write=1", "matches_source=1", "handle_matches=1",
+                          "fopen_escape_null=1", "module_name_last_is_exe=1", "file_streams:done"],
+    "shufpd": ["shufpd_reg_ok=1", "shufpd_mem_ok=1"],
+    "pe32_shufpd": ["shufpd_reg_ok=1", "shufpd_mem_ok=1"],
+    "pe32_popal": ["popal_registers=1", "popal_stack=1"],
     "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
     "pe32_remill_aas": ["remill_aas=1"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
@@ -94,7 +110,7 @@ EXPECTED_OUTPUT = {
                # Memory-source forms for the five helpers that once had no
                # _memory twin and so produced code that would not compile.
                "mem_paddd=", "mem_psubd=", "mem_pcmpeqd=", "mem_pmaddwd=", "mem_psadbw=",
-               "mem_paddw=", "mem_unpack_lb=1", "mem_unpack_hb=1", "mem_unpack_lw=1", "mem_unpack_hw=1",
+               "mem_paddw=", "mem_pshufb=", "mem_unpack_lb=1", "mem_unpack_hb=1", "mem_unpack_lw=1", "mem_unpack_hw=1",
                "mem_unpack_ld=1", "mem_unpack_hd=1", "mem_unpack_lq=1", "mem_unpack_hq=1",
                "reg_unpack_lps=1", "reg_unpack_hps=1", "reg_unpack_lpd=1", "reg_unpack_hpd=1",
                "mem_unpack_lps=1", "mem_unpack_hps=1", "mem_unpack_lpd=1", "mem_unpack_hpd=1", "packed:done"],

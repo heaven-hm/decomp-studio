@@ -596,6 +596,20 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
   ::setenv("RECOMP_MEMORY_WINDOWS", memory_windows_path.string().c_str(), 1);
   std::filesystem::remove(memory_windows_path);
+  // The app directory both sides will resolve guest paths against. Set here rather
+  // than inherited, because the reference runs in this process and the candidate in
+  // a child: without one shared answer to "which file did the guest open", a
+  // file-backed program would compare two runs of two different files and the
+  // difference would be attributed to the translator.
+  const auto app_directory = std::filesystem::absolute(project_directory);
+  ::setenv("RECOMP_APP_DIR", app_directory.string().c_str(), 1);
+  const auto app_name = input_path.filename().string();
+  if (!app_name.empty()) ::setenv("RECOMP_APP_NAME", app_name.c_str(), 1);
+  std::string captured_stdin;
+  if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE")) {
+    std::ifstream input(stdin_path, std::ios::binary);
+    if (input) captured_stdin.assign(std::istreambuf_iterator<char>(input), {});
+  }
   // A trace is collected only when asked for, because it is one word per executed
   // instruction and the corpus runs to millions. Comparing the two instruction
   // streams is how a memory divergence is localised: if the streams agree up to
@@ -603,7 +617,13 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // diverge earlier, the divergence is upstream of the store.
   const char* trace_path = std::getenv("RECOMP_REF_TRACE");
   const std::size_t trace_limit = trace_path != nullptr ? 20000000 : 0;
+  guest_input_capture = captured_stdin.empty() && std::getenv("RECOMP_STDIN_FILE") == nullptr
+                            ? nullptr
+                            : &captured_stdin;
+  guest_input_position = 0;
   const auto reference = run_reference(executable, loaded_image, stack_top, heap_base, trace_limit);
+  guest_input_capture = nullptr;
+  guest_input_position = 0;
   guest_checkpoint_interval = 0;
   if (trace_path != nullptr) {
     if (std::FILE* file = std::fopen(trace_path, "wb")) {

@@ -687,6 +687,11 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            ");");
       return;
     }
+    if (mnemonic == "pshufb" && operands[1].kind == Operand::Kind::Memory) {
+      emit("vector_shuffle_bytes_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
   }
   // PSHUFLW/PSHUFHW are encoded with a source register and an immediate, so the
   // destination is a separate operand: dst = shuffle(src, imm).
@@ -746,6 +751,25 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
     emit_vector_move(operands[0], operands[1], mnemonic == "movss" ? 4 : 8);
     return;
+  }
+  if ((mnemonic == "movhps" || mnemonic == "movlps") && operands.size() == 2) {
+    const bool high = mnemonic == "movhps";
+    if (is_vector_register(operands[0]) && operands[1].kind == Operand::Kind::Memory) {
+      const auto destination = std::to_string(vector_index(operands[0]));
+      const auto address = effective_address_expression(instruction, operands[1]);
+      const auto value = "load_guest_memory(context, " + address + ", 8)";
+      emit(high ? "vector_set_high_qword(context, " + destination + ", " + value + ");"
+                : "vector_set_low_qword_preserve(context, " + destination + ", " + value + ");");
+      return;
+    }
+    if (operands[0].kind == Operand::Kind::Memory && is_vector_register(operands[1])) {
+      const auto source = std::to_string(vector_index(operands[1]));
+      const auto address = effective_address_expression(instruction, operands[0]);
+      const auto value = high ? "vector_get_high_qword(context, " + source + ")"
+                              : "vector_get_low(context, " + source + ", 8)";
+      emit("store_guest_memory(context, " + address + ", " + value + ", 8);");
+      return;
+    }
   }
   // Adapted from Remill's MOVLHPS/MOVHLPS semantics (Apache-2.0): preserve
   // one half of the destination and copy the indicated half of the source.
@@ -1171,6 +1195,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     operand_write(output, instruction, operands[0], value, width);
     return;
   }
+  if (mnemonic == "popal" || mnemonic == "popad") {
+    // POPAD restores registers in stack order and consumes, but ignores, the
+    // saved ESP slot. Reading that slot into ESP would change the remaining pops.
+    const char* registers[] = {"edi", "esi", "ebp", nullptr, "ebx", "edx", "ecx", "eax"};
+    for (const auto* name : registers) {
+      if (name == nullptr) {
+        emit("context->registers[4] = mask_guest_address(context->registers[4] + 4);");
+      } else {
+        emit(register_write_statement(name, "static_cast<std::uint32_t>(pop_guest_stack(context))"));
+      }
+    }
+    return;
+  }
   if (mnemonic == "pushad" || mnemonic == "pushal") {
     // Capstone names it `pushal` for 32-bit and `pushad` for the same encoding read
     // as 64-bit; both push the eight general registers in one instruction.
@@ -1354,6 +1391,28 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "retf") {
     emit("return_from_guest_function(context, 8);");
     emit_return();
+    return;
+  }
+
+  if (mnemonic == "cbw") {
+    emit(register_write_statement("ax", "static_cast<std::int8_t>(" + register_read_expression("al") + ")"));
+    return;
+  }
+  if (mnemonic == "cwde") {
+    emit(register_write_statement("eax", "static_cast<std::int16_t>(" + register_read_expression("ax") + ")"));
+    return;
+  }
+  if (mnemonic == "cdqe") {
+    emit(register_write_statement("rax", "static_cast<std::int32_t>(" + register_read_expression("eax") + ")"));
+    return;
+  }
+  if (mnemonic == "daa") {
+    emit(register_write_statement("al", "decimal_adjust_after_addition(context, " +
+                                      register_read_expression("al") + ")"));
+    return;
+  }
+  if (mnemonic == "into") {
+    emit("if (context->overflow_flag != 0) recomp_trap(context, \"into\");");
     return;
   }
   if (mnemonic == "int3" || mnemonic == "hlt" || mnemonic == "ud2" || mnemonic == "ud1" || mnemonic == "ud0") {

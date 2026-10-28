@@ -11,6 +11,7 @@
 #include <array>
 #include <sstream>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <system_error>
 #include <map>
 #include <filesystem>
@@ -36,6 +37,8 @@ std::uint64_t guest_memory_size = 0;
 std::uint64_t recompiled_image_base = 0;
 bool guest_tracing_enabled = false;
 int guest_pointer_width = 8;
+const std::string* guest_input_capture = nullptr;
+std::size_t guest_input_position = 0;
 
 namespace {
 std::FILE* guest_trace_stream = nullptr;
@@ -159,6 +162,22 @@ std::string read_guest_string(std::uint64_t address) {
     ++address;
   }
   return value;
+}
+
+// Reads a UTF-16 guest string as bytes. Only the low half of each unit is kept,
+// which is exact for ASCII and lossy above it; the callers are the wide forms of
+// LoadLibrary, _wfopen and CreateFileW, where the name is a path or a DLL and a
+// non-ASCII character is a name this host cannot open under either spelling.
+// Every path the runtime then touches goes through the app directory.
+std::string read_guest_wide_string(std::uint64_t address) {
+  std::string text;
+  for (std::uint64_t index = 0; index < 512; ++index) {
+    if (address + index * 2 + 1 >= guest_memory_size) break;
+    const auto unit = load_guest_memory(nullptr, address + index * 2, 2);
+    if (unit == 0) break;
+    text.push_back(static_cast<char>(unit & 0xffu));
+  }
+  return text;
 }
 
 // ---- Win32 last-error -----------------------------------------------------
@@ -541,12 +560,6 @@ void win32_release_mutex(GuestContext* context) {
   (void)import_argument(context, 0);
   set_import_result(context, 1);
 }
-void win32_flush_file_buffers(GuestContext* context) {
-  // Deliberately reports success without flushing, as igi-recomp does; the
-  // reference has to take the same branch or the traces diverge.
-  (void)import_argument(context, 0);
-  set_import_result(context, 1);
-}
 void win32_free_environment_strings_w(GuestContext* context) {
   (void)import_argument(context, 0);
   set_import_result(context, 1);
@@ -884,6 +897,9 @@ void win32_lc_map_string_w(GuestContext* context) {
 std::string guest_path_to_host(std::string path);
 // Resolves through the app-directory policy and reports why a path was refused.
 bool guest_path_resolve(const std::string& guest_path, std::string& host_path, bool for_creation);
+// Defined with the module table below; the file shims need it to tell a handle for
+// the image itself apart from one for a DLL the guest named.
+const char* guest_module_library(std::uint64_t handle);
 
 constexpr std::uint64_t kCxxStringBytes = 24;
 constexpr std::uint64_t kCxxStringLocalCapacity = 15;
@@ -1144,6 +1160,11 @@ std::uint64_t msvcrt_iob = 0;
 constexpr std::uint64_t kMsvcrtFileObjectBytes = 48;
 constexpr std::uint64_t kMsvcrtFileCount = 3;  // stdin, stdout, stderr
 
+// Defined below with the stream table it populates. The three standard streams
+// have to be registered before any guest code runs, because stdin is a FILE* the
+// program reads without opening anything.
+void crt_files_seed();
+
 void msvcrt_initialize() {
   msvcrt_data_block = 0;
   if (guest_memory == nullptr || guest_memory_size < 0x400000) return;
@@ -1160,12 +1181,707 @@ void msvcrt_initialize() {
   const std::uint32_t mb_cur_max = 1;
   std::memcpy(guest_memory + msvcrt_data_block + 0x320, &mb_cur_max, 4);
   store_guest_memory(nullptr, msvcrt_data_block + 0x430, guest_reserved_top() - 0x500000, guest_pointer_width);
+  crt_files_seed();
 }
 
 std::uint64_t msvcrt_stream_index(std::uint64_t stream) {
   if (msvcrt_iob == 0 || stream < msvcrt_iob) return 0;
   const auto index = (stream - msvcrt_iob) / kMsvcrtFileObjectBytes;
   return index < kMsvcrtFileCount ? index : 0;
+}
+
+// ---- CRT file descriptors and streams -------------------------------------
+// Three levels, because Windows has three: a guest HANDLE names an opened object,
+// a CRT file descriptor names one end of it, and a FILE* names a view of a
+// descriptor. Collapsing them is what makes _fileno, _open_osfhandle and _fdopen
+// unanswerable -- and mixing CreateFileA with fread is the ordinary way a Win32
+// program opens a file, so a stream that cannot be tied back to the handle it
+// came from reads the wrong thing and reports success.
+struct GuestCrtFile {
+  int host_fd{-1};
+  std::uint64_t handle{0};  // the guest handle it was made from, when it was
+  bool open{false};
+};
+std::vector<GuestCrtFile> crt_files;
+
+struct GuestCrtStream {
+  int fd{-1};
+  bool for_read{false};
+  bool for_write{false};
+  // EOF and error are per-stream, not per-descriptor: two FILE* on one descriptor
+  // have separate flags, and a program that calls feof after a short read has to
+  // see the flag the read set. Reporting eof from the descriptor would answer a
+  // different question than the one asked.
+  bool at_eof{false};
+  bool had_error{false};
+  // ungetc() puts back one byte; a second pushback before a read is undefined,
+  // so one slot is the whole requirement.
+  std::int32_t pushback{-1};
+};
+std::map<std::uint64_t, GuestCrtStream> crt_streams;
+
+std::uint64_t crt_file_new(int host_fd, std::uint64_t handle) {
+  for (std::size_t index = 0; index < crt_files.size(); ++index) {
+    if (!crt_files[index].open) {
+      crt_files[index] = GuestCrtFile{host_fd, handle, true};
+      return index;
+    }
+  }
+  crt_files.push_back(GuestCrtFile{host_fd, handle, true});
+  return crt_files.size() - 1;
+}
+
+GuestCrtFile* crt_file_get(std::uint64_t descriptor) {
+  if (descriptor >= crt_files.size() || !crt_files[descriptor].open) return nullptr;
+  return &crt_files[descriptor];
+}
+
+// The host descriptor behind a FILE*, or -1. A stream the runtime never created
+// -- a pointer the guest made up -- has to be distinguishable from a closed one,
+// because the guest's own error handling depends on the answer being no.
+int crt_stream_descriptor(std::uint64_t stream) {
+  const auto found = crt_streams.find(stream);
+  if (found == crt_streams.end()) return -1;
+  auto* file = crt_file_get(static_cast<std::uint64_t>(found->second.fd));
+  return file != nullptr ? file->host_fd : -1;
+}
+
+GuestCrtStream* crt_stream(std::uint64_t stream) {
+  const auto found = crt_streams.find(stream);
+  return found == crt_streams.end() ? nullptr : &found->second;
+}
+
+// Registers a stream for a descriptor. `object` is the FILE* the guest sees; for
+// fopen it is a fresh block, for the standard streams it is the slot in _iob.
+std::uint64_t crt_stream_make(std::uint64_t object, int fd, bool for_read, bool for_write) {
+  crt_streams[object] = GuestCrtStream{};
+  crt_streams[object].fd = fd;
+  crt_streams[object].for_read = for_read;
+  crt_streams[object].for_write = for_write;
+  return object;
+}
+
+// A FILE* the guest can hold: its own block in the guest heap, so the value is a
+// guest address like every other pointer the CRT returns.
+std::uint64_t crt_stream_allocate_object() {
+  return heap_allocate(kMsvcrtFileObjectBytes);
+}
+
+void crt_files_seed() {
+  crt_files.clear();
+  crt_streams.clear();
+  if (msvcrt_iob == 0) return;
+  // stdin, stdout, stderr, in the order _iob lays them out and the order
+  // __acrt_iob_func indexes.
+  crt_stream_make(msvcrt_iob + 0 * kMsvcrtFileObjectBytes,
+                  static_cast<int>(crt_file_new(STDIN_FILENO, 10)), true, false);
+  crt_stream_make(msvcrt_iob + 1 * kMsvcrtFileObjectBytes,
+                  static_cast<int>(crt_file_new(STDOUT_FILENO, 11)), false, true);
+  crt_stream_make(msvcrt_iob + 2 * kMsvcrtFileObjectBytes,
+                  static_cast<int>(crt_file_new(STDERR_FILENO, 12)), false, true);
+}
+
+// True when a guest buffer of `length` bytes at `address` lies inside the guest
+// address space. Everything that copies between the two checks this first: a
+// host read into a buffer the guest does not own writes over whatever follows the
+// mapping, which is not a failure the guest can be told about.
+bool guest_buffer_usable(std::uint64_t address, std::uint64_t length) {
+  return length <= guest_memory_size && address <= guest_memory_size - length;
+}
+
+// Parses a CRT mode string ("rb", "w+", "a+t", ...) into open flags and the
+// access the resulting stream has. Returns false for a mode Windows would reject,
+// which the caller reports as a failed fopen rather than as a guess.
+bool crt_parse_mode(const std::string& mode, int& host_flags, bool& for_read, bool& for_write) {
+  const bool has_plus = mode.find('+') != std::string::npos;
+  const bool text = mode.find('t') != std::string::npos || mode.find('b') == std::string::npos;
+  for_read = false;
+  for_write = false;
+  if (mode.find('r') != std::string::npos) {
+    if (has_plus) {
+      host_flags = O_RDWR;
+      for_read = for_write = true;
+    } else {
+      host_flags = O_RDONLY;
+      for_read = true;
+    }
+    // Text mode translates line endings on Windows; a guest that opens "rt" and
+    // reads back CRLF it never wrote would be a surprise, so the translation is
+    // named here rather than quietly dropped. It is not implemented: every stream
+    // is binary, which is what reading "rb" means.
+    return true;
+  }
+  if (mode.find('w') != std::string::npos) {
+    host_flags = has_plus ? O_RDWR : O_WRONLY;
+    host_flags |= O_CREAT | O_TRUNC;
+    for_write = true;
+    for_read = has_plus;
+    return true;
+  }
+  if (mode.find('a') != std::string::npos) {
+    host_flags = (has_plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND;
+    for_write = true;
+    for_read = has_plus;
+    return true;
+  }
+  (void)text;
+  return false;
+}
+
+// ---- CRT: streams ---------------------------------------------------------
+void msvcrt_fopen(GuestContext* context, bool wide) {
+  const auto path_argument = import_argument(context, 0);
+  const auto mode_text = read_guest_string(import_argument(context, 1));
+  // _wfsopen and _wfopen name their path in UTF-16; the modes are still narrow.
+  const auto path = wide ? read_guest_wide_string(path_argument) : read_guest_string(path_argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, mode_text.find('w') != std::string::npos)) {
+    set_import_result(context, 0);
+    return;
+  }
+  int host_flags = 0;
+  bool for_read = false;
+  bool for_write = false;
+  if (!crt_parse_mode(mode_text, host_flags, for_read, for_write)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto host_fd = ::open(host_path.c_str(), host_flags, 0644);
+  if (host_fd < 0) {
+    // Which failure it was matters to the caller: a missing file and a refused
+    // path are different problems, and ENOENT/EPERM distinguish them.
+    set_guest_last_error(errno == EACCES || errno == EPERM ? kErrorAccessDenied : kErrorFileNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto object = crt_stream_allocate_object();
+  if (object == 0) {
+    ::close(host_fd);
+    set_guest_last_error(kErrorNotEnoughMemory);
+    set_import_result(context, 0);
+    return;
+  }
+  if (object + kMsvcrtFileObjectBytes <= guest_memory_size)
+    std::memset(guest_memory + object, 0, kMsvcrtFileObjectBytes);
+  // The descriptor is created first so _fileno(f) has something to return, and
+  // _close(f) has something to release.
+  crt_stream_make(object, static_cast<int>(crt_file_new(host_fd, 0)), for_read, for_write);
+  clear_guest_last_error();
+  set_import_result(context, object);
+}
+
+void msvcrt_fclose(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto found = crt_streams.find(stream);
+  if (found == crt_streams.end()) {
+    // A stream this runtime did not create. Windows returns EOF and sets a bad
+    // file descriptor; closing something unknown by guessing at its descriptor
+    // would release a file the guest still has open.
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto fd = found->second.fd;
+  // The standard streams are not the program's to close. Releasing fd 1 makes
+  // every later write to stdout fail, and the guest gets no signal that it did
+  // something wrong -- it just stops being able to print.
+  const bool standard = msvcrt_iob != 0 && stream >= msvcrt_iob &&
+                        stream < msvcrt_iob + kMsvcrtFileCount * kMsvcrtFileObjectBytes;
+  crt_streams.erase(found);
+  auto* file = crt_file_get(static_cast<std::uint64_t>(fd));
+  if (file != nullptr) {
+    if (!standard) {
+      if (file->host_fd >= 0) ::close(file->host_fd);
+      if (file->handle != 0) guest_handle_close(file->handle);
+      file->open = false;
+      file->host_fd = -1;
+    }
+  }
+  if (standard) {
+    // Re-register the standard stream: fclose(stdin) is legal, it just has no
+    // effect on the host descriptor, and the stream has to keep working after it.
+    crt_stream_make(stream, fd, fd == 0, fd != 0);
+  } else {
+    // A FILE* whose object the guest may still hold, so the pointer cannot be
+    // reused for a new file; leaving the table entry absent makes every later use
+    // of it fail as a closed stream, which is what Windows does.
+  }
+  set_import_result(context, 0);
+}
+
+int guest_read_byte();
+
+void msvcrt_fread(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  const auto stream = import_argument(context, 3);
+  const auto total = size * count;
+  auto* state = crt_stream(stream);
+  if (state == nullptr || !state->for_read) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  if (total == 0) { set_import_result(context, 0); return; }
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0 || !guest_buffer_usable(buffer, total)) {
+    state->had_error = true;
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  bool failed = false;
+  std::size_t filled = 0;
+  while (filled < total) {
+    if (state->pushback >= 0) {
+      guest_memory[buffer + filled] = static_cast<std::uint8_t>(state->pushback);
+      state->pushback = -1;
+      ++filled;
+      continue;
+    }
+    if (guest_input_capture != nullptr && stream == msvcrt_iob) {
+      const auto character = guest_read_byte();
+      if (character < 0) break;
+      guest_memory[buffer + filled++] = static_cast<std::uint8_t>(character);
+      continue;
+    }
+    const auto read = ::read(host_fd, guest_memory + buffer + filled, total - filled);
+    if (read == 0) break;
+    if (read < 0) { failed = true; break; }
+    filled += static_cast<std::size_t>(read);
+  }
+  if (filled < total) {
+    // A read that reaches the end of the file is not an error, and the two flags
+    // mean different things to the caller: feof() after a clean exhaustion tells a
+    // parsing loop to stop, ferror() tells it the data is corrupt. Setting both
+    // makes a file read to its end look like a failed read.
+    if (failed) {
+      state->had_error = true;
+      set_guest_last_error(kErrorInvalidHandle);
+      set_import_result(context, 0);
+      return;
+    }
+    state->at_eof = true;
+  }
+  clear_guest_last_error();
+  // Items, not bytes: size * count bytes filled is `size` items when size is not
+  // 1, and the caller compares the return value against `count`.
+  set_import_result(context, size == 0 ? 0 : filled / size);
+}
+
+void msvcrt_fwrite(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto size = import_argument(context, 1);
+  const auto count = import_argument(context, 2);
+  const auto stream = import_argument(context, 3);
+  const auto total = size * count;
+  auto* state = crt_stream(stream);
+  if (state == nullptr || !state->for_write) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  if (total == 0) { set_import_result(context, 0); return; }
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0 || !guest_buffer_usable(buffer, total)) {
+    state->had_error = true;
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  // The standard streams go through the output writer, which is what the
+  // differential reference captures; a real file is written to its own descriptor.
+  const bool standard = msvcrt_iob != 0 && stream >= msvcrt_iob &&
+                        stream < msvcrt_iob + kMsvcrtFileCount * kMsvcrtFileObjectBytes;
+  std::size_t written = 0;
+  while (written < total) {
+    const auto accepted = standard
+        ? write_guest_output(host_fd, reinterpret_cast<const char*>(guest_memory + buffer + written),
+                             total - written)
+        : ::write(host_fd, guest_memory + buffer + written, total - written);
+    if (accepted <= 0) break;
+    written += static_cast<std::size_t>(accepted);
+  }
+  if (written < total) state->had_error = true;
+  if (written == 0) { set_import_result(context, 0); return; }
+  clear_guest_last_error();
+  set_import_result(context, size == 0 ? 0 : written / size);
+}
+
+void msvcrt_fseek(GuestContext* context, bool wide_offset) {
+  const auto stream = import_argument(context, 0);
+  const auto raw = import_argument(context, 1);
+  const auto origin = static_cast<std::int32_t>(import_argument(context, 2));
+  auto* state = crt_stream(stream);
+  if (state == nullptr) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // `fseek`'s offset is a C `long`, which on Windows is 32 bits at *both* guest
+  // widths -- LLP64, not LP64. A PE32+ guest moving -4 into a register leaves the
+  // upper half zero, so reading it as a 64-bit value gives +4294967292, the seek
+  // lands past the end, and the next read returns nothing: an empty file, reported
+  // as success. `_fseeki64` is the 64-bit form and takes the register as it is.
+  std::int64_t offset = wide_offset
+      ? static_cast<std::int64_t>(raw)
+      : static_cast<std::int64_t>(static_cast<std::int32_t>(static_cast<std::uint32_t>(raw)));
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  int host_origin = SEEK_SET;
+  if (origin == 1) host_origin = SEEK_CUR;
+  else if (origin == 2) host_origin = SEEK_END;
+  const auto position = ::lseek(host_fd, static_cast<off_t>(offset), host_origin);
+  if (position < 0) {
+    state->had_error = true;
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // Seeking is the one thing that reliably clears a previous end-of-file, and a
+  // stream that stayed flagged would make a program's next read look exhausted.
+  state->at_eof = false;
+  state->pushback = -1;
+  clear_guest_last_error();
+  set_import_result(context, 0);
+}
+
+void msvcrt_ftell(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (host_fd < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(::lseek(host_fd, 0, SEEK_CUR)));
+}
+
+void msvcrt_feof(GuestContext* context) {
+  auto* state = crt_stream(import_argument(context, 0));
+  set_import_result(context, state != nullptr && state->at_eof ? 1 : 0);
+}
+void msvcrt_ferror(GuestContext* context) {
+  auto* state = crt_stream(import_argument(context, 0));
+  set_import_result(context, state != nullptr && state->had_error ? 1 : 0);
+}
+void msvcrt_clearerr(GuestContext* context) {
+  auto* state = crt_stream(import_argument(context, 0));
+  if (state != nullptr) {
+    state->at_eof = false;
+    state->had_error = false;
+  }
+}
+void msvcrt_rewind(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  ::lseek(host_fd, 0, SEEK_SET);
+  state->at_eof = false;
+  state->had_error = false;
+  state->pushback = -1;
+  set_import_result(context, 0);
+}
+
+void msvcrt_fgetc(GuestContext* context, bool for_write) {
+  const auto stream = import_argument(context, for_write ? 1 : 0);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0) {
+    if (state != nullptr) state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));  // EOF
+    return;
+  }
+  if (!for_write) {
+    if (state->pushback >= 0) {
+      const auto value = state->pushback;
+      state->pushback = -1;
+      set_import_result(context, static_cast<std::uint64_t>(value));
+      return;
+    }
+    if (guest_input_capture != nullptr && stream == msvcrt_iob) {
+      const auto character = guest_read_byte();
+      if (character < 0) state->at_eof = true;
+      else state->at_eof = false;
+      set_import_result(context, character < 0 ? static_cast<std::uint64_t>(-1)
+                                              : static_cast<std::uint64_t>(character));
+      return;
+    }
+    std::uint8_t byte = 0;
+    const auto read = ::read(host_fd, &byte, 1);
+    if (read <= 0) {
+      // EOF and error are different answers, and the guest distinguishes them by
+      // calling feof or ferror afterwards.
+      if (read == 0) state->at_eof = true; else state->had_error = true;
+      set_import_result(context, static_cast<std::uint64_t>(-1));
+      return;
+    }
+    set_import_result(context, byte);
+    return;
+  }
+  if (!state->for_write) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto character = static_cast<std::uint8_t>(import_argument(context, 0));
+  const auto written = ::write(host_fd, &character, 1);
+  if (written != 1) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, character);
+}
+
+void msvcrt_fgets(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto maximum = import_argument(context, 1);
+  const auto stream = import_argument(context, 2);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0 || !state->for_read || maximum <= 1 ||
+      !guest_buffer_usable(buffer, static_cast<std::uint64_t>(maximum))) {
+    if (state != nullptr) state->had_error = true;
+    set_import_result(context, 0);
+    return;
+  }
+  std::uint64_t filled = 0;
+  while (filled + 1 < static_cast<std::uint64_t>(maximum)) {
+    std::uint8_t byte = 0;
+    if (state->pushback >= 0) {
+      byte = static_cast<std::uint8_t>(state->pushback);
+      state->pushback = -1;
+    } else if (guest_input_capture != nullptr && stream == msvcrt_iob) {
+      const auto character = guest_read_byte();
+      if (character < 0) {
+        state->at_eof = true;
+        break;
+      }
+      state->at_eof = false;
+      byte = static_cast<std::uint8_t>(character);
+    } else {
+      const auto one = ::read(host_fd, &byte, 1);
+      if (one != 1) {
+        // A read of zero bytes is the end of the file; a read that failed is an
+        // error. Both leave the loop, and the guest distinguishes them afterwards
+        // by calling feof() or ferror(), so they must not set the same flag.
+        if (one == 0) state->at_eof = true;
+        else state->had_error = true;
+        break;
+      }
+    }
+    guest_memory[buffer + filled++] = byte;
+    if (byte == '\n') break;
+  }
+  if (filled == 0) { set_import_result(context, 0); return; }
+  guest_memory[buffer + filled] = 0;
+  set_import_result(context, buffer);
+}
+
+void msvcrt_fputs(GuestContext* context) {
+  const auto text_address = import_argument(context, 0);
+  const auto stream = import_argument(context, 1);
+  auto* state = crt_stream(stream);
+  const auto host_fd = crt_stream_descriptor(stream);
+  if (state == nullptr || host_fd < 0 || !state->for_write) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto text = read_guest_string(text_address);
+  std::size_t written = 0;
+  while (written < text.size()) {
+    const auto accepted = ::write(host_fd, text.data() + written, text.size() - written);
+    if (accepted <= 0) break;
+    written += static_cast<std::size_t>(accepted);
+  }
+  if (written != text.size()) {
+    state->had_error = true;
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, 0);
+}
+
+void msvcrt_ungetc(GuestContext* context) {
+  const auto character = import_argument(context, 0);
+  const auto stream = import_argument(context, 1);
+  auto* state = crt_stream(stream);
+  if (state == nullptr || !state->for_read || character == 0xffffffffull) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));  // EOF
+    return;
+  }
+  state->pushback = static_cast<std::int32_t>(character & 0xffu);
+  state->at_eof = false;
+  set_import_result(context, static_cast<std::uint64_t>(state->pushback));
+}
+
+// No host buffering exists to flush: every write goes straight to the descriptor.
+// fflush therefore succeeds without doing anything, and says so by returning 0 --
+// the answer a caller checking for a failed flush is looking for.
+void msvcrt_fflush(GuestContext* context) { set_import_result(context, 0); }
+
+void msvcrt_fileno(GuestContext* context) {
+  const auto stream = import_argument(context, 0);
+  auto* state = crt_stream(stream);
+  if (state == nullptr) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(state->fd));
+}
+
+void msvcrt_open(GuestContext* context, bool wide) {
+  const auto path_argument = import_argument(context, 0);
+  const auto of_flags = static_cast<std::uint32_t>(import_argument(context, 1));
+  const auto path = wide ? read_guest_wide_string(path_argument) : read_guest_string(path_argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, (of_flags & 0x0100u) != 0)) {
+    set_import_result(context, static_cast<std::uint64_t>(-2));  // ENOENT
+    return;
+  }
+  // _O_RDONLY 0x0000, _O_WRONLY 0x0001, _O_RDWR 0x0002, _O_APPEND 0x0008,
+  // _O_CREAT 0x0100, _O_TRUNC 0x0200, _O_EXCL 0x0400. The access bits are the low
+  // two bits, which is the same shape the host uses.
+  int host_flags = of_flags & 0x3;
+  if ((of_flags & 0x0100u) != 0) host_flags |= O_CREAT;
+  if ((of_flags & 0x0200u) != 0) host_flags |= O_TRUNC;
+  if ((of_flags & 0x0400u) != 0) host_flags |= O_EXCL;
+  if ((of_flags & 0x0008u) != 0) host_flags |= O_APPEND;
+  const auto host_fd = ::open(host_path.c_str(), host_flags, 0644);
+  if (host_fd < 0) {
+    set_guest_last_error(kErrorFileNotFound);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, crt_file_new(host_fd, 0));
+}
+
+void msvcrt_close(GuestContext* context) {
+  auto* file = crt_file_get(import_argument(context, 0));
+  if (file == nullptr) { set_import_result(context, static_cast<std::uint64_t>(-1)); return; }
+  if (file->host_fd >= 0) ::close(file->host_fd);
+  file->open = false;
+  file->host_fd = -1;
+  set_import_result(context, 0);
+}
+
+void msvcrt_read_or_write(GuestContext* context, bool for_write) {
+  auto* file = crt_file_get(import_argument(context, 0));
+  const auto buffer = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  if (file == nullptr || file->host_fd < 0 || length > guest_memory_size ||
+      buffer > guest_memory_size - length) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const std::size_t count = static_cast<std::size_t>(length);
+  std::size_t moved = 0;
+  while (moved < count) {
+    const auto accepted = for_write
+        ? ::write(file->host_fd, guest_memory + buffer + moved, count - moved)
+        : ::read(file->host_fd, guest_memory + buffer + moved, count - moved);
+    if (accepted <= 0) break;
+    moved += static_cast<std::size_t>(accepted);
+  }
+  if (!for_write && moved < count) {
+    // A short read from a descriptor is the end of the file, not an error.
+    set_guest_last_error(0);
+  }
+  set_import_result(context, moved);
+}
+
+void msvcrt_lseek(GuestContext* context) {
+  auto* file = crt_file_get(import_argument(context, 0));
+  const auto raw_offset = import_argument(context, 1);
+  const auto origin = static_cast<std::int32_t>(import_argument(context, 2));
+  if (file == nullptr || file->host_fd < 0) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // `_lseek`'s offset is a C `long`: 32 bits on Windows at both guest widths, so a
+  // negative seek arrives as 0xfffffffc in a 64-bit register and has to be read
+  // back as -4. See msvcrt_fseek for what it reports if it is not.
+  const auto offset = static_cast<std::int64_t>(static_cast<std::int32_t>(
+      static_cast<std::uint32_t>(raw_offset)));
+  int host_origin = SEEK_SET;
+  if (origin == 1) host_origin = SEEK_CUR;
+  else if (origin == 2) host_origin = SEEK_END;
+  set_import_result(context, static_cast<std::uint64_t>(
+      ::lseek(file->host_fd, static_cast<off_t>(offset), host_origin)));
+}
+
+// Bridges a guest HANDLE to a CRT descriptor, which is how a program that opened
+// a file with CreateFileA goes on to read it with fread.
+void msvcrt_open_osfhandle(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, crt_file_new(entry->host_descriptor, handle));
+}
+
+void msvcrt_fdopen(GuestContext* context, bool wide) {
+  const auto fd = static_cast<std::uint64_t>(import_argument(context, 0));
+  const auto mode_text = wide ? read_guest_wide_string(import_argument(context, 1))
+                              : read_guest_string(import_argument(context, 1));
+  auto* file = crt_file_get(fd);
+  if (file == nullptr) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  int host_flags = 0;
+  bool for_read = false;
+  bool for_write = false;
+  if (!crt_parse_mode(mode_text, host_flags, for_read, for_write)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto object = crt_stream_allocate_object();
+  if (object == 0) { set_import_result(context, 0); return; }
+  if (object + kMsvcrtFileObjectBytes <= guest_memory_size)
+    std::memset(guest_memory + object, 0, kMsvcrtFileObjectBytes);
+  crt_stream_make(object, static_cast<int>(fd), for_read, for_write);
+  set_import_result(context, object);
+}
+
+void msvcrt_remove_or_rename(GuestContext* context, bool rename) {
+  const auto first = read_guest_string(import_argument(context, 0));
+  std::string host_first;
+  if (!guest_path_resolve(first, host_first, false)) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  if (!rename) {
+    set_import_result(context, ::remove(host_first.c_str()) == 0 ? 0u : static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto second = read_guest_string(import_argument(context, 1));
+  std::string host_second;
+  if (!guest_path_resolve(second, host_second, true)) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, ::rename(host_first.c_str(), host_second.c_str()) == 0 ? 0u
+                                                                                    : static_cast<std::uint64_t>(-1));
 }
 
 // The C runtime's allocator is the guest heap, so a pointer it returns is
@@ -1250,23 +1966,18 @@ void msvcrt_rand(GuestContext* context) {
   set_import_result(context, (msvcrt_random_state >> 16) & 0x7fffu);
 }
 
-// The bytes the guest reads as stdin, when a run supplies them. A file rather than an
-// environment variable so that both sides of a verification read the SAME input: the
-// reference runs in this process and the candidate in a subprocess, and if both read the
-// real stdin the first consumes it and the second sees EOF. They would then differ for a
-// reason that has nothing to do with the translation.
+// The bytes the guest reads as stdin. The reference runs in this process and the
+// candidate in a subprocess, so a capture that is set only here would leave the candidate
+// reading the real stdin -- which the capture has already consumed -- and the two would
+// disagree for a reason that has nothing to do with the translation. This is called from
+// `initialize_guest_state`, which BOTH sides pass through, so the file reaches both.
 std::string guest_input_storage;
-const std::string* guest_input_capture = nullptr;
-std::size_t guest_input_position = 0;
 
-// Loads the file named by RECOMP_STDIN_FILE, if any. Called once at startup.
 void load_guest_input_from_environment() {
   const char* path = std::getenv("RECOMP_STDIN_FILE");
   if (path == nullptr || path[0] == '\0') return;
   std::FILE* file = std::fopen(path, "rb");
   if (file == nullptr) {
-    // Fail loudly: silently reading the real stdin instead would make the two sides
-    // disagree in a way that looks like a translation bug.
     std::fprintf(stderr, "recomp: RECOMP_STDIN_FILE=%s could not be opened\n", path);
     return;
   }
@@ -1277,7 +1988,6 @@ void load_guest_input_from_environment() {
   guest_input_capture = &guest_input_storage;
   guest_input_position = 0;
 }
-
 int guest_read_byte() {
   if (guest_input_capture != nullptr) {
     if (guest_input_position >= guest_input_capture->size()) return -1;
@@ -1293,46 +2003,7 @@ void msvcrt_getchar(GuestContext* context) {
 }
 
 void msvcrt_fgetc(GuestContext* context) {
-  if (msvcrt_stream_index(import_argument(context, 0)) != 0) {
-    set_import_result(context, static_cast<std::uint64_t>(-1));
-    return;
-  }
-  const auto character = guest_read_byte();
-  set_import_result(context, character < 0 ? static_cast<std::uint64_t>(-1)
-                                           : static_cast<std::uint64_t>(static_cast<unsigned char>(character)));
-}
-
-void msvcrt_fgets(GuestContext* context) {
-  const auto buffer = import_argument(context, 0);
-  const auto size = import_argument(context, 1);
-  if (size == 0 || msvcrt_stream_index(import_argument(context, 2)) != 0) {
-    set_import_result(context, 0);
-    return;
-  }
-  std::size_t written = 0;
-  while (written + 1 < size) {
-    const auto character = guest_read_byte();
-    if (character < 0) break;
-    store_guest_memory(context, buffer + written,
-                       static_cast<std::uint64_t>(static_cast<unsigned char>(character)), 1);
-    ++written;
-    if (character == '\n') break;
-  }
-  store_guest_memory(context, buffer + written, 0, 1);
-  set_import_result(context, written == 0 ? 0 : buffer);
-}
-
-void msvcrt_fwrite(GuestContext* context) {
-  const auto buffer = import_argument(context, 0);
-  const auto size = import_argument(context, 1);
-  const auto count = import_argument(context, 2);
-  const auto stream = import_argument(context, 3);
-  const auto total = size * count;
-  const auto index = msvcrt_stream_index(stream);
-  const int descriptor = index == 0 ? STDIN_FILENO : index == 1 ? STDOUT_FILENO : STDERR_FILENO;
-  if (total != 0 && buffer + total <= guest_memory_size)
-    write_guest_output(descriptor, reinterpret_cast<const char*>(guest_memory + buffer), static_cast<std::size_t>(total));
-  set_import_result(context, count);
+  msvcrt_fgetc(context, false);
 }
 
 void msvcrt_puts(GuestContext* context) {
@@ -1791,6 +2462,418 @@ void win32_find_close(GuestContext* context) {
   set_import_result(context, 1);
 }
 
+// ---- kernel32: files ------------------------------------------------------
+// A guest file handle is a typed entry in the handle table whose descriptor is a
+// host descriptor, opened through the app-directory policy. Everything here
+// either produces one of those or consumes one, so a handle from CreateFileA and
+// a handle from FindFirstFileA cannot be confused for each other, and neither can
+// be a host pointer.
+
+// Maps GENERIC_* / FILE_*_DATA access bits onto the read and write permission the
+// handle will carry.
+void guest_decode_access(std::uint64_t desired_access, bool& may_read, bool& may_write) {
+  may_read = false;
+  may_write = false;
+  if (desired_access == 0) return;  // access 0 asks for metadata only
+  const std::uint64_t generic_read = 0x80000000ull;
+  const std::uint64_t generic_write = 0x40000000ull;
+  const std::uint64_t generic_execute = 0x20000000ull;
+  const std::uint64_t all_access = 0x1F01FFull;
+  if (desired_access == all_access) { may_read = may_write = true; return; }
+  if ((desired_access & generic_read) != 0 || (desired_access & 0x86ull) != 0) may_read = true;
+  if ((desired_access & generic_write) != 0 || (desired_access & 0x190ull) != 0) may_write = true;
+  if ((desired_access & generic_execute) != 0) may_read = true;
+}
+
+int guest_open_disposition(std::uint32_t disposition, bool for_write) {
+  // CREATE_NEW 1, CREATE_ALWAYS 2, OPEN_EXISTING 3, OPEN_ALWAYS 4,
+  // TRUNCATE_EXISTING 5.
+  switch (disposition) {
+    case 1: return O_CREAT | O_EXCL | (for_write ? O_WRONLY : O_RDONLY);
+    case 2: return O_CREAT | O_TRUNC | (for_write ? O_WRONLY : O_RDWR);
+    case 3: return for_write ? O_RDWR : O_RDONLY;
+    case 4: return O_CREAT | (for_write ? O_WRONLY : O_RDONLY);
+    case 5: return O_TRUNC | O_WRONLY;
+    default: return -1;
+  }
+}
+
+void win32_create_file(GuestContext* context, bool wide) {
+  const auto path_argument = import_argument(context, 0);
+  const auto desired_access = import_argument(context, 1);
+  const auto disposition = static_cast<std::uint32_t>(import_argument(context, 4));
+  const auto path = wide ? read_guest_wide_string(path_argument) : read_guest_string(path_argument);
+  bool may_read = false;
+  bool may_write = false;
+  guest_decode_access(desired_access, may_read, may_write);
+  std::string host_path;
+  // The policy has to be told whether this call intends to create, because
+  // creating inside the app directory is allowed and creating outside it is the
+  // case where "we refused" must be louder than "not found".
+  if (!guest_path_resolve(path, host_path, disposition == 1 || disposition == 2 || disposition == 4)) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));  // INVALID_HANDLE_VALUE
+    return;
+  }
+  const auto flags = guest_open_disposition(disposition, may_write);
+  if (flags < 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  // A directory is not a file: Windows refuses to open one without the backup
+  // semantics flag, and a guest that gets a handle for a directory then tries to
+  // read it is confused about something worth failing loudly for.
+  std::error_code error;
+  const bool is_directory = std::filesystem::is_directory(host_path, error);
+  if (is_directory && may_write) {
+    set_guest_last_error(kErrorAccessDenied);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const int host_fd = is_directory ? ::open(host_path.c_str(), O_RDONLY)
+                                   : ::open(host_path.c_str(), flags, 0644);
+  if (host_fd < 0) {
+    const auto code = errno == EEXIST ? kErrorSharingViolation
+                    : errno == EACCES || errno == EPERM ? kErrorAccessDenied
+                    : errno == ENOENT ? kErrorFileNotFound
+                                      : kErrorPathNotFound;
+    set_guest_last_error(code);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  const auto handle = guest_file_handle_new(host_fd, is_directory || may_read, may_write, path);
+  if (handle == 0) {
+    ::close(host_fd);
+    set_guest_last_error(kErrorNotEnoughMemory);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, handle);
+}
+
+// Moves the file pointer, in the 32-bit and 64-bit forms the two APIs offer.
+void win32_set_file_pointer(GuestContext* context, bool extended) {
+  const auto handle = import_argument(context, 0);
+  const auto raw_distance = import_argument(context, 1);
+  const auto origin = static_cast<std::int32_t>(import_argument(context, 2));
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    // SetFilePointer returns 0xFFFFFFFF and reports the real position through the
+    // high-word pointer when there is one, which is what the caller checks.
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  const auto distance = extended
+      ? static_cast<std::int64_t>(raw_distance)
+      : static_cast<std::int64_t>(static_cast<std::int32_t>(static_cast<std::uint32_t>(raw_distance)));
+  int host_origin = SEEK_SET;
+  if (origin == 1) host_origin = SEEK_CUR;
+  else if (origin == 2) host_origin = SEEK_END;
+  const auto position = ::lseek(entry->host_descriptor, static_cast<off_t>(distance), host_origin);
+  if (position < 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  if (!extended) {
+    const auto high_pointer = import_argument(context, 3);
+    if (high_pointer != 0)
+      store_guest_memory(context, high_pointer, static_cast<std::uint64_t>(position >> 32), 4);
+  }
+  clear_guest_last_error();
+  set_import_result(context, static_cast<std::uint64_t>(position));
+}
+
+void win32_get_file_size(GuestContext* context, bool extended) {
+  const auto handle = import_argument(context, 0);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || (entry->type != kGuestHandleFile && entry->type != kGuestHandleStandard) ||
+      entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  struct stat status{};
+  if (::fstat(entry->host_descriptor, &status) != 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  const auto size = static_cast<std::uint64_t>(status.st_size);
+  if (!extended) {
+    const auto high_pointer = import_argument(context, 1);
+    if (high_pointer != 0)
+      store_guest_memory(context, high_pointer, size >> 32, 4);
+    set_import_result(context, size & 0xffffffffull);
+    return;
+  }
+  set_import_result(context, size);
+}
+
+// The name the guest is running under, in the Windows form it expects. Programs
+// use this to find the directory they were started from and then read their own
+// data files, so a shim that returns 0 here makes every bundled asset unreachable
+// and the failure surfaces as a missing texture rather than as a refused call.
+//
+// Three arguments, the first of which is the module to ask about: NULL means the
+// executable the process started from, which is the only module this runtime has.
+// Reading the buffer from argument 0 would write the path over whatever the guest
+// passed as the module handle and report success.
+void win32_get_module_file_name(GuestContext* context, bool wide) {
+  const auto module_handle = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto maximum = import_argument(context, 2);
+  if (module_handle != 0 && module_handle != recompiled_image_base &&
+      guest_module_library(module_handle) == nullptr) {
+    // A module this runtime does not know has no name to report; Windows writes
+    // nothing and returns 0, which is what the caller checks.
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto& root = guest_file_sandbox().root();
+  if (root.empty()) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  // The executable's own name comes from the harness when it knows it; the
+  // directory alone would make a program that strips the last path component end
+  // up one level too high.
+  std::string name = "recomp-guest";
+  if (const char* configured = std::getenv("RECOMP_APP_NAME"); configured != nullptr && configured[0] != '\0')
+    name = configured;
+  const auto guest_path = guest_file_sandbox().to_guest_path(root + "/" + name);
+  const auto length = guest_path.size();
+  if (buffer == 0 || maximum == 0 || !guest_buffer_usable(buffer, length + 1)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  for (std::size_t index = 0; index < length; ++index) {
+    const auto unit = wide ? static_cast<std::uint64_t>(static_cast<std::uint16_t>(guest_path[index]))
+                           : static_cast<std::uint64_t>(static_cast<std::uint8_t>(guest_path[index]));
+    store_guest_memory(context, buffer + index * (wide ? 2 : 1), unit, wide ? 2 : 1);
+  }
+  store_guest_memory(context, buffer + length * (wide ? 2 : 1), 0, wide ? 2 : 1);
+  clear_guest_last_error();
+  set_import_result(context, length);
+}
+
+// Deletes and renames, through the same policy as opening.
+void win32_delete_file(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) {
+    set_guest_last_error(kErrorFileNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  if (::remove(host_path.c_str()) != 0) {
+    set_guest_last_error(errno == EPERM || errno == EACCES ? kErrorAccessDenied : kErrorFileNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_create_directory(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, true)) {
+    set_guest_last_error(kErrorAccessDenied);
+    set_import_result(context, 0);
+    return;
+  }
+  if (::mkdir(host_path.c_str(), 0755) != 0) {
+    set_guest_last_error(errno == EEXIST ? kErrorSharingViolation : kErrorPathNotFound);
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_remove_directory(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) {
+    set_import_result(context, 0);
+    return;
+  }
+  // rmdir fails on a non-empty directory, which is the behaviour the caller is
+  // checking for when it decides whether to report "in use".
+  set_import_result(context, ::rmdir(host_path.c_str()) == 0 ? 1u : 0u);
+}
+
+void win32_move_file(GuestContext* context, bool extended) {
+  const auto first_argument = import_argument(context, 0);
+  const auto second_argument = import_argument(context, 1);
+  const auto first = read_guest_string(first_argument);
+  // MoveFileExA puts its flags in the third argument; MoveFileW takes no flags,
+  // and reading one that is not there would invent a behaviour.
+  const auto flags = extended ? static_cast<std::uint32_t>(import_argument(context, 2)) : 0u;
+  std::string host_first;
+  std::string host_second;
+  if (!guest_path_resolve(first, host_first, false)) { set_import_result(context, 0); return; }
+  // MOVEFILE_COPY_ALLOWED is 2, MOVEFILE_REPLACE_EXISTING is 1, DELAY_UNTIL_REBOOT
+  // is 4 -- and a recompiler has no reboot to defer to, so a request that depends
+  // on it cannot be honoured and has to say so rather than do nothing.
+  if ((flags & 4u) != 0) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  if (!guest_path_resolve(second_argument == 0 ? std::string() : read_guest_string(second_argument),
+                         host_second, true)) {
+    set_import_result(context, 0);
+    return;
+  }
+  if (::rename(host_first.c_str(), host_second.c_str()) != 0) {
+    // EEXIST on a rename onto an existing file is exactly the case
+    // REPLACE_EXISTING was passed for; unlink and try again before giving up.
+    if (errno == EEXIST && (flags & 1u) != 0 && ::unlink(host_second.c_str()) == 0 &&
+        ::rename(host_first.c_str(), host_second.c_str()) == 0) {
+      clear_guest_last_error();
+      set_import_result(context, 1);
+      return;
+    }
+    set_guest_last_error(errno == ENOENT ? kErrorFileNotFound : kErrorAccessDenied);
+    set_import_result(context, 0);
+    return;
+  }
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+
+void win32_get_file_attributes(GuestContext* context, bool wide) {
+  const auto argument = import_argument(context, 0);
+  const auto path = wide ? read_guest_wide_string(argument) : read_guest_string(argument);
+  std::string host_path;
+  if (!guest_path_resolve(path, host_path, false)) {
+    set_import_result(context, 0xffffffffull);  // INVALID_FILE_ATTRIBUTES
+    return;
+  }
+  std::error_code error;
+  if (!std::filesystem::exists(host_path, error)) {
+    set_guest_last_error(kErrorFileNotFound);
+    set_import_result(context, 0xffffffffull);
+    return;
+  }
+  // FILE_ATTRIBUTE_DIRECTORY 0x10, FILE_ATTRIBUTE_READONLY 0x1, and 0x80 for a
+  // plain file.
+  std::uint64_t attributes = 0x80;
+  if (std::filesystem::is_directory(host_path, error)) attributes = 0x10;
+  else if ((std::filesystem::status(host_path, error).permissions() & std::filesystem::perms::owner_write) ==
+           std::filesystem::perms::none)
+    attributes = 0x1;
+  clear_guest_last_error();
+  set_import_result(context, attributes);
+}
+
+void win32_set_end_of_file(GuestContext* context) {
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto position = ::lseek(entry->host_descriptor, 0, SEEK_CUR);
+  set_import_result(context, ::ftruncate(entry->host_descriptor, static_cast<off_t>(position)) == 0 ? 1u : 0u);
+}
+
+// The file's own bytes, not the program's output. Flushing the host stream here
+// would be wrong in a different way for every file the guest has open.
+void win32_flush_file_buffers(GuestContext* context) {
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleFile || entry->host_descriptor < 0) {
+    // A standard stream has no buffers of the guest's to push out.
+    set_import_result(context, entry != nullptr ? 1 : 0);
+    if (entry == nullptr) set_guest_last_error(kErrorInvalidHandle);
+    return;
+  }
+  set_import_result(context, ::fsync(entry->host_descriptor) == 0 ? 1u : 0u);
+}
+
+// Bytes of free space on the drive the app directory lives on. The guest asks when
+// it is about to write something large; answering 0 makes it refuse to write, and
+// answering a made-up number lets it fill a real disk.
+void win32_get_disk_free_space(GuestContext* context) {
+  const auto root_argument = import_argument(context, 0);
+  const auto free_bytes_for_caller = import_argument(context, 1);
+  const auto total_bytes_for_caller = import_argument(context, 2);
+  const auto total_free_for_caller = import_argument(context, 3);
+  const auto path = root_argument == 0 ? guest_file_sandbox().root() : read_guest_string(root_argument);
+  std::string host_path;
+  // A drive letter alone ("C:\") is a legal argument and resolves to the sandbox.
+  if (!guest_path_resolve(path.empty() ? "." : path, host_path, false)) host_path = guest_file_sandbox().root();
+  std::error_code error;
+  const auto space = std::filesystem::space(host_path.empty() ? "." : host_path, error);
+  if (error) { set_import_result(context, 0); return; }
+  if (free_bytes_for_caller != 0) store_guest_memory(context, free_bytes_for_caller, space.available, 8);
+  if (total_bytes_for_caller != 0) store_guest_memory(context, total_bytes_for_caller, space.capacity, 8);
+  if (total_free_for_caller != 0) store_guest_memory(context, total_free_for_caller, space.free, 8);
+  set_import_result(context, 1);
+}
+
+// The A/W and 32/64-bit spellings, as separate entries because the shim table keys
+// on the name the guest actually imports. Each is named after the entry it serves
+// -- `shim_` prefix, implementation without -- so a wrapper can never quietly call
+// itself instead of the function it wraps.
+void shim_CreateFileA(GuestContext* c) { win32_create_file(c, false); }
+void shim_CreateFileW(GuestContext* c) { win32_create_file(c, true); }
+void shim_SetFilePointer(GuestContext* c) { win32_set_file_pointer(c, false); }
+void shim_SetFilePointerEx(GuestContext* c) { win32_set_file_pointer(c, true); }
+void shim_GetFileSize(GuestContext* c) { win32_get_file_size(c, false); }
+void shim_GetFileSizeEx(GuestContext* c) { win32_get_file_size(c, true); }
+void shim_DeleteFileA(GuestContext* c) { win32_delete_file(c, false); }
+void shim_DeleteFileW(GuestContext* c) { win32_delete_file(c, true); }
+void shim_CreateDirectoryA(GuestContext* c) { win32_create_directory(c, false); }
+void shim_CreateDirectoryW(GuestContext* c) { win32_create_directory(c, true); }
+void shim_RemoveDirectoryA(GuestContext* c) { win32_remove_directory(c, false); }
+void shim_RemoveDirectoryW(GuestContext* c) { win32_remove_directory(c, true); }
+void shim_MoveFileA(GuestContext* c) { win32_move_file(c, false); }
+void shim_MoveFileW(GuestContext* c) { win32_move_file(c, false); }
+void shim_MoveFileExA(GuestContext* c) { win32_move_file(c, true); }
+void shim_MoveFileExW(GuestContext* c) { win32_move_file(c, true); }
+void shim_GetFileAttributesA(GuestContext* c) { win32_get_file_attributes(c, false); }
+void shim_GetFileAttributesW(GuestContext* c) { win32_get_file_attributes(c, true); }
+void shim_GetModuleFileNameA(GuestContext* c) { win32_get_module_file_name(c, false); }
+void shim_GetModuleFileNameW(GuestContext* c) { win32_get_module_file_name(c, true); }
+
+void shim_fopen(GuestContext* c) { msvcrt_fopen(c, false); }
+void shim__wfopen(GuestContext* c) { msvcrt_fopen(c, true); }
+void shim__fsopen(GuestContext* c) { msvcrt_fopen(c, false); }
+void shim_fread(GuestContext* c) { msvcrt_fread(c); }
+void shim_fseek(GuestContext* c) { msvcrt_fseek(c, false); }
+void shim__fseeki64(GuestContext* c) { msvcrt_fseek(c, true); }
+void shim_fgetc(GuestContext* c) { msvcrt_fgetc(c, false); }
+void shim_getc(GuestContext* c) { msvcrt_fgetc(c, false); }
+void shim_fputc(GuestContext* c) { msvcrt_fgetc(c, true); }
+void shim_putc(GuestContext* c) { msvcrt_fgetc(c, true); }
+void shim__open(GuestContext* c) { msvcrt_open(c, false); }
+void shim__wopen(GuestContext* c) { msvcrt_open(c, true); }
+void shim__read(GuestContext* c) { msvcrt_read_or_write(c, false); }
+void shim__write(GuestContext* c) { msvcrt_read_or_write(c, true); }
+void shim_remove(GuestContext* c) { msvcrt_remove_or_rename(c, false); }
+void shim_rename(GuestContext* c) { msvcrt_remove_or_rename(c, true); }
+void shim__fdopen(GuestContext* c) { msvcrt_fdopen(c, false); }
+void shim__wfdopen(GuestContext* c) { msvcrt_fdopen(c, true); }
+// _set_fmode sets the whole-process text/binary default. The runtime treats every
+// stream as binary, so recording the request and succeeding is the honest answer:
+// there is no translation here for the mode to switch on.
+void shim__set_fmode(GuestContext* context) {
+  (void)import_argument(context, 0);
+  clear_guest_last_error();
+  set_import_result(context, 0);
+}
+
 // ---- msvcrt: the remaining CRT entry points -------------------------------
 void msvcrt_system(GuestContext* context) {
   const auto command = read_guest_string(import_argument(context, 0));
@@ -2099,8 +3182,17 @@ void msvcrt_stdio_common_vfscanf(GuestContext* context) {
     (void)load_guest_memory(context, guest_pointer, 1);
     translated.push_back(guest_memory + guest_pointer);
   }
-  const auto getch = [](void* input) { return std::fgetc(static_cast<std::FILE*>(input)); };
-  const auto ungetch = [](int ch, void* input) { (void)std::ungetc(ch, static_cast<std::FILE*>(input)); };
+  const auto getch = [](void* input) {
+    if (guest_input_capture != nullptr) return guest_read_byte();
+    return std::fgetc(static_cast<std::FILE*>(input));
+  };
+  const auto ungetch = [](int ch, void* input) {
+    if (guest_input_capture != nullptr) {
+      if (ch != EOF && guest_input_position > 0) --guest_input_position;
+      return;
+    }
+    (void)std::ungetc(ch, static_cast<std::FILE*>(input));
+  };
   // On this platform a va_list is a pointer, so an array of translated destinations
   // IS a valid argument list -- the same representation the guest uses.
   const auto result = vfctscanf_(getch, ungetch, stdin, format.c_str(),
@@ -2315,20 +3407,6 @@ std::uint64_t guest_module_handle_for(const std::string& library_name) {
   return handle;
 }
 
-// Reads a library name from the guest, widening a UTF-16 one to bytes. The wide
-// forms are not optional: an installer or a shell extension built with Unicode
-// everywhere names its DLLs only in the W variants.
-std::string read_guest_wide_string(std::uint64_t address) {
-  std::string text;
-  for (std::uint64_t index = 0; index < 512; ++index) {
-    if (address + index * 2 + 1 >= guest_memory_size) break;
-    const auto unit = load_guest_memory(nullptr, address + index * 2, 2);
-    if (unit == 0) break;
-    text.push_back(static_cast<char>(unit & 0xffu));
-  }
-  return text;
-}
-
 // Which library a module handle refers to. nullptr means "not one this runtime
 // handed out", and the caller decides whether that is a search-everything case
 // (Windows' NULL, meaning the default search order) or a genuine bad handle.
@@ -2497,7 +3575,6 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "IsDebuggerPresent", win32_zero},
     {"kernel32.dll", "GetModuleHandleA", win32_get_module_handle_a},
     {"kernel32.dll", "GetModuleHandleW", win32_get_module_handle_w},
-    {"kernel32.dll", "GetModuleFileNameA", win32_zero},
     {"kernel32.dll", "SetUnhandledExceptionFilter", win32_zero},
     {"kernel32.dll", "UnhandledExceptionFilter", win32_one},
     {"kernel32.dll", "IsProcessorFeaturePresent", win32_is_processor_feature_present},
@@ -2569,7 +3646,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "__stdio_common_vfprintf", msvcrt_stdio_common_vfprintf},
     {"msvcrt.dll", "__stdio_common_vfscanf", msvcrt_stdio_common_vfscanf},
     {"msvcrt.dll", "memcmp", msvcrt_memcmp},
-    {"msvcrt.dll", "fflush", msvcrt_return_zero},
+    {"msvcrt.dll", "fflush", msvcrt_fflush},
     {"msvcrt.dll", "setvbuf", msvcrt_return_zero},
     {"msvcrt.dll", "_set_new_mode", msvcrt_return_zero},
     {"msvcrt.dll", "_configthreadlocale", msvcrt_return_zero},
@@ -2577,6 +3654,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_set_invalid_parameter_handler", msvcrt_return_zero},
     {"msvcrt.dll", "_configure_narrow_argv", msvcrt_return_zero},
     {"msvcrt.dll", "_initialize_narrow_environment", msvcrt_return_zero},
+    {"msvcrt.dll", "_set_fmode", shim__set_fmode},
     {"msvcrt.dll", "_crt_atexit", msvcrt_register_atexit},
     {"msvcrt.dll", "_exit", msvcrt_exit_process},
     {"msvcrt.dll", "__p___argc", msvcrt_p_argc},
@@ -2720,6 +3798,64 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LoadLibraryA", win32_load_library_a},
     {"kernel32.dll", "LoadLibraryW", win32_load_library_w},
     {"kernel32.dll", "FreeLibrary", win32_free_library},
+    // kernel32 file services, all of which go through the handle table and the
+    // app-directory policy rather than touching a host path directly.
+    {"kernel32.dll", "CreateFileA", shim_CreateFileA},
+    {"kernel32.dll", "CreateFileW", shim_CreateFileW},
+    {"kernel32.dll", "SetFilePointer", shim_SetFilePointer},
+    {"kernel32.dll", "SetFilePointerEx", shim_SetFilePointerEx},
+    {"kernel32.dll", "GetFileSize", shim_GetFileSize},
+    {"kernel32.dll", "GetFileSizeEx", shim_GetFileSizeEx},
+    {"kernel32.dll", "SetEndOfFile", win32_set_end_of_file},
+    {"kernel32.dll", "DeleteFileA", shim_DeleteFileA},
+    {"kernel32.dll", "DeleteFileW", shim_DeleteFileW},
+    {"kernel32.dll", "CreateDirectoryA", shim_CreateDirectoryA},
+    {"kernel32.dll", "CreateDirectoryW", shim_CreateDirectoryW},
+    {"kernel32.dll", "RemoveDirectoryA", shim_RemoveDirectoryA},
+    {"kernel32.dll", "RemoveDirectoryW", shim_RemoveDirectoryW},
+    {"kernel32.dll", "MoveFileA", shim_MoveFileA},
+    {"kernel32.dll", "MoveFileW", shim_MoveFileW},
+    {"kernel32.dll", "MoveFileExA", shim_MoveFileExA},
+    {"kernel32.dll", "MoveFileExW", shim_MoveFileExW},
+    {"kernel32.dll", "GetFileAttributesA", shim_GetFileAttributesA},
+    {"kernel32.dll", "GetFileAttributesW", shim_GetFileAttributesW},
+    {"kernel32.dll", "GetModuleFileNameA", shim_GetModuleFileNameA},
+    {"kernel32.dll", "GetModuleFileNameW", shim_GetModuleFileNameW},
+    {"kernel32.dll", "GetDiskFreeSpaceA", win32_get_disk_free_space},
+    {"kernel32.dll", "GetDiskFreeSpaceW", win32_get_disk_free_space},
+    // The CRT stream family: FILE*, its descriptor, and the handle it came from,
+    // all three of which a real program mixes freely.
+    {"msvcrt.dll", "fopen", shim_fopen},
+    {"msvcrt.dll", "_wfopen", shim__wfopen},
+    {"msvcrt.dll", "_fsopen", shim__fsopen},
+    {"msvcrt.dll", "fclose", msvcrt_fclose},
+    {"msvcrt.dll", "fread", shim_fread},
+    {"msvcrt.dll", "fseek", shim_fseek},
+    {"msvcrt.dll", "_fseeki64", shim__fseeki64},
+    {"msvcrt.dll", "ftell", msvcrt_ftell},
+    {"msvcrt.dll", "feof", msvcrt_feof},
+    {"msvcrt.dll", "ferror", msvcrt_ferror},
+    {"msvcrt.dll", "clearerr", msvcrt_clearerr},
+    {"msvcrt.dll", "rewind", msvcrt_rewind},
+    {"msvcrt.dll", "fgetc", shim_fgetc},
+    {"msvcrt.dll", "getc", shim_getc},
+    {"msvcrt.dll", "fputc", shim_fputc},
+    {"msvcrt.dll", "putc", shim_putc},
+    {"msvcrt.dll", "fgets", msvcrt_fgets},
+    {"msvcrt.dll", "fputs", msvcrt_fputs},
+    {"msvcrt.dll", "ungetc", msvcrt_ungetc},
+    {"msvcrt.dll", "_fileno", msvcrt_fileno},
+    {"msvcrt.dll", "_open", shim__open},
+    {"msvcrt.dll", "_wopen", shim__wopen},
+    {"msvcrt.dll", "_close", msvcrt_close},
+    {"msvcrt.dll", "_read", shim__read},
+    {"msvcrt.dll", "_write", shim__write},
+    {"msvcrt.dll", "_lseek", msvcrt_lseek},
+    {"msvcrt.dll", "_open_osfhandle", msvcrt_open_osfhandle},
+    {"msvcrt.dll", "_fdopen", shim__fdopen},
+    {"msvcrt.dll", "_wfdopen", shim__wfdopen},
+    {"msvcrt.dll", "remove", shim_remove},
+    {"msvcrt.dll", "rename", shim_rename},
 };
 
 }  // namespace

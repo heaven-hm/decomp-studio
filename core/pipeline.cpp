@@ -83,7 +83,10 @@ std::string escape_shell(const std::filesystem::path& value) {
 
 RunReport capture_process(const std::string& command, const std::filesystem::path& error_path) {
   RunReport report;
-  FILE* stream = ::popen((command + " 2> " + escape_shell(error_path)).c_str(), "r");
+  std::string invocation = command + " 2> " + escape_shell(error_path);
+  if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE"))
+    invocation += " < " + escape_shell(stdin_path);
+  FILE* stream = ::popen(invocation.c_str(), "r");
   if (stream == nullptr) throw std::runtime_error("cannot launch generated executable");
   std::array<char, 4096> buffer{};
   while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), stream) != nullptr)
@@ -92,6 +95,22 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
   report.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
   if (std::filesystem::exists(error_path)) report.standard_error = read_whole_file(error_path);
   return report;
+}
+
+// Reads one string field out of a generated project's manifest. The manifest is
+// written by this same file with a known shape, so a full JSON parser would be
+// machinery for a format the project controls. A missing field returns an empty
+// string rather than inventing a default, because the question being asked is
+// "what did the input image call itself", and a guess is not an answer.
+std::string manifest_string_field(const std::filesystem::path& project, const std::string& field) {
+  const auto text = read_whole_file(project / "recomp-manifest.json");
+  const auto key = "\"" + field + "\": \"";
+  const auto start = text.find(key);
+  if (start == std::string::npos) return {};
+  const auto from = start + key.size();
+  const auto end = text.find('"', from);
+  if (end == std::string::npos) return {};
+  return text.substr(from, end - from);
 }
 
 }  // namespace
@@ -176,7 +195,28 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
 RunReport run(const std::filesystem::path& output_directory) {
   const auto executable = output_directory / "recomp-guest";
   if (!std::filesystem::exists(executable)) throw std::runtime_error("no built executable; run build first");
-  return capture_process(escape_shell(executable), output_directory / "recomp-stderr.log");
+  const auto error_path = std::filesystem::absolute(output_directory / "recomp-stderr.log");
+  // Run from the project directory. A program that opens "savegame.dat" means the
+  // one beside itself, and the app-directory policy takes the working directory as
+  // its root -- so where the process starts decides which files it can reach, and
+  // running a generated project from wherever the studio happened to be invoked
+  // sent those reads somewhere nobody intended.
+  //
+  // RECOMP_APP_NAME is the input image's own filename: GetModuleFileNameA has to
+  // answer with a path that ends in a name, because a program that strips the last
+  // component to find its directory gets one level too high if it does not.
+  const auto input_path = manifest_string_field(output_directory, "input_path");
+  std::string app_name = "recomp-guest";
+  if (!input_path.empty()) {
+    const auto leaf = std::filesystem::path(input_path).filename().string();
+    if (!leaf.empty()) app_name = leaf;
+  }
+  // Named explicitly rather than left to the working directory, so `run` and the
+  // differential harness choose the same root for the same project.
+  ::setenv("RECOMP_APP_DIR", std::filesystem::absolute(output_directory).string().c_str(), 1);
+  const auto command = "cd " + escape_shell(std::filesystem::absolute(output_directory)) +
+                       " && RECOMP_APP_NAME=" + escape_shell(app_name) + " " + escape_shell(executable);
+  return capture_process(command, error_path);
 }
 
 void write_project_configuration(const common::Configuration& configuration,

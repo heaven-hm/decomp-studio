@@ -99,6 +99,13 @@ target_compile_features(guest_file_system_test PRIVATE cxx_std_20)
 target_include_directories(guest_file_system_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME guest_file_system COMMAND guest_file_system_test)
 
+# File APIs cross the same shared shim boundary as real guest imports. Keep the
+# CRT stream and kernel32 handle paths covered for both PE32 and PE32+ guests.
+add_executable(runtime_file_streams_test tests/compat/runtime_file_streams_test.cpp runtime/recomp_runtime.cpp)
+target_compile_features(runtime_file_streams_test PRIVATE cxx_std_20)
+target_include_directories(runtime_file_streams_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME runtime_file_streams COMMAND runtime_file_streams_test)
+
 add_test(NAME preflight_prerequisites
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/preflight/prerequisites_test.py
           $<TARGET_FILE:recomp-studio>)

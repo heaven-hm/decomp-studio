@@ -3531,15 +3531,17 @@ void msvcrt_getenv(GuestContext* context) {
   set_import_result(context, 0);
 }
 
-// The double-precision math functions. The result is returned as its bit pattern
-// because the guest reads it out of XMM0, and the host's `double` is the same IEEE-754
-// value the instruction produces.
+// Win64 passes scalar floating-point arguments and results in XMM0. The 32-bit
+// MSVC ABI passes a double on the stack and returns it in the x87 register stack.
 void msvcrt_math_double(GuestContext* context, double (*operation)(double)) {
-  const auto argument = load_guest_double(context, context->registers[4] + 4);
+  const bool wide_guest = guest_pointer_width >= 8;
+  const auto argument = wide_guest ? vector_get_double(context, 0)
+                                   : load_guest_double(context, context->registers[4] + 4);
   const auto result = operation(argument);
-  std::uint64_t bits = 0;
-  std::memcpy(&bits, &result, sizeof(bits));
-  set_import_result(context, bits);
+  if (wide_guest)
+    vector_set_double(context, 0, result);
+  else
+    x87_push(context, result);
 }
 void msvcrt_cos(GuestContext* context) { msvcrt_math_double(context, std::cos); }
 void msvcrt_sin(GuestContext* context) { msvcrt_math_double(context, std::sin); }
@@ -3636,11 +3638,15 @@ void msvcrt_vscprintf(GuestContext* context) {
 
 // The UCRT spellings of the same two, which take the options word first.
 void msvcrt_stdio_common_vsprintf(GuestContext* context) {
-  const auto options = import_argument(context, 0);
-  const auto buffer = import_argument(context, 1);
-  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
-  const auto format = read_guest_string(import_argument(context, 3));
-  const auto arguments = import_argument(context, 4);
+  const bool wide_guest = guest_pointer_width >= 8;
+  const auto sp = context->registers[4];
+  const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
+  const auto buffer = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
+  const auto limit = static_cast<std::size_t>(wide_guest ? import_argument(context, 2)
+                                                        : load_guest_memory(context, sp + 16, 4));
+  const auto format_address = wide_guest ? import_argument(context, 3) : load_guest_memory(context, sp + 20, 4);
+  const auto arguments = wide_guest ? import_argument(context, 5) : load_guest_memory(context, sp + 28, 4);
+  const auto format = read_guest_string(format_address);
   if ((options & ~std::uint64_t{2}) != 0)
     terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
                            static_cast<unsigned long long>(options));
@@ -3657,19 +3663,30 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
 // a program is free to pass a GlobalAlloc block to free().
 void msvcrt_global_alloc(GuestContext* context) {
   const auto flags = import_argument(context, 0);
-  // GMEM_FIXED is the only mode that returns a usable pointer; the movable modes
-  // return a HANDLE that must be locked first, and pretending otherwise would hand the
-  // guest an address it would dereference directly.
-  if ((flags & 0x0002u) == 0 && (flags & 0x0040u) == 0) {
+  // GMEM_MOVEABLE returns a handle rather than a directly usable guest pointer.
+  if ((flags & 0x0002u) != 0) {
     terminate_with_message("GlobalAlloc: only GMEM_FIXED is implemented (flags=0x%llx)",
                            static_cast<unsigned long long>(flags));
   }
-  set_import_result(context, heap_allocate(import_argument(context, 1)));
+  const auto pointer = heap_allocate(import_argument(context, 1));
+  if (pointer != 0 && (flags & 0x0040u) != 0) {
+    const auto size = import_argument(context, 1);
+    for (std::uint64_t offset = 0; offset < size; ++offset) store_guest_memory(context, pointer + offset, 0, 1);
+  }
+  set_import_result(context, pointer);
 }
 void msvcrt_global_lock(GuestContext* context) { set_import_result(context, import_argument(context, 0)); }
-void msvcrt_global_unlock(GuestContext* context) { set_import_result(context, 1); }
-void msvcrt_global_free(GuestContext* context) { (void)context; }
-void msvcrt_local_free(GuestContext* context) { (void)context; }
+void msvcrt_global_unlock(GuestContext* context) { set_import_result(context, 0); }
+void msvcrt_global_free(GuestContext* context) {
+  const auto pointer = import_argument(context, 0);
+  if (pointer != 0) heap_release(context, pointer);
+  set_import_result(context, 0);
+}
+void msvcrt_local_free(GuestContext* context) {
+  const auto pointer = import_argument(context, 0);
+  if (pointer != 0) heap_release(context, pointer);
+  set_import_result(context, 0);
+}
 
 // The legacy msvcrt spellings of the standard C library.
 //

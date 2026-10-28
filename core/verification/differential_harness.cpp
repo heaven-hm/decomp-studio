@@ -666,8 +666,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     // Assigned BEFORE the return: the verdict reads it, and leaving it false here made a
     // truncated reference report NOT_RUN instead of INCOMPLETE.
     result.truncated = reference.truncated;
-    result.diagnosis = "the candidate was NOT run: the reference execution did not complete (" +
-                       reference.failure_reason + ")";
+    const auto not_run = "the candidate was NOT run: the reference execution did not complete (" +
+                         reference.failure_reason + ")";
+    // APPENDED, not assigned: the reference's own note says what the emulator could not
+    // do, which is a different fact from why the candidate was not run, and both belong
+    // in the diagnosis.
+    result.diagnosis = result.diagnosis.empty() ? not_run : result.diagnosis + "; " + not_run;
     return result;
   }
 
@@ -696,6 +700,8 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     std::ofstream(project_directory / "reports" / "reference.txt") << result.reference_output;
     std::ofstream(project_directory / "reports" / "candidate.txt") << result.candidate_output;
   }
+  // The measured value. A candidate that failed to run is reported through its own
+  // fields; overwriting this one with false destroyed the comparison that was made.
   result.outputs_match = result.reference_output == result.candidate_output;
 
   // Byte-level memory comparison, when both sides produced windows. A difference is
@@ -879,6 +885,14 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         result.state_diagnosis = "checkpoint stream lengths differ (reference " +
                                  std::to_string(reference.checkpoints.size()) + ", candidate " +
                                  std::to_string(candidate_checkpoints.size()) + ")";
+      // NOT `checkpoints_matched == checkpoints_compared`. The counts legitimately
+      // differ: `checkpoints_matched` counts BIT-EXACT matches, and a checkpoint whose
+      // only difference is the documented x87 one-ULP class is deliberately not one of
+      // them. Tying state_match to the counts made the `x87` fixture fail with
+      // "checkpoints 8 of 10" while memory_match was true and the difference was
+      // classified -- i.e. it reported DIVERGED for the one case the classification
+      // exists to permit. The diagnosis is the right input: it is empty exactly when
+      // nothing UNEXPLAINED was found.
       result.state_match = result.state_diagnosis.empty() &&
                            reference.checkpoints.size() == candidate_checkpoints.size();
     } else if (!reference.checkpoints.empty()) {
@@ -887,7 +901,10 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     }
   }
   if (!result.candidate_completed) {
-    result.outputs_match = false;
+    // `outputs_match` keeps the value that was measured. Setting it false here made "the
+    // outputs were compared and differed" indistinguishable from "the candidate produced
+    // nothing to compare" -- and the latter is already said by candidate_completed and
+    // candidate_exit_code, which is where a reader looks for it.
     result.diagnosis = "candidate execution failed with exit code " + std::to_string(candidate.exit_code) +
                        (candidate.standard_error.empty() ? "" : ": " + candidate.standard_error);
     return result;

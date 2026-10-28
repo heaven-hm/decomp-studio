@@ -89,7 +89,14 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
   if (const char* timeout_env = std::getenv("RECOMP_RUN_TIMEOUT")) {
     int seconds = std::atoi(timeout_env);
     if (seconds > 0) {
-      invocation = "perl -e '$t=shift; setpgrp; $SIG{ALRM}=sub { kill -9, 0; }; alarm $t; exec @ARGV' " +
+      // Keep the supervisor alive while its child runs. `exec` here would replace
+      // Perl before the alarm fires, so the handler could not kill a guest that hangs
+      // waiting for input; it would instead leave that child orphaned.
+      invocation = "perl -e 'my $t=shift; my $pid=fork(); die \"fork failed\" unless defined $pid; "
+                   "if (!$pid) { setpgrp; exec @ARGV; exit 127; } my $expired=0; "
+                   "$SIG{ALRM}=sub { $expired=1; kill 9, -$pid; }; alarm $t; waitpid($pid,0); "
+                   "my $status=$?; alarm 0; exit($expired ? 124 : (($status & 127) ? "
+                   "128 + ($status & 127) : ($status >> 8)));' " +
                    std::to_string(seconds) + " sh -c " + escape_shell(invocation);
     }
   }

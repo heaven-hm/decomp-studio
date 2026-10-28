@@ -104,6 +104,15 @@ std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_w
 // sides and the two outputs can still be compared.
 extern std::string* guest_output_capture;
 
+// Guest input. Output has had a capture since the beginning; input did not, and that
+// is a correctness problem for verification rather than a convenience: the reference
+// runs in this process and the candidate in a subprocess, so if both read the real
+// stdin the first one consumes it and the second sees EOF. They would then differ for
+// a reason that has nothing to do with the translation. With a capture set, both sides
+// read the same bytes from the same position.
+extern const std::string* guest_input_capture;
+extern std::size_t guest_input_position;
+
 // Called instead of terminating the host when the guest asks to exit. A generated
 // executable leaves this null, because exiting the process is exactly right there.
 // The differential reference installs a handler: the guest calling ExitProcess

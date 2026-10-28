@@ -72,11 +72,40 @@ visible application output to capture.
 
 ### Navigation
 
+- [WORKING (PASS) applications & games](#working-pass)
 - [Format, architecture, and language/runtime matrix](#format-architecture-and-language-runtime-matrix)
 - [Post-runtime retests](#post-runtime-update-retests)
 - [Complete 166-input appendix](#complete-appendix-windows-pe-files-tested)
 - [External unique payloads](#external-unique-windows-pe-payloads)
 - [Validation and known limitations](#project-validation)
+
+## WORKING (PASS)
+
+The following 21 Windows applications and games achieved 100% instruction lifting, built into native macOS ARM64 binaries without external emulation, ran successfully to completion (exit code 0), and passed differential reference verification byte-for-byte.
+
+| # | Application / Game | Guest Architecture | Category | Input Binary | Lift Coverage | Missing Imports | Pipeline & Verification Result | Evidence |
+| ---: | --- | --- | --- | --- | ---: | ---: | --- | --- |
+| 1 | Prime Generator | x86 (PE32) | CLI App | `windows/cli-apps/1-prime-generator-c/build/prime-gen_x86.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/prime_gen_x86.png) |
+| 2 | Base64 Tool | x86-64 (PE32+) | CLI App | `windows/cli-apps/4-base64-tool-c/build/base64_x64.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/base64_x64.png) |
+| 3 | Base64 Tool | x86 (PE32) | CLI App | `windows/cli-apps/4-base64-tool-c/build/base64_x86.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/base64_x86.png) |
+| 4 | Hangman | x86-64 (PE32+) | CLI Game | `windows/cli-games/2-hangman-c/build/hangman_x64.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/hangman_x64_terminal.png) |
+| 5 | Hangman | x86 (PE32) | CLI Game | `windows/cli-games/2-hangman-c/build/hangman_x86.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/hangman_x86_terminal.png) |
+| 6 | Arithmetic Calculator | x86-64 (PE32+) | Console App | `windows/x64/apps/arith-calc.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/arith_calc_x64.png) |
+| 7 | Base64 Tool | x86-64 (PE32+) | Console App | `windows/x64/apps/base64.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/base64_x64.png) |
+| 8 | 2048 Game | x86-64 (PE32+) | Console Game | `windows/x64/games/game2048.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/game2048_x64.png) |
+| 9 | Hangman | x86-64 (PE32+) | Console Game | `windows/x64/games/hangman_x64.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/hangman_x64_terminal.png) |
+| 10 | Snake | x86-64 (PE32+) | Console Game | `windows/x64/games/snake.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/snake_x64.png) |
+| 11 | Tetris | x86-64 (PE32+) | Console Game | `windows/x64/games/tetris.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/tetris_x64.png) |
+| 12 | Tic-Tac-Toe | x86-64 (PE32+) | Console Game | `windows/x64/games/tictactoe.exe` | 100% | 1 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/tictactoe_x64.png) |
+| 13 | Arithmetic Calculator | x86 (PE32) | Console App | `windows/x86/apps/arith-calc.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/arith_calc_x86.png) |
+| 14 | Base64 Tool | x86 (PE32) | Console App | `windows/x86/apps/base64.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/base64_x86.png) |
+| 15 | Prime Generator | x86 (PE32) | Console App | `windows/x86/apps/prime-gen.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/prime_gen_x86.png) |
+| 16 | Filling Solver | x86 (PE32) | Puzzle Solver | `windows/x86/games/fillingsolver.exe` | 100% | 3 | PASS (exit 0; differential yes) | log: `$TMPDIR/fillingsolver/batch-autorecomp.log` |
+| 17 | 2048 Game | x86 (PE32) | Console Game | `windows/x86/games/game2048.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/game2048_x86.png) |
+| 18 | Hangman | x86 (PE32) | Console Game | `windows/x86/games/hangman_x86.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/hangman_x86_terminal.png) |
+| 19 | Snake | x86 (PE32) | Console Game | `windows/x86/games/snake.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/snake_x86.png) |
+| 20 | Tetris | x86 (PE32) | Console Game | `windows/x86/games/tetris.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/tetris_x86_terminal.png) |
+| 21 | Tic-Tac-Toe | x86 (PE32) | Console Game | `windows/x86/games/tictactoe.exe` | 100% | 0 | PASS (exit 0; differential yes) | [real Terminal screenshot](../apps-running-screenshots/tictactoe_x86_terminal.png) |
 
 ## Format, architecture, and language/runtime matrix
 

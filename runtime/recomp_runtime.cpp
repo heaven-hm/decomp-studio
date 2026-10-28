@@ -491,6 +491,26 @@ void win32_registry_not_found(GuestContext* context) {
   // ERROR_FILE_NOT_FOUND result lets callers take their normal default path.
   set_import_result(context, 2);
 }
+void win32_gdiplus_startup(GuestContext* context) {
+  const auto token = import_argument(context, 0);
+  if (token != 0) store_guest_memory(context, token, 1, guest_pointer_width);
+  set_import_result(context, 0);
+}
+void win32_gdiplus_write_handle(GuestContext* context) {
+  const auto result = import_argument(context, 1);
+  if (result != 0) store_guest_memory(context, result, 1, guest_pointer_width);
+  set_import_result(context, 0);
+}
+void win32_gdiplus_write_result(GuestContext* context) {
+  const auto result = import_argument(context, 1);
+  if (result != 0) store_guest_memory(context, result, 1, guest_pointer_width);
+  set_import_result(context, 0);
+}
+void win32_gdiplus_write_result0(GuestContext* context) {
+  const auto result = import_argument(context, 0);
+  if (result != 0) store_guest_memory(context, result, 1, guest_pointer_width);
+  set_import_result(context, 0);
+}
 // GetLastError is the guest's only way to ask why something failed, so it reports
 // what the failing shim recorded rather than a constant that says "nothing went
 // wrong". SetLastError is a real store, because programs set it to 0 before a call
@@ -4648,6 +4668,22 @@ const ShimDescriptor kShims[] = {
     {"user32.dll", "GetWindowPlacement", win32_zero},
     {"user32.dll", "SetWindowTextW", win32_one},
     {"user32.dll", "LoadImageW", win32_one},
+    {"gdiplus.dll", "GdiplusStartup", win32_gdiplus_startup},
+    {"gdiplus.dll", "GdiplusShutdown", win32_zero},
+    {"gdiplus.dll", "GdipCreateFromHDC", win32_gdiplus_write_handle},
+    {"gdiplus.dll", "GdipDeleteGraphics", win32_zero},
+    {"gdiplus.dll", "GdipCreateImageAttributes", win32_gdiplus_write_result0},
+    {"gdiplus.dll", "GdipDisposeImageAttributes", win32_zero},
+    {"gdiplus.dll", "GdipSetImageAttributesColorMatrix", win32_zero},
+    {"gdiplus.dll", "GdipSetInterpolationMode", win32_zero},
+    {"gdiplus.dll", "GdipDrawImageRectRectI", win32_zero},
+    {"gdiplus.dll", "GdipGetImageWidth", win32_zero},
+    {"gdiplus.dll", "GdipGetImageHeight", win32_zero},
+    {"gdiplus.dll", "GdipDisposeImage", win32_zero},
+    {"gdiplus.dll", "GdipCloneImage", win32_gdiplus_write_result},
+    {"gdiplus.dll", "GdipLoadImageFromFile", win32_gdiplus_write_result},
+    {"gdiplus.dll", "GdipFree", win32_zero},
+    {"gdiplus.dll", "GdipAlloc", win32_zero},
     {"advapi32.dll", "RegOpenKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegCreateKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegQueryValueExW", win32_registry_not_found},

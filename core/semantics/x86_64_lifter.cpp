@@ -730,6 +730,18 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          std::to_string(operands[2].immediate_value & 0xff) + ");");
     return;
   }
+  // Adapted from Remill's Apache-2.0 PEXTRW semantics: select one 16-bit XMM
+  // lane modulo eight and zero-extend it into the general-register output.
+  if (mnemonic == "pextrw" && operands.size() == 3 && is_vector_register(operands[1]) &&
+      !is_wide_vector_register(operands[1].register_name) &&
+      operands[0].kind == discovery::Operand::Kind::Register &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    operand_write(output, instruction, operands[0],
+                  "vector_extract_word(context, " + std::to_string(vector_index(operands[1])) + ", " +
+                      std::to_string(operands[2].immediate_value & 0xff) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
   // Adapted from Remill's Apache-2.0 AVX semantics: VPBROADCASTB takes the
   // low byte of an XMM or memory source and fills each 128- or 256-bit
   // destination lane. The helper also clears the unused upper YMM half for a

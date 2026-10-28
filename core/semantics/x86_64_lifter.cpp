@@ -1259,6 +1259,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
   // The integer SIMD forms that were the largest remaining classes after FMA.
+  // VCVTPS2PH: four singles to four half-precision values, with the rounding mode in the
+  // immediate. The immediate is not decoration -- it selects between nearest-even, down,
+  // up and truncate, and ignoring it rounds every program's result the same way.
+  if (mnemonic == "vcvtps2ph" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1]) && operands[2].kind == discovery::Operand::Kind::Immediate) {
+    emit("vector_convert_floats_to_half(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
   // The VEX form of a two-operand SSE instruction has THREE operands, and the first two
   // are its sources: `vpmaddubsw xmm1, xmm2, xmm3` computes xmm1 = xmm2 op xmm3, where
   // `pmaddubsw xmm1, xmm2` computes xmm1 = xmm1 op xmm2. Normalising the MNEMONIC does not

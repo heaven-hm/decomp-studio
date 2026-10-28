@@ -797,6 +797,92 @@ inline void vector_square_root_doubles_memory(GuestContext* context, int destina
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
 
+// FLOAT TO HALF PRECISION, which `vcvtps2ph` needs and C++ has no type for.
+//
+// This is written out because the interesting cases are all edge cases: overflow to
+// infinity rather than wrapping, subnormal halves, the sign of zero, and NaN staying NaN
+// rather than becoming a number. Rounding to nearest even is the default; the instruction
+// also allows round-down, round-up and truncate, selected by the immediate, so the mode is
+// a parameter rather than baked in.
+enum class HalfRounding { nearest_even, down, up, truncate };
+
+inline std::uint16_t float_to_half(float value, HalfRounding rounding) {
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const std::uint32_t sign = (bits >> 16) & 0x8000u;
+  const std::uint32_t exponent = (bits >> 23) & 0xffu;
+  const std::uint32_t mantissa = bits & 0x7fffffu;
+
+  // Infinity and NaN pass through with the mantissa preserved enough to stay a NaN.
+  if (exponent == 0xffu) {
+    if (mantissa == 0) return static_cast<std::uint16_t>(sign | 0x7c00u);
+    // A NaN keeps the sign and enough payload that it is still a NaN, not an infinity.
+    return static_cast<std::uint16_t>(sign | 0x7c00u | ((mantissa >> 13) == 0 ? 1 : (mantissa >> 13)));
+  }
+
+  // The unbiased exponent, and the half's representable range.
+  const int unbiased = static_cast<int>(exponent) - 127;
+  if (unbiased > 15) return static_cast<std::uint16_t>(sign | 0x7c00u);  // overflow -> inf
+
+  std::uint32_t half_exponent = 0;
+  std::uint32_t half_mantissa = 0;
+  if (unbiased < -14) {
+    // Subnormal half, or zero. The mantissa is shifted with an implicit leading one.
+    const int shift = -14 - unbiased;
+    if (shift > 24) return static_cast<std::uint16_t>(sign);  // underflow -> signed zero
+    const std::uint32_t significand = mantissa | 0x800000u;
+    const std::uint32_t total_shift = static_cast<std::uint32_t>(shift + 13);
+    half_mantissa = total_shift >= 32 ? 0 : (significand >> total_shift);
+    // Round according to the mode.
+    if (total_shift > 0 && total_shift <= 32) {
+      const std::uint32_t remainder = significand & ((1u << total_shift) - 1u);
+      const std::uint32_t halfway = total_shift >= 32 ? 0 : (1u << (total_shift - 1));
+      const bool round_up = rounding == HalfRounding::up
+                                ? remainder != 0
+                                : rounding == HalfRounding::down
+                                      ? false
+                                      : rounding == HalfRounding::truncate
+                                            ? false
+                                            : (remainder > halfway ||
+                                               (remainder == halfway && (half_mantissa & 1u) != 0));
+      if (round_up) ++half_mantissa;
+    }
+    return static_cast<std::uint16_t>(sign | half_mantissa);
+  }
+
+  half_exponent = static_cast<std::uint32_t>(unbiased + 15);
+  const std::uint32_t truncated = mantissa >> 13;
+  const std::uint32_t remainder = mantissa & 0x1fffu;
+  const std::uint32_t halfway = 0x1000u;
+  const bool round_up = rounding == HalfRounding::up
+                            ? remainder != 0
+                            : rounding == HalfRounding::down
+                                  ? false
+                                  : rounding == HalfRounding::truncate
+                                        ? false
+                                        : (remainder > halfway ||
+                                           (remainder == halfway && (truncated & 1u) != 0));
+  half_mantissa = truncated + (round_up ? 1u : 0u);
+  if (half_mantissa == 0x400u) {  // the mantissa carried into the exponent
+    half_mantissa = 0;
+    ++half_exponent;
+    if (half_exponent >= 0x1fu) return static_cast<std::uint16_t>(sign | 0x7c00u);
+  }
+  return static_cast<std::uint16_t>(sign | (half_exponent << 10) | half_mantissa);
+}
+
+// VCVTPS2PH writes FOUR halfs into the low 64 bits of the destination. The immediate's low
+// three bits select the rounding mode; the upper bits are reserved and ignored.
+inline void vector_convert_floats_to_half(GuestContext* context, int destination, int source,
+                                          int immediate) {
+  const auto rounding = static_cast<HalfRounding>(immediate & 3);
+  for (int lane = 0; lane < 4; ++lane) {
+    const auto half = float_to_half(vector_get_float_lane(context, source, lane), rounding);
+    std::memcpy(context->vector_registers[destination] + lane * 2, &half, 2);
+  }
+  std::memset(context->vector_registers[destination] + 8, 0, 8);
+}
+
 // PMADDUBSW: unsigned bytes times signed bytes, adjacent PAIRS summed into signed words.
 // The mixed signedness is the point -- one operand is unsigned, the other signed -- and
 // the pair sum SATURATES to a signed 16-bit range rather than wrapping, which is what

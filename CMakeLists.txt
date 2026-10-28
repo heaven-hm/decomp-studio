@@ -81,6 +81,13 @@ target_compile_features(runtime_time_test PRIVATE cxx_std_20)
 target_include_directories(runtime_time_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME runtime_time COMMAND runtime_time_test)
 
+# A hand-written numeric conversion needs a test that names the VALUES, not one that
+# checks it runs. Every expectation below is the IEEE-754 encoding of that number.
+add_executable(half_precision_test tests/compat/half_precision_test.cpp)
+target_compile_features(half_precision_test PRIVATE cxx_std_20)
+target_include_directories(half_precision_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME half_precision COMMAND half_precision_test)
+
 add_executable(runtime_crt_test tests/compat/runtime_crt_test.cpp runtime/recomp_runtime.cpp)
 target_compile_features(runtime_crt_test PRIVATE cxx_std_20)
 target_include_directories(runtime_crt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)

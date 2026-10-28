@@ -3565,6 +3565,8 @@ std::size_t scanf_destination_count(const std::string& format) {
 void msvcrt_stdio_common_vfscanf(GuestContext* context) {
   const bool wide_guest = guest_pointer_width >= 8;
   const auto sp = context->registers[4];
+  // The options argument is uint64_t even for PE32, so it occupies two
+  // 32-bit stack slots. The remaining arguments start at [esp+12].
   const auto options = wide_guest ? import_argument(context, 0) : load_guest_memory(context, sp + 4, 8);
   const auto stream = wide_guest ? import_argument(context, 1) : load_guest_memory(context, sp + 12, 4);
   const auto format_address = wide_guest ? import_argument(context, 2) : load_guest_memory(context, sp + 16, 4);

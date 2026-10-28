@@ -1258,6 +1258,34 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     return;
   }
+  // FMA, in the three operand orderings the mnemonic's digits encode. The digits are not
+  // decoration: `213` and `231` compute different products from the same three registers.
+  {
+    static const std::map<std::string, std::string> fma_orderings = {
+        {"132", "fma132"}, {"213", "fma213"}, {"231", "fma231"}};
+    const auto digits = mnemonic.size() >= 9 ? mnemonic.substr(mnemonic.size() - 5, 3) : std::string{};
+    const auto width_suffix = mnemonic.size() >= 2 ? mnemonic.substr(mnemonic.size() - 2) : std::string{};
+    const bool is_fma = mnemonic.rfind("vfmadd", 0) == 0;
+    const bool fma_width_ok = width_suffix == "ps" || width_suffix == "pd" ||
+                              width_suffix == "ss" || width_suffix == "sd";
+    if (is_fma && fma_orderings.count(digits) != 0 && operands.size() == 3 &&
+        is_vector_register(operands[0]) && is_vector_register(operands[1]) && fma_width_ok) {
+      const bool doubles = width_suffix == "pd" || width_suffix == "sd";
+      const auto helper = "vector_" + fma_orderings.at(digits) + (doubles ? "_doubles" : "_floats");
+      if (is_vector_register(operands[2])) {
+        emit(helper + "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             std::to_string(vector_index(operands[1])) + ", " + std::to_string(vector_index(operands[2])) +
+             ");");
+        return;
+      }
+      if (operands[2].kind == discovery::Operand::Kind::Memory) {
+        emit(helper + "_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             std::to_string(vector_index(operands[1])) + ", " +
+             effective_address_expression(instruction, operands[2]) + ");");
+        return;
+      }
+    }
+  }
   // The 256-bit and variable-blend forms. `vblendvps` was the single largest unsupported
   // class on a real application (905 occurrences).
   if ((mnemonic == "vblendvps" || mnemonic == "vblendvpd") && operands.size() == 4 &&

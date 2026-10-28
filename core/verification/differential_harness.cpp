@@ -559,13 +559,20 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // when the guest reaches ExitProcess. The proper place for a limit is the harness's
   // wall-clock handling, which would also catch a candidate stuck outside guest code;
   // this catches the case that was actually observed.
-  ::setenv("RECOMP_INSTRUCTION_BUDGET", "1000000000", 1);
+  if (std::getenv("RECOMP_INSTRUCTION_BUDGET") == nullptr)
+    ::setenv("RECOMP_INSTRUCTION_BUDGET", "1000000000", 1);
 
   const auto stdin_path = project_directory / "recomp-stdin.txt";
+  const auto captured_stdin_path = project_directory / ".recomp-stdin.capture";
   if (std::filesystem::exists(stdin_path)) {
     ::setenv("RECOMP_STDIN_FILE", stdin_path.string().c_str(), 1);
+  } else if (std::filesystem::exists(captured_stdin_path)) {
+    ::setenv("RECOMP_STDIN_FILE", captured_stdin_path.string().c_str(), 1);
   } else {
-    ::unsetenv("RECOMP_STDIN_FILE");
+    const char* env_stdin = std::getenv("RECOMP_STDIN_FILE");
+    if (!env_stdin || *env_stdin == '\0' || (!std::filesystem::exists(env_stdin) && std::string_view(env_stdin) != "/dev/null")) {
+      ::unsetenv("RECOMP_STDIN_FILE");
+    }
   }
 
   const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
@@ -735,16 +742,16 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
       }
     }
     result.checkpoints_compared = std::min(reference.checkpoints.size(), candidate_checkpoints.size());
+    result.checkpoints_total = std::max(reference.checkpoints.size(), candidate_checkpoints.size());
     if (!candidate_checkpoints.empty()) {
       const auto limit = result.checkpoints_compared;
       for (std::size_t index = 0; index < limit; ++index) {
         const auto& expected = reference.checkpoints[index];
         const auto& actual = candidate_checkpoints[index];
-        if (expected.address != actual.address) {
+        bool checkpoint_matches = expected.address == actual.address;
+        if (!checkpoint_matches && result.state_diagnosis.empty())
           result.state_diagnosis = "checkpoint " + std::to_string(index) + ": the guest instruction stream differs at " +
                                    "0x" + hex_text(actual.address) + " (reference 0x" + hex_text(expected.address) + ")";
-          break;
-        }
         bool flags_differ = (expected.flags & 0x8d5u) != (actual.flags & 0x8d5u);
         std::size_t differing_register = 16;
         for (std::size_t register_index = 0; register_index < 8; ++register_index) {
@@ -754,6 +761,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
           }
         }
         if (expected.memory_digest != actual.memory_digest) {
+          checkpoint_matches = false;
           const auto window = memory_window_classifications.find(expected.index);
           const bool explained_by_x87 = window != memory_window_classifications.end() &&
                                         window->second.has_differences &&
@@ -771,6 +779,9 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         const bool mxcsr_differs = expected.mxcsr != actual.mxcsr;
         const bool x87_control_differs = expected.x87_control_word != actual.x87_control_word;
         const bool x87_status_differs = expected.x87_status_word != actual.x87_status_word;
+        if (flags_differ || differing_register != 16 || mxcsr_differs || x87_control_differs || x87_status_differs)
+          checkpoint_matches = false;
+        if (checkpoint_matches) ++result.checkpoints_matched;
         // A control register that disagrees is reported, not gated, for the same
         // reason the memory digest is: the divergence is not yet explained, and a
         // gate that fails for a reason nobody has diagnosed gets weakened or
@@ -791,21 +802,30 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
                                         ", reference 0x" + hex_text(expected.x87_status_word);
         }
         if (flags_differ || differing_register != 16) {
-          result.state_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
-                                   std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
-          if (differing_register != 16) {
-            static const char* names[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
-            result.state_diagnosis += std::string(names[differing_register]) + " is 0x" +
-                                      hex_text(actual.registers[differing_register]) + ", reference 0x" +
-                                      hex_text(expected.registers[differing_register]);
-          } else if (flags_differ) {
-            result.state_diagnosis += "flags are 0x" + hex_text(actual.flags) + ", reference 0x" +
-                                      hex_text(expected.flags);
+          if (result.state_diagnosis.empty()) {
+            result.state_diagnosis = "checkpoint " + std::to_string(index) + " after guest instruction index " +
+                                     std::to_string(expected.index) + " (0x" + hex_text(expected.address) + "): ";
+            if (differing_register != 16) {
+              static const char* names[] = {"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"};
+              result.state_diagnosis += std::string(names[differing_register]) + " is 0x" +
+                                        hex_text(actual.registers[differing_register]) + ", reference 0x" +
+                                        hex_text(expected.registers[differing_register]);
+            } else {
+              result.state_diagnosis += "flags are 0x" + hex_text(actual.flags) + ", reference 0x" +
+                                        hex_text(expected.flags);
+            }
           }
-          break;
         }
       }
-      result.state_match = result.state_diagnosis.empty();
+      if (reference.checkpoints.size() != candidate_checkpoints.size() && result.state_diagnosis.empty())
+        result.state_diagnosis = "checkpoint stream lengths differ (reference " +
+                                 std::to_string(reference.checkpoints.size()) + ", candidate " +
+                                 std::to_string(candidate_checkpoints.size()) + ")";
+      result.state_match = result.state_diagnosis.empty() &&
+                           reference.checkpoints.size() == candidate_checkpoints.size();
+    } else if (!reference.checkpoints.empty()) {
+      result.state_diagnosis = "candidate recorded no guest-state checkpoints (reference " +
+                               std::to_string(reference.checkpoints.size()) + ")";
     }
   }
   if (!result.candidate_completed) {

@@ -34,6 +34,8 @@ struct DifferentialResult {
   // agreed, and -- when they did not -- where the machine stopped matching, which
   // is something an output comparison cannot say.
   std::size_t checkpoints_compared{};
+  std::size_t checkpoints_matched{};
+  std::size_t checkpoints_total{};
   bool state_match{};
   std::string state_diagnosis;
   // Guest memory is digested at every checkpoint and compared, and the result is
@@ -64,6 +66,10 @@ struct DifferentialResult {
   std::string diagnosis;
   std::uint64_t executed_instructions{};
   std::vector<std::string> unsupported_mnemonics;
+
+  std::size_t checkpoint_match_percent() const {
+    return checkpoints_total == 0 ? 0 : checkpoints_matched * 100 / checkpoints_total;
+  }
 
   // Verification only passes when the reference completed, the candidate exited
   // cleanly, and the outputs are identical. A missing backend is never a pass.

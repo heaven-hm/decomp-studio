@@ -560,6 +560,9 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"candidate_completed\":" << (result.candidate_completed ? "true" : "false")
               << ",\"outputs_match\":" << (result.outputs_match ? "true" : "false")
               << ",\"checkpoints_compared\":" << result.checkpoints_compared
+              << ",\"checkpoints_matched\":" << result.checkpoints_matched
+              << ",\"checkpoints_total\":" << result.checkpoints_total
+              << ",\"checkpoint_match_percent\":" << result.checkpoint_match_percent()
               << ",\"state_match\":" << (result.state_match ? "true" : "false")
               << ",\"state_diagnosis\":" << recomp::common::quote_json(result.state_diagnosis)
               << ",\"memory_match\":" << (result.memory_match ? "true" : "false")
@@ -577,7 +580,11 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
     }
     std::cout << "]}\n";
   } else {
-    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"              << "guest-state checkpoints compared: " << result.checkpoints_compared << "\n"              << "guest-memory digest agrees: " << (result.memory_match ? "yes" : "no") << "\n"
+    std::cout << "executed instructions (reference): " << result.executed_instructions << "\n"
+              << "guest-state checkpoints matched exactly: " << result.checkpoints_matched << "/"
+              << result.checkpoints_total << " (" << result.checkpoint_match_percent() << "%)\n"
+              << "guest-state checkpoints compared: " << result.checkpoints_compared << "\n"
+              << "guest-memory digest agrees: " << (result.memory_match ? "yes" : "no") << "\n"
               << "reference completed: " << (result.reference_completed ? "yes" : "no") << "\n"
               << "candidate completed: " << (result.candidate_completed ? "yes" : "no") << "\n"
               << "reference output: " << result.reference_output.size() << " bytes\n"
@@ -1011,6 +1018,9 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
       const auto result = recomp::verification::compare_project(output, configuration);
       verified = result.verified();
       display.note("reference executed " + std::to_string(result.executed_instructions) + " instructions");
+      display.note("exact guest-state checkpoints matched " + std::to_string(result.checkpoints_matched) + "/" +
+                   std::to_string(result.checkpoints_total) + " (" +
+                   std::to_string(result.checkpoint_match_percent()) + "%)");
       if (!result.diagnosis.empty()) display.note(result.diagnosis);
       display.finish(verified, verified
                                   ? "outputs match byte for byte"
@@ -1374,6 +1384,8 @@ int main(int argc, char** argv) {
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
         if (option == "--budget" && index + 1 < argc) { budget = std::stoul(argv[++index]); continue; }
+        if (option == "--timeout" && index + 1 < argc) { ::setenv("RECOMP_RUN_TIMEOUT", argv[++index], 1); continue; }
+        if (option.rfind("--timeout=", 0) == 0) { ::setenv("RECOMP_RUN_TIMEOUT", option.substr(10).c_str(), 1); continue; }
         if (image.empty()) image = argv[index];
       }
       if (image.empty()) return fail("autorecomp requires an image path", json);
@@ -1422,8 +1434,16 @@ int main(int argc, char** argv) {
       return command_build(project, config, json);
     }
     if (command == "run") {
-      if (argc < 3) return fail("run requires a project directory", json);
-      return command_run(argv[2], json);
+      std::filesystem::path project;
+      for (int index = 2; index < argc; ++index) {
+        const std::string option{argv[index]};
+        if (option == "--json") continue;
+        if (option == "--timeout" && index + 1 < argc) { ::setenv("RECOMP_RUN_TIMEOUT", argv[++index], 1); continue; }
+        if (option.rfind("--timeout=", 0) == 0) { ::setenv("RECOMP_RUN_TIMEOUT", option.substr(10).c_str(), 1); continue; }
+        if (project.empty()) project = argv[index];
+      }
+      if (project.empty()) return fail("run requires a project directory", json);
+      return command_run(project, json);
     }
     if (command == "verify") {
       std::filesystem::path project, config;

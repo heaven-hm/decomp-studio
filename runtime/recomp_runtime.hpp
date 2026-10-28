@@ -673,6 +673,20 @@ inline double vector_get_double(GuestContext* context, int vector_index) {
   return value;
 }
 
+// All-ones in the lane's own width, which is what a compare instruction writes.
+inline float mask_float() {
+  const std::uint32_t bits = 0xffffffffu;
+  float value = 0;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+inline double mask_double() {
+  const std::uint64_t bits = 0xffffffffffffffffull;
+  double value = 0;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
 inline void vector_set_float(GuestContext* context, int vector_index, float value) {
   std::memcpy(context->vector_registers[vector_index], &value, 4);
 }
@@ -782,6 +796,86 @@ inline void vector_square_root_floats_memory(GuestContext* context, int destinat
 inline void vector_square_root_doubles_memory(GuestContext* context, int destination, std::uint64_t address) {
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
+
+// MIN/MAX. The one case worth stating: when an operand is NaN the result is the SECOND
+// operand, which is what the instruction specifies and NOT what `std::min` does with a
+// NaN. Getting this wrong changes the answer only for programs that feed NaN in, which
+// is exactly the case a test suite tends not to have.
+inline float vector_min_float(float left, float right) { return (left < right) ? left : right; }
+inline float vector_max_float(float left, float right) { return (left > right) ? left : right; }
+inline double vector_min_double(double left, double right) { return (left < right) ? left : right; }
+inline double vector_max_double(double left, double right) { return (left > right) ? left : right; }
+
+inline void vector_min_floats(GuestContext* context, int destination, int source) {
+  vector_set_float(context, destination,
+                   vector_min_float(vector_get_float(context, destination), vector_get_float(context, source)));
+}
+inline void vector_max_floats(GuestContext* context, int destination, int source) {
+  vector_set_float(context, destination,
+                   vector_max_float(vector_get_float(context, destination), vector_get_float(context, source)));
+}
+inline void vector_min_doubles(GuestContext* context, int destination, int source) {
+  vector_set_double(context, destination,
+                    vector_min_double(vector_get_double(context, destination), vector_get_double(context, source)));
+}
+inline void vector_max_doubles(GuestContext* context, int destination, int source) {
+  vector_set_double(context, destination,
+                    vector_max_double(vector_get_double(context, destination), vector_get_double(context, source)));
+}
+inline void vector_min_floats_memory(GuestContext* context, int destination, std::uint64_t address) {
+  vector_set_float(context, destination,
+                   vector_min_float(vector_get_float(context, destination), load_guest_float(context, address)));
+}
+inline void vector_max_floats_memory(GuestContext* context, int destination, std::uint64_t address) {
+  vector_set_float(context, destination,
+                   vector_max_float(vector_get_float(context, destination), load_guest_float(context, address)));
+}
+inline void vector_min_doubles_memory(GuestContext* context, int destination, std::uint64_t address) {
+  vector_set_double(context, destination,
+                    vector_min_double(vector_get_double(context, destination), load_guest_double(context, address)));
+}
+inline void vector_max_doubles_memory(GuestContext* context, int destination, std::uint64_t address) {
+  vector_set_double(context, destination,
+                    vector_max_double(vector_get_double(context, destination), load_guest_double(context, address)));
+}
+
+// CMPPS/CMPSS and their relatives produce an ALL-ONES or ALL-ZEROS mask per lane, not a
+// flag and not a boolean: the result is designed to be consumed by AND/ANDN/OR as a
+// select. Returning 0/1 would produce a vector of denormals that later arithmetic reads
+// as numbers, so the mask width is the whole point of the instruction.
+#define RECOMP_COMPARE_OP(NAME, OP)                                                                 \
+  inline void vector_compare_##NAME##_floats(GuestContext* context, int destination, int source) {   \
+    vector_set_float(context, destination,                                                          \
+                     (vector_get_float(context, destination) OP vector_get_float(context, source))   \
+                         ? mask_float()                                                             \
+                         : 0.0f);                                                                   \
+  }                                                                                                 \
+  inline void vector_compare_##NAME##_floats_memory(GuestContext* context, int destination,          \
+                                                    std::uint64_t address) {                        \
+    vector_set_float(context, destination,                                                          \
+                     (vector_get_float(context, destination) OP load_guest_float(context, address))  \
+                         ? mask_float()                                                             \
+                         : 0.0f);                                                                   \
+  }                                                                                                 \
+  inline void vector_compare_##NAME##_doubles(GuestContext* context, int destination, int source) {  \
+    vector_set_double(context, destination,                                                         \
+                      (vector_get_double(context, destination) OP vector_get_double(context, source))\
+                          ? mask_double()                                                           \
+                          : 0.0);                                                                   \
+  }                                                                                                 \
+  inline void vector_compare_##NAME##_doubles_memory(GuestContext* context, int destination,         \
+                                                     std::uint64_t address) {                       \
+    vector_set_double(context, destination,                                                         \
+                      (vector_get_double(context, destination) OP load_guest_double(context, address))\
+                          ? mask_double()                                                           \
+                          : 0.0);                                                                   \
+  }
+
+RECOMP_COMPARE_OP(equal, ==)
+RECOMP_COMPARE_OP(less, <)
+RECOMP_COMPARE_OP(less_equal, <=)
+RECOMP_COMPARE_OP(not_equal, !=)
+#undef RECOMP_COMPARE_OP
 
 // The PACKED arithmetic forms. The scalar forms (`addss` and friends) operate on one
 // lane; these operate on all four singles or both doubles at once, and the two are not

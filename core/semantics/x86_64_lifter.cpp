@@ -1514,7 +1514,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         {"addps", "vector_add_packed_floats"}, {"subps", "vector_subtract_packed_floats"},
         {"mulps", "vector_multiply_packed_floats"}, {"divps", "vector_divide_packed_floats"},
         {"addpd", "vector_add_packed_doubles"}, {"subpd", "vector_subtract_packed_doubles"},
-        {"mulpd", "vector_multiply_packed_doubles"}, {"divpd", "vector_divide_packed_doubles"}};
+        {"mulpd", "vector_multiply_packed_doubles"}, {"divpd", "vector_divide_packed_doubles"},
+        {"minss", "vector_min_floats"}, {"maxss", "vector_max_floats"},
+        {"minsd", "vector_min_doubles"}, {"maxsd", "vector_max_doubles"},
+        // The compare family. Each writes an all-ones or all-zeros MASK per lane, which
+        // is why they map to their own helpers rather than to a boolean.
+        {"cmpeqss", "vector_compare_equal_floats"}, {"cmpltss", "vector_compare_less_floats"},
+        {"cmpless", "vector_compare_less_equal_floats"},
+        {"cmpneqss", "vector_compare_not_equal_floats"},
+        {"cmpeqsd", "vector_compare_equal_doubles"}, {"cmpltsd", "vector_compare_less_doubles"},
+        {"cmplesd", "vector_compare_less_equal_doubles"},
+        {"cmpneqsd", "vector_compare_not_equal_doubles"}};
     const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
                          : float_helpers.count(mnemonic) != 0 ? &float_helpers
                                                              : nullptr;

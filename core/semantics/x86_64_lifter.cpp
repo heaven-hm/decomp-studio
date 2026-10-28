@@ -749,6 +749,26 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
   // Adapted from Remill's MOVLHPS/MOVHLPS semantics (Apache-2.0): preserve
   // one half of the destination and copy the indicated half of the source.
+  // movlps/movhps and their double-precision forms move 64 bits between memory and
+  // one half of an XMM register, preserving the other half. Both directions matter and
+  // the destination/source order decides which it is: `movhps xmm, m64` loads into the
+  // high half, `movhps m64, xmm` stores the high half out.
+  if ((mnemonic == "movlps" || mnemonic == "movhps" || mnemonic == "movlpd" ||
+       mnemonic == "movhpd") &&
+      operands.size() == 2) {
+    const bool high_half = mnemonic == "movhps" || mnemonic == "movhpd";
+    const std::string offset = high_half ? "8" : "0";
+    if (is_vector_register(operands[0]) && operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("load_guest_vector_half(context, " + effective_address_expression(instruction, operands[1]) +
+           ", " + std::to_string(vector_index(operands[0])) + ", " + offset + ");");
+      return;
+    }
+    if (operands[0].kind == discovery::Operand::Kind::Memory && is_vector_register(operands[1])) {
+      emit("store_guest_vector_half(context, " + effective_address_expression(instruction, operands[0]) +
+           ", " + std::to_string(vector_index(operands[1])) + ", " + offset + ");");
+      return;
+    }
+  }
   if ((mnemonic == "movlhps" || mnemonic == "movhlps") && operands.size() == 2 &&
       is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
       !is_wide_vector_register(operands[0].register_name) && !is_wide_vector_register(operands[1].register_name)) {
@@ -828,6 +848,25 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     if (operands[1].kind == discovery::Operand::Kind::Memory) {
       emit("vector_shuffle_single_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + control + ");");
+      return;
+    }
+  }
+  // SHUFPD is not SHUFPS with a different name: it has two 64-bit lanes and its
+  // selector bits pick the LOW result from the DESTINATION and the HIGH result from
+  // the SOURCE. Treating it as the single-precision form would silently produce the
+  // wrong lane order, so it gets its own helper.
+  if (mnemonic == "shufpd" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_shuffle_doubles(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + control + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_shuffle_doubles_memory(context, " + destination + ", " +
            effective_address_expression(instruction, operands[1]) + ", " + control + ");");
       return;
     }
@@ -1084,6 +1123,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          "context->carry_flag = ah & 1; }");
     return;
   }
+  // `cbw` sign-extends AL into AX and leaves the rest of EAX alone, which is what
+  // distinguishes it from `cwde`: the destination is 16 bits, so only the low 16 bits
+  // of the register are written. It appears in 32-bit code compiled from anything that
+  // narrows a char before arithmetic, and the lifter refused the whole program for it.
+  if (mnemonic == "cbw") {
+    const auto rax = std::to_string(kRegisterRax);
+    emit("context->registers[" + rax + "] = (context->registers[" + rax +
+         "] & ~0xffffull) | static_cast<std::uint64_t>(static_cast<std::uint16_t>(static_cast<std::int16_t>("
+         "static_cast<std::int8_t>(context->registers[" + rax + "] & 0xffu))));");
+    return;
+  }
   if (mnemonic == "cwde") {
     emit("context->registers[" + std::to_string(kRegisterRax) + "] = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int16_t>(context->registers[" + std::to_string(kRegisterRax) + "])));");
     return;
@@ -1121,6 +1171,41 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     operand_write(output, instruction, operands[0], value, width);
     return;
   }
+  if (mnemonic == "pushad" || mnemonic == "pushal") {
+    // Capstone names it `pushal` for 32-bit and `pushad` for the same encoding read
+    // as 64-bit; both push the eight general registers in one instruction.
+    emit("push_all_general(context);");
+    return;
+  }
+  // RDRAND/RDSEED write a random value into a general register and set CF to report
+  // success. There is no fixed correct answer, so a real random value is the faithful
+  // implementation; the carry flag is set because the host always has a source.
+  if ((mnemonic == "rdrand" || mnemonic == "rdseed") && operands.size() == 1 &&
+      operands[0].kind == discovery::Operand::Kind::Register) {
+    const auto iterator = register_descriptors().find(operands[0].register_name);
+    if (iterator == register_descriptors().end())
+      fail_operand(instruction, "write", "'" + operands[0].register_name + "'");
+    emit("random_into_register(context, " + std::to_string(iterator->second.index) + ", " +
+         std::to_string(operand_width(operands[0], 4)) + ");");
+    return;
+  }
+  // `sti` sets the interrupt flag, which a user-mode program cannot do: the
+  // instruction is privileged and is a no-op outside ring 0. Modelling it as one is
+  // not a shortcut, it is what happens. It reaches a lifted program through CRT or
+  // compiler-generated code that is never executed.
+  if (mnemonic == "sti") {
+    // Nothing to emit: the instruction is a no-op outside ring 0, and the statement
+    // list must not be left empty for the block, so a comment records why.
+    emit("/* sti: privileged, a no-op in user mode */");
+    return;
+  }
+  // `int1` raises a debug exception. Nothing in a user-mode program reaches it except
+  // a debugger breakpoint, and if one is reached the honest result is to stop and say
+  // where rather than to continue with invented state.
+  if (mnemonic == "int1" || mnemonic == "int3" || mnemonic == "icebp") {
+    emit("recomp_trap(context, \"" + mnemonic + "\");");
+    return;
+  }
   if (mnemonic == "leave") {
     emit("context->registers[" + std::to_string(kRegisterRsp) + "] = context->registers[" + std::to_string(kRegisterRbp) + "];");
     emit("context->registers[" + std::to_string(kRegisterRbp) + "] = pop_guest_stack(context);");
@@ -1148,9 +1233,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     const auto target = operands.empty() ? std::optional<std::uint64_t>{} : std::optional<std::uint64_t>{
         static_cast<std::uint64_t>(operands[0].immediate_value)};
-    if (target && operands[0].kind == Operand::Kind::Immediate) {
+    // A DIRECT call is only emitted as a direct call when discovery actually recovered
+    // the target. Otherwise the generated code names a function that does not exist and
+    // the whole program fails to COMPILE -- which is what happened to two real
+    // applications, one of them calling address zero. An unrecovered target is a real
+    // situation (the address may be data that decoded as a call, or code discovery did
+    // not reach), and the honest response is the runtime's: resolve it and, if it is
+    // not there, say which address at the point it is reached.
+    if (target && operands[0].kind == Operand::Kind::Immediate &&
+        discovery_.functions().count(*target) != 0) {
       emit("push_guest_stack(context, " + format_hex(instruction.address + instruction.size) + ");");
       emit(guest_function_name(*target) + "(context);");
+      return;
+    }
+    if (target && operands[0].kind == Operand::Kind::Immediate) {
+      emit("invoke_guest_indirect(context, " + format_hex(*target) + ", " +
+           format_hex(instruction.address + instruction.size) + ");");
       return;
     }
     emit("invoke_guest_indirect(context, " +
@@ -1169,11 +1267,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     }
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate) {
       const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-      if (function.tail_call_targets.count(target) != 0 || function.instructions.count(target) == 0) {
+      // The same rule as a direct `call`: naming `guest_function_<target>` is only
+      // valid when discovery recovered that target. Emitting it otherwise produces a
+      // reference to a function that does not exist, and the whole program fails to
+      // compile -- which is how a real application ended up calling address zero.
+      if (discovery_.functions().count(target) != 0 &&
+          (function.tail_call_targets.count(target) != 0 || function.instructions.count(target) == 0)) {
         emit(guest_function_name(target) + "(context);");
         emit_return();
-      } else {
+      } else if (function.instructions.count(target) != 0) {
         emit("goto label_" + std::to_string(target) + ";");
+      } else {
+        emit("jump_guest_indirect(context, " + format_hex(target) + ");");
+        emit_return();
       }
       return;
     }
@@ -1182,11 +1288,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit_return();
     return;
   }
+  // A `goto` is only valid where a label was actually written, and labels exist only
+  // for addresses that are instructions in THIS function. A branch anywhere else --
+  // outside the recovered range, or into data -- has to go through the runtime's
+  // dispatch, which names the address if it is not a function either. Emitting the
+  // `goto` unconditionally is what produced "use of undeclared label" in the
+  // generated code for a real application.
+  const auto branch_body = [&function](std::uint64_t target) {
+    if (function.instructions.count(target) != 0)
+      return "goto label_" + std::to_string(target) + ";";
+    return "{ jump_guest_indirect(context, " + format_hex(target) + "); return; }";
+  };
   if (kConditionalBranches.count(mnemonic) != 0 && condition_codes().count(mnemonic.substr(1)) != 0) {
     const auto condition = condition_codes().at(mnemonic.substr(1));
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate) {
       const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-      emit("if (evaluate_condition(context, " + condition + ")) goto label_" + std::to_string(target) + ";");
+      emit("if (evaluate_condition(context, " + condition + ")) " + branch_body(target));
     } else {
       emit("if (evaluate_condition(context, " + condition + ")) { jump_guest_indirect(context, " +
            operand_read_expression(instruction, operands[0], 8) + "); return; }");
@@ -1797,7 +1914,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // direction-flag instruction, so this block only owns the counted jumps.
   if (mnemonic == "jecxz" || mnemonic == "jrcxz") {
     const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-    emit("if (context->registers[1] == 0) goto label_" + std::to_string(target) + ";");
+    emit("if (context->registers[1] == 0) " + branch_body(target));
     return;
   }
   if (mnemonic == "loop" || mnemonic == "loope" || mnemonic == "loopne") {
@@ -1806,7 +1923,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     if (mnemonic == "loope") condition = " && context->zero_flag != 0";
     else if (mnemonic == "loopne") condition = " && context->zero_flag == 0";
     emit("context->registers[1] = mask_guest_address(context->registers[1] - 1); if (context->registers[1] != 0" +
-         condition + ") goto label_" + std::to_string(target) + ";");
+         condition + ") " + branch_body(target));
     return;
   }
 
@@ -1830,8 +1947,26 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
     jump.address_of_instruction = function.entry;
     lifted.statements.push_back(std::move(jump));
   }
+  // A label is needed wherever anything can JUMP TO, not only at a block start.
+  // Discovery's block starts and the set of branch targets are not the same set: a
+  // branch into the middle of a recovered block is emitted as `goto label_<target>`
+  // and the label was never written, so the generated code failed to compile with
+  // "use of undeclared label". Collecting the targets from the instructions
+  // themselves is what makes the two agree.
+  std::set<std::uint64_t> branch_targets;
   for (const auto& [address, instruction] : function.instructions) {
-    if (function.block_starts.count(address) != 0) {
+    (void)address;
+    if (instruction.operands.empty()) continue;
+    const bool branches = instruction.mnemonic == "jmp" || instruction.mnemonic == "call" ||
+                          kConditionalBranches.count(instruction.mnemonic) != 0 ||
+                          instruction.mnemonic.rfind("loop", 0) == 0 ||
+                          instruction.mnemonic == "jcxz" || instruction.mnemonic == "jecxz" ||
+                          instruction.mnemonic == "jrcxz";
+    if (branches && instruction.operands[0].kind == Operand::Kind::Immediate)
+      branch_targets.insert(static_cast<std::uint64_t>(instruction.operands[0].immediate_value));
+  }
+  for (const auto& [address, instruction] : function.instructions) {
+    if (function.block_starts.count(address) != 0 || branch_targets.count(address) != 0) {
       ir::Statement label;
       label.kind = ir::StatementKind::Label;
       label.label = "label_" + std::to_string(address);

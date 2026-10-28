@@ -233,6 +233,8 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"msvcrt.dll", "_isatty", 1, true},
     {"msvcrt.dll", "_getpid", 0, true},
     {"kernel32.dll", "FormatMessageA", 7, true},
+    {"comctl32.dll", "InitCommonControls", 0, true},
+    {"comctl32.dll", "InitCommonControlsEx", 1, true},
     {"msvcrt.dll", "__stdio_common_vsscanf", 5, false},
     {"user32.dll", "RegisterClassA", 1, true},
     {"user32.dll", "CreateWindowExA", 12, true},

@@ -1243,6 +1243,15 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     return;
   }
+  // LFENCE/MFENCE/SFENCE order memory operations for OTHER observers. A single-threaded
+  // guest has none, and the generated code touches guest memory through helpers that the
+  // compiler may not reorder across, so there is nothing left for these to do. They are
+  // accepted rather than refused because refusing them stops a program over a fence that
+  // would have had no effect.
+  if (mnemonic == "lfence" || mnemonic == "mfence" || mnemonic == "sfence") {
+    emit("/* " + mnemonic + ": memory fence, no effect for a single-threaded guest */");
+    return;
+  }
   if (mnemonic == "leave") {
     emit("context->registers[" + std::to_string(kRegisterRsp) + "] = context->registers[" + std::to_string(kRegisterRbp) + "];");
     emit("context->registers[" + std::to_string(kRegisterRbp) + "] = pop_guest_stack(context);");
@@ -1493,10 +1502,12 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   {
     static const std::map<std::string, std::string> double_helpers = {
         {"addsd", "vector_add_doubles"}, {"subsd", "vector_subtract_doubles"},
-        {"mulsd", "vector_multiply_doubles"}, {"divsd", "vector_divide_doubles"}};
+        {"mulsd", "vector_multiply_doubles"}, {"divsd", "vector_divide_doubles"},
+        {"sqrtsd", "vector_square_root_doubles"}};
     static const std::map<std::string, std::string> float_helpers = {
         {"addss", "vector_add_floats"}, {"subss", "vector_subtract_floats"},
-        {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"}};
+        {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"},
+        {"sqrtss", "vector_square_root_floats"}};
     const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
                          : float_helpers.count(mnemonic) != 0 ? &float_helpers
                                                              : nullptr;

@@ -747,6 +747,22 @@ inline void vector_multiply_floats(GuestContext* context, int destination, int s
 inline void vector_divide_floats(GuestContext* context, int destination, int source) {
   vector_set_float(context, destination, vector_get_float(context, destination) / vector_get_float(context, source));
 }
+// SQRTSS/SQRTSD and their packed forms. The square root of a negative operand is the
+// case worth stating: IEEE-754 says it produces a quiet NaN rather than trapping, and
+// `std::sqrt` does the same, so the host's result is the instruction's result.
+inline void vector_square_root_floats(GuestContext* context, int destination, int source) {
+  vector_set_float(context, destination, std::sqrt(vector_get_float(context, source)));
+}
+inline void vector_square_root_doubles(GuestContext* context, int destination, int source) {
+  vector_set_double(context, destination, std::sqrt(vector_get_double(context, source)));
+}
+inline void vector_square_root_floats_memory(GuestContext* context, int destination, std::uint64_t address) {
+  vector_set_float(context, destination, std::sqrt(load_guest_float(context, address)));
+}
+inline void vector_square_root_doubles_memory(GuestContext* context, int destination, std::uint64_t address) {
+  vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
+}
+
 inline void vector_add_floats_memory(GuestContext* context, int destination, std::uint64_t address) {
   vector_set_float(context, destination, vector_get_float(context, destination) + load_guest_float(context, address));
 }

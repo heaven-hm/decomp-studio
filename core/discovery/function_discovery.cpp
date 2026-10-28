@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace recomp::discovery {
@@ -206,6 +207,116 @@ void FunctionDiscovery::discover() {
     }
     return true;
   };
+
+  const auto register_family = [](const std::string& name) -> std::string {
+    if (name == "rax" || name == "eax" || name == "ax" || name == "al" || name == "ah") return "a";
+    if (name == "rbx" || name == "ebx" || name == "bx" || name == "bl" || name == "bh") return "b";
+    if (name == "rcx" || name == "ecx" || name == "cx" || name == "cl" || name == "ch") return "c";
+    if (name == "rdx" || name == "edx" || name == "dx" || name == "dl" || name == "dh") return "d";
+    for (const auto* family : {"si", "di", "bp", "sp"})
+      if (name == std::string("r") + family || name == std::string("e") + family || name == family ||
+          name == std::string(family) + "l") return family;
+    if (name.size() >= 2 && name[0] == 'r' && name[1] >= '8' && name[1] <= '9')
+      return name.substr(0, name.find_first_not_of("0123456789", 1));
+    return name;
+  };
+
+  // Relative switch tables emitted by MSVC and MinGW use a three-instruction
+  // sequence: MOVSXD an indexed 32-bit offset, ADD the table base, then JMP the
+  // resulting register. IGI Recomp's Analyzer.find_jump_table / _table_bound
+  // supplies the bounded table walk used here; this extends that pattern to the
+  // x64 relative-offset form (`movsxd; add base; jmp reg`).
+  const auto relative_jump_table_targets = [this, &register_family](const RecoveredFunction& function,
+                                                                     std::uint64_t jump_address)
+      -> std::vector<std::uint64_t> {
+    std::vector<const DecodedInstruction*> previous;
+    auto cursor = jump_address;
+    auto iterator = function.instructions.lower_bound(cursor);
+    while (iterator != function.instructions.begin() && previous.size() < 24) {
+      --iterator;
+      if (iterator->first + iterator->second.size != cursor) break;
+      previous.push_back(&iterator->second);
+      cursor = iterator->first;
+    }
+    if (previous.size() < 3) return {};
+    const auto& jump = function.instructions.at(jump_address);
+    if (jump.operands.empty() || jump.operands[0].kind != Operand::Kind::Register) return {};
+    const auto jump_register = register_family(jump.operands[0].register_name);
+
+    for (std::size_t add_index = 0; add_index < std::min<std::size_t>(previous.size(), 2); ++add_index) {
+      const auto& add = *previous[add_index];
+      if (add.mnemonic != "add" || add.operands.size() < 2 ||
+          add.operands[0].kind != Operand::Kind::Register || add.operands[1].kind != Operand::Kind::Register ||
+          register_family(add.operands[0].register_name) != jump_register)
+        continue;
+      const auto base_register = add.operands[1].register_name;
+      const auto table_index_register = add.operands[0].register_name;
+      std::optional<std::uint64_t> table_address;
+      std::optional<std::string> bound_input_register;
+      for (std::size_t index = add_index + 1; index < previous.size(); ++index) {
+        const auto& instruction = *previous[index];
+        if (instruction.mnemonic == "movsxd" && instruction.operands.size() >= 2 &&
+            instruction.operands[0].kind == Operand::Kind::Register &&
+            instruction.operands[1].kind == Operand::Kind::Memory &&
+            register_family(instruction.operands[0].register_name) == jump_register &&
+            register_family(instruction.operands[1].base_register_name) == register_family(base_register) &&
+            instruction.operands[1].scale == 4 && !instruction.operands[1].index_register_name.empty()) {
+          const auto index_register = instruction.operands[1].index_register_name;
+          for (std::size_t source_index = index + 1; source_index < previous.size(); ++source_index) {
+            const auto& source = *previous[source_index];
+            if (source.mnemonic == "movzx" && source.operands.size() >= 2 &&
+                source.operands[0].kind == Operand::Kind::Register &&
+                source.operands[1].kind == Operand::Kind::Register &&
+                register_family(source.operands[0].register_name) == register_family(index_register)) {
+              bound_input_register = source.operands[1].register_name;
+              break;
+            }
+          }
+        }
+        if (instruction.mnemonic == "lea" && instruction.operands.size() >= 2 &&
+            instruction.operands[0].kind == Operand::Kind::Register &&
+            instruction.operands[1].kind == Operand::Kind::Memory &&
+            instruction.operands[1].base_register_name == "rip" &&
+            register_family(instruction.operands[0].register_name) == register_family(base_register)) {
+          const auto target = static_cast<std::int64_t>(instruction.address + instruction.size) +
+                              instruction.operands[1].displacement;
+          if (target >= 0) table_address = static_cast<std::uint64_t>(target);
+        }
+      }
+      if (!table_address || !bound_input_register) continue;
+
+      std::optional<std::uint32_t> entry_count;
+      for (const auto* instruction : previous) {
+        if (instruction->mnemonic != "cmp" || instruction->operands.size() < 2 ||
+            instruction->operands[0].kind != Operand::Kind::Register ||
+            instruction->operands[1].kind != Operand::Kind::Immediate ||
+            register_family(instruction->operands[0].register_name) != register_family(*bound_input_register))
+          continue;
+        const auto maximum_index = instruction->operands[1].immediate_value;
+        if (maximum_index >= 0 && maximum_index < 256)
+          entry_count = static_cast<std::uint32_t>(maximum_index) + 1;
+        break;
+      }
+      if (!entry_count) continue;
+
+      std::vector<std::uint64_t> targets;
+      for (std::uint32_t index = 0; index < *entry_count; ++index) {
+        const auto offset = executable_.read_u32(static_cast<std::uint32_t>(*table_address - executable_.image_base) +
+                                                 index * 4);
+        if (!offset) break;
+        const auto relative = static_cast<std::int32_t>(*offset);
+        const auto target = static_cast<std::int64_t>(*table_address) + relative;
+        if (target < static_cast<std::int64_t>(executable_.image_base) ||
+            !contains_code(static_cast<std::uint32_t>(target - static_cast<std::int64_t>(executable_.image_base))))
+          continue;
+        targets.push_back(static_cast<std::uint64_t>(target));
+      }
+      std::sort(targets.begin(), targets.end());
+      targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+      if (!targets.empty()) return targets;
+    }
+    return {};
+  };
   // Executable sections are scanned too: a compiler is free to place a function
   // pointer table inside .text, and this one does -- the C runtime's exit table
   // lives there, so skipping code sections missed exactly the entries the
@@ -250,6 +361,34 @@ void FunctionDiscovery::discover() {
         function.instructions.emplace(address, instruction);
         ++recovered_instruction_count;
 
+        // Recover address-taken functions as a second source of entries. This
+        // follows the bounded immediate-pointer pass in IGI Recomp's
+        // tools/recomp/analyze.py (MIT, commit 278eaf6394f7f42c7de6cffef2cf982154f59899),
+        // and also resolves RIP-relative LEA operands used by x64 callback APIs
+        // such as pthread_once. The same boundary and decode checks used for
+        // data pointers reject ordinary constants and most mid-function labels.
+        std::optional<std::uint64_t> address_taken_target;
+        for (const auto& operand : instruction.operands) {
+          if (operand.kind == Operand::Kind::Immediate && instruction.mnemonic != "call" &&
+              instruction.mnemonic != "jmp") {
+            const auto value = static_cast<std::uint64_t>(operand.immediate_value);
+            if (value >= executable_.image_base &&
+                value - executable_.image_base <= std::numeric_limits<std::uint32_t>::max())
+              address_taken_target = value;
+          } else if (operand.kind == Operand::Kind::Memory && operand.base_register_name == "rip" &&
+                     operand.index_register_name.empty() && instruction.mnemonic == "lea") {
+            const auto next = instruction.address + instruction.size;
+            const auto target = static_cast<std::int64_t>(next) + operand.displacement;
+            if (target >= static_cast<std::int64_t>(executable_.image_base) &&
+                static_cast<std::uint64_t>(target) - executable_.image_base <=
+                    std::numeric_limits<std::uint32_t>::max())
+              address_taken_target = static_cast<std::uint64_t>(target);
+          }
+        }
+        if (address_taken_target && decodes_as_code(*address_taken_target, true) &&
+            known_entries.insert(*address_taken_target).second)
+          pending_entries.push_back(*address_taken_target);
+
         const auto next_address = address + instruction.size;
         if (instruction.mnemonic == "call") {
           const auto target = direct_branch_target(instruction);
@@ -276,6 +415,11 @@ void FunctionDiscovery::discover() {
             } else {
               function.block_starts.insert(*target);
               pending_blocks.push_back(*target);
+            }
+          } else {
+            for (const auto case_target : relative_jump_table_targets(function, address)) {
+              function.block_starts.insert(case_target);
+              pending_blocks.push_back(case_target);
             }
           }
           break;

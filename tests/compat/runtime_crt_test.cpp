@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,19 @@ int main() {
   if (!map_guest_memory(kGuestAddressSpaceBytes)) return 1;
   guest_pointer_width = 8;
   initialize_guest_state(0x100000, 0x70000000, 0x7fff0000);
+
+  // wctype returns a descriptor that is consumed by iswctype; keep the descriptor
+  // opaque and verify the pair against the host CRT implementation.
+  const auto alpha_name = put_string(0x220000, "alpha");
+  const auto guest_alpha = call("wctype", alpha_name);
+  const auto host_alpha = std::wctype("alpha");
+  check(guest_alpha != 0, "wctype(\"alpha\") returns a descriptor");
+  check(call("iswctype", L'A', guest_alpha) ==
+            (std::iswctype(L'A', host_alpha) != 0 ? 1u : 0u),
+        "iswctype('A', wctype(\"alpha\")) matches the host CRT");
+  check(call("iswctype", L'7', guest_alpha) ==
+            (std::iswctype(L'7', host_alpha) != 0 ? 1u : 0u),
+        "iswctype('7', wctype(\"alpha\")) matches the host CRT");
 
   // --- strtol, against the host, over the cases that distinguish a real strtol ------
   struct IntegerCase {

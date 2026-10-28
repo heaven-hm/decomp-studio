@@ -99,15 +99,9 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
   while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), stream) != nullptr)
     report.standard_output += buffer.data();
   const auto status = ::pclose(stream);
-  if (WIFEXITED(status)) {
-    report.exit_code = WEXITSTATUS(status);
-    if (report.exit_code == 142) report.exit_code = 0;
-  } else if (WIFSIGNALED(status)) {
-    const int sig = WTERMSIG(status);
-    report.exit_code = (sig == 14 || sig == 9) ? 0 : 1;
-  } else {
-    report.exit_code = 1;
-  }
+  if (WIFEXITED(status)) report.exit_code = WEXITSTATUS(status);
+  else if (WIFSIGNALED(status)) report.exit_code = 128 + WTERMSIG(status);
+  else report.exit_code = 1;
   if (std::filesystem::exists(error_path)) report.standard_error = read_whole_file(error_path);
   return report;
 }
@@ -191,7 +185,15 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
     throw std::runtime_error("project is missing generated sources; run translate first");
 
   const auto built_executable = output_directory / "recomp-guest";
-  std::vector<std::string> arguments{configuration.compiler, "-std=c++20", "-O2", "-w", "-I",
+  // Clang's -O2 pass over the single generated translation unit can spend
+  // minutes and exhaust memory on large recovered images. Those images are
+  // already expensive to optimize as one unit; use a bounded compile strategy
+  // while keeping the default optimization for normal-sized projects.
+  constexpr std::uintmax_t kLargeGuestSourceBytes = 32 * 1024 * 1024;
+  const auto optimization = std::filesystem::file_size(guest_source) >= kLargeGuestSourceBytes
+                                ? "-O0"
+                                : "-O2";
+  std::vector<std::string> arguments{configuration.compiler, "-std=c++20", optimization, "-w", "-I",
                                      output_directory.string(), "-o", built_executable.string(),
                                      guest_source.string(), runtime_source.string()};
   const auto triple = common::target_triple_for(configuration.target);

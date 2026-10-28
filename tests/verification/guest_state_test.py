@@ -99,6 +99,8 @@ def main():
             # 1. The gate must not be vacuous.
             check("state/checkpoints-compared", clean["checkpoints_compared"] > 0,
                   "no guest-state checkpoints were compared, so the state gate cannot fail")
+            check("state/checkpoints-match-percent", clean["checkpoint_match_percent"] == 100,
+                  f"a correct build matched only {clean['checkpoint_match_percent']}% of checkpoints")
             check("state/matches-when-correct", clean["state_match"] is True,
                   f"state disagreed on a correct build: {clean['state_diagnosis']}")
             check("state/verifies", clean["status"] == "pass", clean["state_diagnosis"])
@@ -128,6 +130,8 @@ def main():
                       "the mutation changed the program's output, so it does not isolate the state gate")
                 check("state/mutation-detected", mutated["state_match"] is False,
                       "a changed register/flag value was not detected")
+                check("state/mutation-lowers-match-percent", mutated["checkpoint_match_percent"] < 100,
+                      "a changed checkpoint still reports a 100% match")
                 check("state/mutation-fails-verification", mutated["status"] == "fail",
                       "verification passed while the guest state disagreed")
                 check("state/mutation-names-the-place",

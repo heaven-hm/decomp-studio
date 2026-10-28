@@ -730,6 +730,21 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          "vector_move_byte_mask(context, " + std::to_string(vector_index(operands[1])) + ")", 4);
     return;
   }
+  // Adapted from Remill's Apache-2.0 PINSRW semantics: retain the prior XMM
+  // value, replace only one 16-bit lane, and reduce the immediate to eight
+  // lanes. PINSRW's scalar source is a general register or a 16-bit memory
+  // operand, never another XMM register.
+  if (mnemonic == "pinsrw" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      !is_wide_vector_register(operands[0].register_name) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate &&
+      (operands[1].kind == discovery::Operand::Kind::Register ||
+       operands[1].kind == discovery::Operand::Kind::Memory)) {
+    const auto source = operand_read_expression(instruction, operands[1], 2);
+    emit("vector_insert_word(context, " + std::to_string(vector_index(operands[0])) +
+         ", static_cast<std::uint16_t>(" + source + "), " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
 
   // `movsd`/`cmpsd` are both SSE scalar-double instructions and string
   // operations. The string form has no operands; if any operand is an XMM

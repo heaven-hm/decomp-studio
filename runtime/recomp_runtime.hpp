@@ -677,6 +677,13 @@ inline void vector_set_low_qword_preserve(GuestContext* context, int vector_inde
   std::memcpy(context->vector_registers[vector_index], &value, sizeof(value));
 }
 
+// PINSRW replaces one 16-bit XMM lane while leaving every other lane intact.
+// The architectural immediate selects among the eight 128-bit lanes modulo 8.
+inline void vector_insert_word(GuestContext* context, int vector_index, std::uint16_t value, int lane) {
+  const std::size_t offset = static_cast<std::size_t>(lane & 7) * sizeof(value);
+  std::memcpy(context->vector_registers[vector_index] + offset, &value, sizeof(value));
+}
+
 inline std::uint64_t vector_get_high_qword(const GuestContext* context, int vector_index) {
   std::uint64_t value = 0;
   std::memcpy(&value, context->vector_registers[vector_index] + 8, sizeof(value));

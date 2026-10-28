@@ -598,6 +598,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // when the guest reaches ExitProcess. The proper place for a limit is the harness's
   // wall-clock handling, which would also catch a candidate stuck outside guest code;
   // this catches the case that was actually observed.
+  // A wall-clock limit on the candidate as well as an instruction ceiling. The ceiling
+  // only catches a GUEST loop; a candidate blocked on input, a shim, or the host itself
+  // is not executing guest instructions at all and ran unbounded. Neither `verify` nor
+  // `autorecomp` set this, so the limit was never in force.
+  if (std::getenv("RECOMP_RUN_TIMEOUT") == nullptr) ::setenv("RECOMP_RUN_TIMEOUT", "120", 1);
+
   // Overridable, so the mechanism can be exercised with a small ceiling instead of
   // waiting for a billion instructions to prove it works.
   if (std::getenv("RECOMP_INSTRUCTION_BUDGET") == nullptr)
@@ -948,7 +954,11 @@ TraceComparison compare_execution_traces(const std::filesystem::path& project_di
   const auto trace_path = project_directory / "candidate.trace";
   const auto executable_path = project_directory / "recomp-guest";
   std::string command = "RECOMP_TRACE='" + trace_path.string() + "' '" + executable_path.string() + "' > /dev/null 2>&1";
-  std::system(command.c_str());
+  const auto status = std::system(command.c_str());
+  // The status was discarded. A candidate that never ran then left an EMPTY trace, which
+  // the comparison below reported as a divergence with `candidate_address = 0` -- a
+  // finding about the translation, produced by the candidate not having run at all.
+  if (status != 0) return comparison;
 
   std::vector<std::uint64_t> candidate_trace;
   std::ifstream trace_input(trace_path, std::ios::binary);
@@ -958,6 +968,9 @@ TraceComparison compare_execution_traces(const std::filesystem::path& project_di
            trace_input.read(reinterpret_cast<char*>(&address), sizeof(address)))
       candidate_trace.push_back(address);
   }
+  // No trace at all is not a divergence either; it is the absence of something to
+  // compare, and `available` is how this function says so.
+  if (candidate_trace.empty()) return comparison;
 
   comparison.reference_steps = reference.trace.size();
   comparison.candidate_steps = candidate_trace.size();

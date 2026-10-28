@@ -592,7 +592,8 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << "candidate completed: " << (result.candidate_completed ? "yes" : "no") << "\n"
               << "reference output: " << result.reference_output.size() << " bytes\n"
               << "candidate output: " << result.candidate_output.size() << " bytes\n"
-              << (verified ? "VERIFY: PASS (identical output)\n" : "VERIFY: FAIL\n");
+              << "verdict: " << recomp::verification::verdict_name(result.verdict()) << "\n"
+              << (verified ? "VERIFY: PASS\n" : "VERIFY: FAIL\n");
     if (!result.diagnosis.empty()) std::cout << result.diagnosis << "\n";
   }
   return verified ? 0 : 1;
@@ -1137,7 +1138,10 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << "  imports     " << missing_imports << " without shims\n";
     if (!built_executable.empty()) std::cout << "  executable  " << built_executable.string() << "\n";
     if (build_and_run) std::cout << "  run         exit code " << run_exit_code << "\n";
-    if (build_and_run) std::cout << "  verified    " << (verified ? "yes" : "no") << "\n";
+    // ALWAYS printed. Guarded by `build_and_run`, a plain `autorecomp` printed
+    // AUTORECOMP COMPLETE and exited 0 without ever saying whether anything was verified,
+    // and "complete" then reads as a stronger claim than "the stages I ran finished".
+    std::cout << "  verified    " << (build_and_run ? (verified ? "yes" : "no") : "not run (build only)") << "\n";
     if (repair) std::cout << "  repaired    " << (repaired ? "yes" : "no") << "\n";
     std::cout << "  log         " << log_path.string() << "\n";
     if (!ok) std::cout << "\n" << (colour ? kRed : "") << "error: " << failure << (colour ? kReset : "") << "\n";

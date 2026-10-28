@@ -267,7 +267,9 @@ common::Configuration load_project_configuration(const std::filesystem::path& ou
   const auto path = output_directory / "recomp-config.toml";
   if (std::filesystem::exists(path)) {
     auto configuration = common::Configuration::load(path);
-    if (configuration.runtime_directory.empty()) configuration.runtime_directory = configuration.runtime_directory;
+    // Was a self-assignment -- `x = x` -- so the default was never applied and a project
+    // without a runtime directory in its config kept the empty one.
+    if (configuration.runtime_directory.empty()) configuration.runtime_directory = RECOMP_DEFAULT_RUNTIME_DIR;
     return configuration;
   }
   return {};

@@ -4574,6 +4574,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LeaveCriticalSection", win32_ignore},
     {"kernel32.dll", "InitializeCriticalSectionAndSpinCount", win32_one},
     {"kernel32.dll", "InitializeCriticalSectionEx", win32_one},
+    {"kernel32.dll", "InitializeSListHead", win32_ignore},
     {"kernel32.dll", "GetSystemTimeAsFileTime", win32_get_system_time_as_file_time},
     {"kernel32.dll", "GetStartupInfoA", win32_get_startup_info},
     {"kernel32.dll", "GetStartupInfoW", win32_get_startup_info_w},

@@ -4326,6 +4326,7 @@ const ShimDescriptor kShims[] = {
     {"user32.dll", "LoadIconA", win32_one},
     {"user32.dll", "LoadCursorA", win32_one},
     {"user32.dll", "RegisterClassA", win32_one},
+    {"user32.dll", "CreateWindowExA", win32_one},
     // libstdc++, cdecl: the caller pops.
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", cxx_ifstream_construct},
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE5closeEv", cxx_file_stream_close},

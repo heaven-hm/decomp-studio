@@ -18,6 +18,9 @@ struct ReferenceRun {
   std::string output;
   std::vector<std::uint64_t> trace;
   std::uint64_t instruction_count{};
+  // Set when the reference stopped at the shared instruction ceiling rather than
+  // because the program terminated.
+  bool truncated{};
   // Set when the reference had to compensate for an emulator limitation.
   std::string note;
   // Guest state recorded at the same checkpoints the candidate records, so the
@@ -25,6 +28,19 @@ struct ReferenceRun {
   std::vector<GuestCheckpoint> checkpoints;
   std::vector<std::vector<std::uint8_t>> memory_windows;
 };
+
+// What a verification run actually established. A false boolean cannot distinguish
+// a disagreement from an unsupported reference or a run that stopped at a budget.
+enum class Verdict {
+  VERIFIED,
+  DIVERGED,
+  REFERENCE_UNSUPPORTED,
+  CANDIDATE_UNSUPPORTED,
+  INCOMPLETE,
+  NOT_RUN,
+};
+
+const char* verdict_name(Verdict verdict);
 
 struct DifferentialResult {
   bool reference_completed{};     // reference executed and captured output
@@ -75,6 +91,9 @@ struct DifferentialResult {
   std::string candidate_error;
   std::string diagnosis;
   std::uint64_t executed_instructions{};
+  // Set when a side stopped because it reached the shared instruction ceiling rather
+  // than because the program terminated.
+  bool truncated{};
   std::vector<std::string> unsupported_mnemonics;
 
   std::size_t checkpoint_match_percent() const {
@@ -96,17 +115,17 @@ struct DifferentialResult {
   // verdict issued without the measurement it claims to rest on. Any program that
   // executes at least one guest instruction records checkpoint 0, so requiring one
   // cannot reject a genuinely verified run.
-  bool verified() const {
-    if (!reference_completed || !candidate_completed || !outputs_match) return false;
-    if (checkpoints_compared == 0) return false;
-    // Memory and the control registers gate the verdict as well as the registers and
-    // flags. They did not until every fixture but one agreed, and the one that does
-    // not is `vex`, whose divergence is a known defect in the emulator used as the
-    // reference rather than in the translation. Gating on a comparison that fails for
-    // a reason nobody has diagnosed teaches people to ignore it; gating on one that
-    // fails only for a documented defect is worth having.
-    return state_match && memory_match && control_registers_match;
+  Verdict verdict() const {
+    if (!candidate_ran) return Verdict::NOT_RUN;
+    if (!reference_completed) return Verdict::REFERENCE_UNSUPPORTED;
+    if (!candidate_completed) return Verdict::CANDIDATE_UNSUPPORTED;
+    if (truncated || checkpoints_compared == 0) return Verdict::INCOMPLETE;
+    if (!outputs_match || !state_match || !memory_match || !control_registers_match)
+      return Verdict::DIVERGED;
+    return Verdict::VERIFIED;
   }
+
+  bool verified() const { return verdict() == Verdict::VERIFIED; }
 };
 
 struct TraceComparison {

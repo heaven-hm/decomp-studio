@@ -46,6 +46,12 @@ struct ReferenceState {
   int pointer_width{8};
   std::uint64_t thunk_base{};
   std::uint64_t instruction_count{};
+  // The same ceiling the candidate is given. Cutting both sides off at the SAME guest
+  // instruction is what makes a program that does not terminate comparable: the prefix
+  // they share can still be checked, and it is checked exactly, rather than the two
+  // being stopped at unrelated points and reported as disagreeing.
+  std::uint64_t instruction_budget{};
+  bool budget_reached{};
   bool finished{};
   std::string note;
   // Set when the reference meets something it cannot model. The reference must
@@ -270,6 +276,11 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
     return;
   }
   ++state.instruction_count;
+  if (state.instruction_budget != 0 && state.instruction_count >= state.instruction_budget) {
+    state.budget_reached = true;
+    uc_emu_stop(engine);
+    return;
+  }
   if (state.trace != nullptr && state.trace->size() < state.trace_limit) state.trace->push_back(address);
 
   // Guest-state checkpoints. The candidate records these from its own
@@ -397,6 +408,11 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   state.requested_exit = false;
   state.trace_limit = trace_limit != 0 ? trace_limit : 1;
   state.thunk_base = thunk_base;
+  // The SAME ceiling the candidate is given, from the same variable, so both sides stop
+  // at the same guest instruction. Cutting them off at unrelated points made a program
+  // that loops look like a disagreement rather than a truncation.
+  if (const char* budget = std::getenv("RECOMP_INSTRUCTION_BUDGET"))
+    state.instruction_budget = std::strtoull(budget, nullptr, 10);
   state.pointer_width = pointer_width;
   std::vector<std::uint64_t> trace;
   if (trace_limit != 0) state.trace = &trace;
@@ -501,7 +517,13 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   }
   if (!state.finished) {
     run.completed = false;
-    run.failure_reason = "instruction budget exhausted before ExitProcess";
+    // A budget reached on BOTH sides is not a failure to report as one: the run was
+    // truncated at a known, shared point, and what the two sides did up to that point
+    // can still be compared exactly. Saying which happened is the difference between a
+    // useful result and a program that "failed" for not terminating.
+    run.failure_reason = state.budget_reached
+                             ? "instruction budget reached"
+                             : "instruction budget exhausted before ExitProcess";
     return run;
   }
   run.completed = true;
@@ -559,6 +581,8 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // when the guest reaches ExitProcess. The proper place for a limit is the harness's
   // wall-clock handling, which would also catch a candidate stuck outside guest code;
   // this catches the case that was actually observed.
+  // Overridable, so the mechanism can be exercised with a small ceiling instead of
+  // waiting for a billion instructions to prove it works.
   if (std::getenv("RECOMP_INSTRUCTION_BUDGET") == nullptr)
     ::setenv("RECOMP_INSTRUCTION_BUDGET", "1000000000", 1);
 
@@ -618,7 +642,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.reference_completed = reference.completed;
   if (!reference.note.empty()) result.diagnosis = reference.note;
   if (!reference.completed) {
-    result.diagnosis = "reference execution did not complete: " + reference.failure_reason;
+    // The candidate is deliberately NOT run: there is nothing to compare it against.
+    // Saying so is the point -- reporting the candidate's fields as zero made it look
+    // like a program that started and produced nothing, which is a different claim.
+    result.candidate_ran = false;
+    result.diagnosis = "the candidate was NOT run: the reference execution did not complete (" +
+                       reference.failure_reason + ")";
     return result;
   }
 
@@ -637,6 +666,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
+  result.candidate_ran = true;
   result.candidate_exit_code = candidate.exit_code;
   result.candidate_completed = candidate.exit_code == 0;
   {

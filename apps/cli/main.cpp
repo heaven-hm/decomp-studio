@@ -569,6 +569,8 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"memory_diagnosis\":" << recomp::common::quote_json(result.memory_diagnosis)
               << ",\"control_registers_match\":" << (result.control_registers_match ? "true" : "false")
               << ",\"control_diagnosis\":" << recomp::common::quote_json(result.control_diagnosis)
+              << ",\"candidate_ran\":" << (result.candidate_ran ? "true" : "false")
+              << ",\"diagnosis\":" << recomp::common::quote_json(result.diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()

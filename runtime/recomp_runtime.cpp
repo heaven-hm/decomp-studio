@@ -2240,14 +2240,11 @@ void msvcrt_rand(GuestContext* context) {
 // reason that has nothing to do with the translation.
 std::string guest_input_storage;
 
-// Loads the file named by RECOMP_STDIN_FILE, if any. Called once at startup.
 void load_guest_input_from_environment() {
   const char* path = std::getenv("RECOMP_STDIN_FILE");
   if (path == nullptr || path[0] == '\0') return;
   std::FILE* file = std::fopen(path, "rb");
   if (file == nullptr) {
-    // Fail loudly: silently reading the real stdin instead would make the two sides
-    // disagree in a way that looks like a translation bug.
     std::fprintf(stderr, "recomp: RECOMP_STDIN_FILE=%s could not be opened\n", path);
     return;
   }
@@ -2258,7 +2255,6 @@ void load_guest_input_from_environment() {
   guest_input_capture = &guest_input_storage;
   guest_input_position = 0;
 }
-
 int guest_read_byte() {
   if (guest_input_capture != nullptr) {
     if (guest_input_position >= guest_input_capture->size()) return -1;

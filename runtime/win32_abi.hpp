@@ -350,6 +350,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "FlsFree", 1, true},
     {"kernel32.dll", "FlsSetValue", 2, true},
     {"kernel32.dll", "FlsGetValue", 1, true},
+    {"kernel32.dll", "FlsGetValue2", 1, true},
     {"kernel32.dll", "TlsAlloc", 0, true},
     {"kernel32.dll", "TlsFree", 1, true},
     {"kernel32.dll", "TlsSetValue", 2, true},

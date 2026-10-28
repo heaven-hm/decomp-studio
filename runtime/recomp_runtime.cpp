@@ -1402,28 +1402,86 @@ void msvcrt_strstr(GuestContext* context) {
   const auto found = text.find(needle);
   set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
 }
-void msvcrt_strtol(GuestContext* context) {
+// The string-to-number family, on the HOST's implementation.
+//
+// What was here used `std::stol(text, &consumed, base == 0 ? 10 : base)`, and that
+// ternary is wrong in a way that is easy to miss: `strtol` with base 0 is defined to
+// DETECT the base from the text, so `strtol("0x1f", NULL, 0)` is 31 and `strtol("010",
+// NULL, 0)` is 8. Forcing base 10 made the first return 0 and the second return 10.
+// It also threw on overflow and on a string with no digits, which `strtol` does not do
+// -- it returns a clamped value and sets the end pointer to the start.
+//
+// The host has the real implementation, so it is called directly. Only the guest's
+// calling convention is this function's business.
+std::uint64_t msvcrt_parse_integer(GuestContext* context, bool is_signed, int width) {
   const auto text = read_guest_string(import_argument(context, 0));
   const auto base = static_cast<int>(import_argument(context, 2));
-  std::size_t consumed = 0;
-  long value = 0;
-  try {
-    value = std::stol(text, &consumed, base == 0 ? 10 : base);
-  } catch (...) {
-    value = 0;
-    consumed = 0;
+  char* end = nullptr;
+  std::uint64_t value = 0;
+  if (is_signed) {
+    const auto parsed = std::strtoll(text.c_str(), &end, base);
+    value = static_cast<std::uint64_t>(width >= 8 ? parsed : static_cast<std::int32_t>(parsed));
+  } else {
+    const auto parsed = std::strtoull(text.c_str(), &end, base);
+    value = width >= 8 ? parsed : static_cast<std::uint32_t>(parsed);
   }
-  const auto end = import_argument(context, 1);
-  if (end != 0) store_guest_memory(context, end, import_argument(context, 0) + consumed, 4);
-  set_import_result(context, static_cast<std::uint64_t>(value));
+  const auto end_pointer = import_argument(context, 1);
+  if (end_pointer != 0) {
+    // The end pointer is a GUEST address, and it points at the first character not
+    // consumed. When nothing was consumed that is the start of the string, which is
+    // what `strtol` reports and what a caller checking for "no digits" relies on.
+    const auto consumed = static_cast<std::uint64_t>(end - text.c_str());
+    store_guest_memory(context, end_pointer, import_argument(context, 0) + consumed, guest_pointer_width);
+  }
+  return value;
+}
+
+void msvcrt_strtol(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, true, 4));
+}
+void msvcrt_strtoul(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, false, 4));
+}
+// The 64-bit forms exist because the guest's `long` is 32 bits on Windows while the
+// host's is 64: `strtol` must truncate to what the guest asked for, and `strtoll` must
+// not.
+void msvcrt_strtoll(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, true, 8));
+}
+void msvcrt_strtoull(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, false, 8));
+}
+
+// strtod/atof, on the host's parser: the same reasoning, and the host's is correct for
+// infinities, subnormals, exponents and the C locale's decimal point.
+void msvcrt_strtod(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  char* end = nullptr;
+  const auto value = std::strtod(text.c_str(), &end);
+  const auto end_pointer = import_argument(context, 1);
+  if (end_pointer != 0) {
+    const auto consumed = static_cast<std::uint64_t>(end - text.c_str());
+    store_guest_memory(context, end_pointer, import_argument(context, 0) + consumed, guest_pointer_width);
+  }
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_atof(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto value = std::strtod(text.c_str(), nullptr);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  set_import_result(context, bits);
 }
 void msvcrt_atoi(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 0));
-  try {
-    set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::stol(text))));
-  } catch (...) {
-    set_import_result(context, 0);
-  }
+  set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::atoll(text.c_str()))));
+}
+void msvcrt_atol(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  set_import_result(context, static_cast<std::uint64_t>(
+                                 static_cast<std::int64_t>(static_cast<std::int32_t>(std::atoll(text.c_str())))));
 }
 void msvcrt_toupper(GuestContext* context) {
   set_import_result(context, static_cast<std::uint64_t>(
@@ -2519,6 +2577,14 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "strrchr", msvcrt_strrchr},
     {"msvcrt.dll", "strstr", msvcrt_strstr},
     {"msvcrt.dll", "strtol", msvcrt_strtol},
+    {"msvcrt.dll", "strtoul", msvcrt_strtoul},
+    {"msvcrt.dll", "strtoll", msvcrt_strtoll},
+    {"msvcrt.dll", "_strtoi64", msvcrt_strtoll},
+    {"msvcrt.dll", "_strtoui64", msvcrt_strtoull},
+    {"msvcrt.dll", "strtoull", msvcrt_strtoull},
+    {"msvcrt.dll", "strtod", msvcrt_strtod},
+    {"msvcrt.dll", "atof", msvcrt_atof},
+    {"msvcrt.dll", "atol", msvcrt_atol},
     {"msvcrt.dll", "atoi", msvcrt_atoi},
     {"msvcrt.dll", "toupper", msvcrt_toupper},
     {"msvcrt.dll", "tolower", msvcrt_tolower},

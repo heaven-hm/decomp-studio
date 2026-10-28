@@ -134,6 +134,23 @@ The focused edits also correct Win64 XMM0 versus x86 x87 double math ABI handlin
 
 Runtime and non-PE inspection output is saved at `$TMPDIR/recomp-runtime-matrix/runtime-matrix.log`; Rust native run output is at `$TMPDIR/recomp-runtime-matrix/rust-host.log`.
 
+## Focused parallel validation (Notepad + one IGI target)
+
+The current ARM64 host validation ran one GUI control (`windows/x64/apps/notepad.exe`) and one
+single IGI target (`/Users/haseeb-mir/Downloads/IGI/igi1.exe`). Notepad produced a native
+`recomp-guest` and reached its application `ExitProcess` path without a guest-memory fault or
+unmapped jump. Evidence: `/tmp/recomp-notepad-moduleex.zvuJ3E/recomp-guest`.
+
+`igi1.exe` translated completely (20,705 functions; 2,000,031/2,000,031 instructions lifted;
+0 unsupported instructions). Its 464 MB generated unit exceeded the host compiler's practical
+single-unit limit, so the preserved source was compiled as 218 linkable units (207 regular
+units, 10 subunits for the largest function cluster, and one metadata unit). The resulting
+139 MB ARM64 executable exited 0; its run log contains no fault, unmapped-jump, segmentation,
+or abort diagnostic. Evidence: `/tmp/recomp-igi1-cli.iCF9nc/recomp-guest-split` and
+`/tmp/recomp-igi1-cli.iCF9nc/run-split.log` (SHA-256
+`ac4a5506b8c8c94853fe2d58b1b92b1dfc95193f79a29d90e96a388616d9e032`). The run still reports
+38 statically unsupported imports, but none was reached during this headless execution.
+
 The host only permits a macOS arm64 execution result here. Windows-host execution and macOS x86-64-host execution were not available in this run.
 
 ## Complete appendix: Windows PE files tested

@@ -184,7 +184,13 @@ def check_repair_diagnosis(executable: Path, root: Path) -> None:
     payload = json.loads(report.read_text())
     check("repair/no-fake-divergence", payload["diverged"] is False and
           "first control-flow divergence" not in payload["diagnosis"], payload["diagnosis"])
-    check("repair/actual-diagnosis", "user32.dll!MessageBoxA" in payload["diagnosis"], payload["diagnosis"])
+    # The diagnosis must name the import the fixture actually lacks, and that symbol
+    # tracks unsupported_import.c -- it was MessageBoxA until the Win32 window surface was
+    # implemented. The check is on the CAUSE (a named, unimplemented import), not on which
+    # side reached it first: the reference shares the shim table, so both sides lack it and
+    # either may report it.
+    check("repair/actual-diagnosis", "shell32.dll!ShellExecuteA" in payload["diagnosis"],
+          payload["diagnosis"])
 
 
 def main() -> int:

@@ -34,9 +34,11 @@ FAILURES = []
 
 # Fixture whose imports are all shimmed.
 FULLY_SHIMMED = ("arith", 3)
-# Fixture that calls user32!MessageBoxA, which has no shim.
+# Fixture that calls shell32!ShellExecuteA, which has no shim. The symbol must be
+# one the runtime genuinely does not implement; it was MessageBoxA until the Win32
+# window surface landed, at which point this check stopped testing anything.
 UNSUPPORTED_FIXTURE = "unsupported_import"
-EXPECTED_MISSING = ("user32.dll", "MessageBoxA")
+EXPECTED_MISSING = ("shell32.dll", "ShellExecuteA")
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -113,7 +115,7 @@ def check_unsupported(executable: Path) -> None:
     payload, text = outcome
 
     check(f"{name}/has-missing", payload["missing_count"] > 0,
-          "reported no missing imports for a fixture that calls MessageBoxA")
+          "reported no missing imports for a fixture that calls ShellExecuteA")
     check(f"{name}/below-complete", payload["implemented_percent"] < 100.0,
           f"expected under 100%, got {payload['implemented_percent']}")
     check(f"{name}/counts-add-up",

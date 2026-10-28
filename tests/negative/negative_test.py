@@ -123,7 +123,10 @@ def main() -> int:
             executed = run_cli(["run", str(project)])
             combined = executed.stdout + executed.stderr
             check("unsupported import fails at run time", executed.returncode != 0, "expected non-zero exit")
-            check("unsupported import is named", "MessageBoxA" in combined, combined.strip())
+            # The named symbol tracks unsupported_import.c. It was MessageBoxA until the
+            # Win32 window surface was implemented, at which point this check stopped
+            # testing anything -- the fixture must import something the runtime LACKS.
+            check("unsupported import is named", "ShellExecuteA" in combined, combined.strip())
             verified = run_cli(["verify", str(project), "--json"])
             check("unsupported import does not verify", verified.returncode != 0, verified.stdout)
         else:

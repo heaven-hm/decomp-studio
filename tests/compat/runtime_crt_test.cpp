@@ -205,6 +205,24 @@ int main() {
               std::to_string(call("strlen", left)) + ", the host says " + std::to_string(std::strlen(test.left)));
   }
 
+  // Non-v* printf-family entry points receive variadic values inline after their
+  // fixed arguments. A value such as 7 must never be interpreted as a va_list
+  // pointer (which would read arbitrary guest memory).
+  {
+    const auto format = put_string(0x240000, "value=%d");
+    std::string captured;
+    guest_output_capture = &captured;
+    check(call("printf", format, 7) == 7, "printf returns bytes written for inline varargs");
+    guest_output_capture = nullptr;
+    check(captured == "value=7", "printf formats inline integer varargs");
+
+    const auto buffer = 0x250000ull;
+    const auto sprintf_format = put_string(0x250100, "hex=%x");
+    check(call("sprintf", buffer, sprintf_format, 0x2a) == 6,
+          "sprintf returns bytes written for inline varargs");
+    check(get_string(buffer) == "hex=2a", "sprintf formats inline integer varargs");
+  }
+
   // --- strcpy/strncpy/strcat, including the padding strncpy is required to do -------
   {
     const auto source = put_string(0x200000, "hello");

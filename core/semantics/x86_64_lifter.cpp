@@ -1507,7 +1507,14 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     static const std::map<std::string, std::string> float_helpers = {
         {"addss", "vector_add_floats"}, {"subss", "vector_subtract_floats"},
         {"mulss", "vector_multiply_floats"}, {"divss", "vector_divide_floats"},
-        {"sqrtss", "vector_square_root_floats"}};
+        {"sqrtss", "vector_square_root_floats"},
+        // The PACKED forms. `ps` operates on four singles and `pd` on two doubles; the
+        // scalar mnemonics above are the ones ending `ss`/`sd`, and using one for the
+        // other would compute the right value in the low lane and leave the rest alone.
+        {"addps", "vector_add_packed_floats"}, {"subps", "vector_subtract_packed_floats"},
+        {"mulps", "vector_multiply_packed_floats"}, {"divps", "vector_divide_packed_floats"},
+        {"addpd", "vector_add_packed_doubles"}, {"subpd", "vector_subtract_packed_doubles"},
+        {"mulpd", "vector_multiply_packed_doubles"}, {"divpd", "vector_divide_packed_doubles"}};
     const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
                          : float_helpers.count(mnemonic) != 0 ? &float_helpers
                                                              : nullptr;

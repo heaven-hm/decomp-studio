@@ -683,6 +683,26 @@ inline float vector_get_float(GuestContext* context, int vector_index) {
   return value;
 }
 
+// LANE accessors. The scalar pair above reads and writes the LOW lane only, which is
+// right for the scalar instructions and wrong for anything packed: a packed add has to
+// touch all four singles or both doubles independently.
+inline float vector_get_float_lane(const GuestContext* context, int vector_index, int lane) {
+  float value = 0;
+  std::memcpy(&value, context->vector_registers[vector_index] + lane * 4, 4);
+  return value;
+}
+inline void vector_set_float_lane(GuestContext* context, int vector_index, int lane, float value) {
+  std::memcpy(context->vector_registers[vector_index] + lane * 4, &value, 4);
+}
+inline double vector_get_double_lane(const GuestContext* context, int vector_index, int lane) {
+  double value = 0;
+  std::memcpy(&value, context->vector_registers[vector_index] + lane * 8, 8);
+  return value;
+}
+inline void vector_set_double_lane(GuestContext* context, int vector_index, int lane, double value) {
+  std::memcpy(context->vector_registers[vector_index] + lane * 8, &value, 8);
+}
+
 // COMISS / COMISD / UCOMISS / UCOMISD: flags only, no writeback.
 inline void compare_scalar_floats(GuestContext* context, double left, double right) {
   context->overflow_flag = context->sign_flag = context->auxiliary_flag = 0;
@@ -762,6 +782,47 @@ inline void vector_square_root_floats_memory(GuestContext* context, int destinat
 inline void vector_square_root_doubles_memory(GuestContext* context, int destination, std::uint64_t address) {
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
+
+// The PACKED arithmetic forms. The scalar forms (`addss` and friends) operate on one
+// lane; these operate on all four singles or both doubles at once, and the two are not
+// interchangeable -- a program that adds two vectors of pixels uses these, and refusing
+// them stopped six applications in the corpus.
+//
+// The lane width is what the mnemonic says (`ps` = packed single, `pd` = packed double),
+// so the helpers are generated per width rather than written out eight times.
+#define RECOMP_PACKED_FLOAT_OP(NAME, OP)                                                            \
+  inline void vector_##NAME##_packed_floats(GuestContext* context, int destination, int source) {    \
+    for (int lane = 0; lane < 4; ++lane)                                                            \
+      vector_set_float_lane(context, destination, lane,                                             \
+                            vector_get_float_lane(context, destination, lane)                       \
+                                OP vector_get_float_lane(context, source, lane));                   \
+  }                                                                                                 \
+  inline void vector_##NAME##_packed_floats_memory(GuestContext* context, int destination,           \
+                                                   std::uint64_t address) {                         \
+    for (int lane = 0; lane < 4; ++lane)                                                            \
+      vector_set_float_lane(context, destination, lane,                                             \
+                            vector_get_float_lane(context, destination, lane)                       \
+                                OP load_guest_float(context, address + lane * 4));                  \
+  }                                                                                                 \
+  inline void vector_##NAME##_packed_doubles(GuestContext* context, int destination, int source) {   \
+    for (int lane = 0; lane < 2; ++lane)                                                            \
+      vector_set_double_lane(context, destination, lane,                                            \
+                             vector_get_double_lane(context, destination, lane)                     \
+                                 OP vector_get_double_lane(context, source, lane));                 \
+  }                                                                                                 \
+  inline void vector_##NAME##_packed_doubles_memory(GuestContext* context, int destination,          \
+                                                    std::uint64_t address) {                        \
+    for (int lane = 0; lane < 2; ++lane)                                                            \
+      vector_set_double_lane(context, destination, lane,                                            \
+                             vector_get_double_lane(context, destination, lane)                     \
+                                 OP load_guest_double(context, address + lane * 8));                \
+  }
+
+RECOMP_PACKED_FLOAT_OP(add, +)
+RECOMP_PACKED_FLOAT_OP(subtract, -)
+RECOMP_PACKED_FLOAT_OP(multiply, *)
+RECOMP_PACKED_FLOAT_OP(divide, /)
+#undef RECOMP_PACKED_FLOAT_OP
 
 inline void vector_add_floats_memory(GuestContext* context, int destination, std::uint64_t address) {
   vector_set_float(context, destination, vector_get_float(context, destination) + load_guest_float(context, address));

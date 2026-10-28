@@ -327,6 +327,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "EnterCriticalSection", 1, true},
     {"kernel32.dll", "LeaveCriticalSection", 1, true},
     {"kernel32.dll", "InitializeCriticalSectionAndSpinCount", 2, true},
+    {"kernel32.dll", "InitializeCriticalSectionEx", 3, true},
     {"kernel32.dll", "GetSystemTimeAsFileTime", 1, true},
     {"kernel32.dll", "GetStartupInfoA", 1, true},
     {"kernel32.dll", "GetStartupInfoW", 1, true},

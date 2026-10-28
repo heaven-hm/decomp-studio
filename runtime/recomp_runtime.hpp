@@ -684,14 +684,6 @@ inline void vector_insert_word(GuestContext* context, int vector_index, std::uin
   std::memcpy(context->vector_registers[vector_index] + offset, &value, sizeof(value));
 }
 
-// PEXTRW reads one 16-bit XMM lane selected by its immediate modulo 8.
-inline std::uint16_t vector_extract_word(const GuestContext* context, int vector_index, int lane) {
-  std::uint16_t value = 0;
-  const std::size_t offset = static_cast<std::size_t>(lane & 7) * sizeof(value);
-  std::memcpy(&value, context->vector_registers[vector_index] + offset, sizeof(value));
-  return value;
-}
-
 // AVX VPBROADCASTB clears the destination then fills its 128- or 256-bit lane
 // range with the source's low byte. Clearing all 32 bytes also models VEX.128
 // zeroing the upper half of the architectural YMM register.

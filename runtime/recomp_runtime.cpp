@@ -3501,6 +3501,176 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
   return accepted < 0 ? 0 : output.size();
 }
 
+// The rest of the console C runtime the corpus asks for.
+//
+// A GUI application needs user32 and gdi32, which this build does not provide and does
+// not pretend to: those stay refused with the import named. What is here is the part a
+// CONSOLE program needs, and every one of these is a real implementation rather than a
+// stub that returns success.
+
+// getenv searches the guest's own environment block, which is built from the host's
+// environment at startup. Returning a pointer into that block is what the guest expects;
+// returning the host's pointer would hand it an address outside its own memory.
+void msvcrt_getenv(GuestContext* context) {
+  const auto name = read_guest_string(import_argument(context, 0));
+  if (name.empty() || environment_block_a == 0) {
+    set_import_result(context, 0);
+    return;
+  }
+  std::uint64_t cursor = environment_block_a;
+  for (;;) {
+    const auto entry = read_guest_string(cursor);
+    if (entry.empty()) break;
+    if (entry.size() > name.size() && entry.compare(0, name.size(), name) == 0 &&
+        entry[name.size()] == '=') {
+      set_import_result(context, cursor + name.size() + 1);
+      return;
+    }
+    cursor += entry.size() + 1;
+  }
+  set_import_result(context, 0);
+}
+
+// The double-precision math functions. The result is returned as its bit pattern
+// because the guest reads it out of XMM0, and the host's `double` is the same IEEE-754
+// value the instruction produces.
+void msvcrt_math_double(GuestContext* context, double (*operation)(double)) {
+  const auto argument = load_guest_double(context, context->registers[4] + 4);
+  const auto result = operation(argument);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &result, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_cos(GuestContext* context) { msvcrt_math_double(context, std::cos); }
+void msvcrt_sin(GuestContext* context) { msvcrt_math_double(context, std::sin); }
+void msvcrt_sqrt(GuestContext* context) { msvcrt_math_double(context, std::sqrt); }
+void msvcrt_log(GuestContext* context) { msvcrt_math_double(context, std::log); }
+void msvcrt_exp(GuestContext* context) { msvcrt_math_double(context, std::exp); }
+void msvcrt_fabs(GuestContext* context) { msvcrt_math_double(context, std::fabs); }
+void msvcrt_atan(GuestContext* context) { msvcrt_math_double(context, std::atan); }
+void msvcrt_tan(GuestContext* context) { msvcrt_math_double(context, std::tan); }
+void msvcrt_floor(GuestContext* context) { msvcrt_math_double(context, std::floor); }
+void msvcrt_ceil(GuestContext* context) { msvcrt_math_double(context, std::ceil); }
+
+// strspn/strcspn count characters, so they are the host's own definitions applied to
+// the guest's bytes.
+void msvcrt_strspn(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto accept = read_guest_string(import_argument(context, 1));
+  set_import_result(context, std::strspn(text.c_str(), accept.c_str()));
+}
+void msvcrt_strcspn(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto reject = read_guest_string(import_argument(context, 1));
+  set_import_result(context, std::strcspn(text.c_str(), reject.c_str()));
+}
+
+// wcslen counts UTF-16 code units up to the terminator, which is not the byte length
+// and not the number of characters: a surrogate pair is two units. Counting units is
+// what the instruction's callers expect.
+void msvcrt_wcslen(GuestContext* context) {
+  std::uint64_t address = import_argument(context, 0);
+  std::uint64_t units = 0;
+  while (load_guest_memory(context, address + units * 2, 2) != 0 && units < 0x100000) ++units;
+  set_import_result(context, units);
+}
+
+// _assert terminates and names the expression and the location. Reporting them is the
+// whole value of an assertion; returning success would hide the failure it detected.
+void msvcrt_assert(GuestContext* context) {
+  terminate_with_message("assertion failed: %s (%s:%llu)", read_guest_string(import_argument(context, 0)).c_str(),
+                         read_guest_string(import_argument(context, 1)).c_str(),
+                         static_cast<unsigned long long>(import_argument(context, 2)));
+}
+
+// MulDiv multiplies two 32-bit values into 64 bits before dividing, which is the whole
+// reason it exists: doing it in 32 bits overflows for the inputs it is used with.
+void msvcrt_muldiv(GuestContext* context) {
+  const auto left = static_cast<std::int64_t>(static_cast<std::int32_t>(import_argument(context, 0)));
+  const auto right = static_cast<std::int64_t>(static_cast<std::int32_t>(import_argument(context, 1)));
+  const auto divisor = static_cast<std::int64_t>(static_cast<std::int32_t>(import_argument(context, 2)));
+  if (divisor == 0) {
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int32_t>((left * right) / divisor)));
+}
+
+// The `v` forms take the guest's argument list directly instead of the arguments, which
+// is what a function forwarding its own varargs uses. `_vsnprintf` and `vsprintf` differ
+// only in whether they are told the buffer size, and `_vscprintf` reports the length
+// WITHOUT writing anything -- that is how a caller sizes a buffer before formatting into
+// it, so it must not write.
+void msvcrt_vsprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto format = read_guest_string(import_argument(context, 1));
+  const auto arguments = import_argument(context, 2);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  for (std::size_t index = 0; index < output.size(); ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+  store_guest_memory(context, buffer + output.size(), 0, 1);
+  set_import_result(context, output.size());
+}
+
+void msvcrt_vsnprintf(GuestContext* context) {
+  const auto buffer = import_argument(context, 0);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 1));
+  const auto format = read_guest_string(import_argument(context, 2));
+  const auto arguments = import_argument(context, 3);
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  if (limit != 0) {
+    const auto written = std::min(limit - 1, output.size());
+    for (std::size_t index = 0; index < written; ++index)
+      store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+    store_guest_memory(context, buffer + written, 0, 1);
+  }
+  // The length it WOULD have written, as snprintf does.
+  set_import_result(context, output.size());
+}
+
+void msvcrt_vscprintf(GuestContext* context) {
+  const auto format = read_guest_string(import_argument(context, 0));
+  const auto arguments = import_argument(context, 1);
+  set_import_result(context, msvcrt_format_arguments(context, format, arguments).size());
+}
+
+// The UCRT spellings of the same two, which take the options word first.
+void msvcrt_stdio_common_vsprintf(GuestContext* context) {
+  const auto options = import_argument(context, 0);
+  const auto buffer = import_argument(context, 1);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
+  const auto format = read_guest_string(import_argument(context, 3));
+  const auto arguments = import_argument(context, 4);
+  if ((options & ~std::uint64_t{2}) != 0)
+    terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
+                           static_cast<unsigned long long>(options));
+  const auto output = msvcrt_format_arguments(context, format, arguments);
+  const auto written = limit == 0 ? output.size() : std::min(limit - 1, output.size());
+  for (std::size_t index = 0; index < written; ++index)
+    store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
+  if (limit != 0) store_guest_memory(context, buffer + written, 0, 1);
+  set_import_result(context, output.size());
+}
+
+// The Global* family is the old shared allocator. The guest heap is the same heap
+// `malloc` uses, so a pointer from one is valid for the other -- which matters because
+// a program is free to pass a GlobalAlloc block to free().
+void msvcrt_global_alloc(GuestContext* context) {
+  const auto flags = import_argument(context, 0);
+  // GMEM_FIXED is the only mode that returns a usable pointer; the movable modes
+  // return a HANDLE that must be locked first, and pretending otherwise would hand the
+  // guest an address it would dereference directly.
+  if ((flags & 0x0002u) == 0 && (flags & 0x0040u) == 0) {
+    terminate_with_message("GlobalAlloc: only GMEM_FIXED is implemented (flags=0x%llx)",
+                           static_cast<unsigned long long>(flags));
+  }
+  set_import_result(context, heap_allocate(import_argument(context, 1)));
+}
+void msvcrt_global_lock(GuestContext* context) { set_import_result(context, import_argument(context, 0)); }
+void msvcrt_global_unlock(GuestContext* context) { set_import_result(context, 1); }
+void msvcrt_global_free(GuestContext* context) { (void)context; }
+void msvcrt_local_free(GuestContext* context) { (void)context; }
+
 // The legacy msvcrt spellings of the standard C library.
 //
 // These are the names a binary built against msvcrt.dll imports -- which is most 32-bit
@@ -4222,6 +4392,33 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "strerror", msvcrt_strerror},
     {"msvcrt.dll", "isspace", msvcrt_isspace},
     {"msvcrt.dll", "clock", msvcrt_clock},
+    {"msvcrt.dll", "getenv", msvcrt_getenv},
+    {"msvcrt.dll", "vsprintf", msvcrt_vsprintf},
+    {"msvcrt.dll", "_vsnprintf", msvcrt_vsnprintf},
+    {"msvcrt.dll", "vsnprintf", msvcrt_vsnprintf},
+    {"msvcrt.dll", "_vscprintf", msvcrt_vscprintf},
+    {"msvcrt.dll", "__stdio_common_vsprintf", msvcrt_stdio_common_vsprintf},
+    {"msvcrt.dll", "cos", msvcrt_cos},
+    {"msvcrt.dll", "sin", msvcrt_sin},
+    {"msvcrt.dll", "sqrt", msvcrt_sqrt},
+    {"msvcrt.dll", "log", msvcrt_log},
+    {"msvcrt.dll", "exp", msvcrt_exp},
+    {"msvcrt.dll", "fabs", msvcrt_fabs},
+    {"msvcrt.dll", "atan", msvcrt_atan},
+    {"msvcrt.dll", "tan", msvcrt_tan},
+    {"msvcrt.dll", "floor", msvcrt_floor},
+    {"msvcrt.dll", "ceil", msvcrt_ceil},
+    {"msvcrt.dll", "strspn", msvcrt_strspn},
+    {"msvcrt.dll", "strcspn", msvcrt_strcspn},
+    {"msvcrt.dll", "wcslen", msvcrt_wcslen},
+    {"msvcrt.dll", "_assert", msvcrt_assert},
+    {"msvcrt.dll", "MulDiv", msvcrt_muldiv},
+    {"kernel32.dll", "MulDiv", msvcrt_muldiv},
+    {"kernel32.dll", "GlobalAlloc", msvcrt_global_alloc},
+    {"kernel32.dll", "GlobalLock", msvcrt_global_lock},
+    {"kernel32.dll", "GlobalUnlock", msvcrt_global_unlock},
+    {"kernel32.dll", "GlobalFree", msvcrt_global_free},
+    {"kernel32.dll", "LocalFree", msvcrt_local_free},
     {"msvcrt.dll", "__getmainargs", msvcrt_getmainargs},
     {"msvcrt.dll", "strlen", msvcrt_strlen},
     {"msvcrt.dll", "strcmp", msvcrt_strcmp},

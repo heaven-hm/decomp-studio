@@ -877,6 +877,25 @@ inline void vector_ptest_memory(GuestContext* context, int destination, std::uin
   vector_ptest(context, destination, source);
 }
 
+inline void vector_masked_move_dwords(GuestContext* context, int destination, int mask, int source) {
+  for (int lane = 0; lane < 8; ++lane) {
+    std::uint32_t value = 0;
+    std::uint32_t predicate = 0;
+    std::memcpy(&predicate, context->vector_registers[mask] + lane * 4, 4);
+    if (predicate != 0) std::memcpy(&value, context->vector_registers[source] + lane * 4, 4);
+    std::memcpy(context->vector_registers[destination] + lane * 4, &value, 4);
+  }
+}
+
+inline void vector_masked_load_dwords(GuestContext* context, int destination, int mask, std::uint64_t address) {
+  for (int lane = 0; lane < 8; ++lane) {
+    std::uint32_t predicate = 0;
+    std::memcpy(&predicate, context->vector_registers[mask] + lane * 4, 4);
+    const auto value = predicate != 0 ? load_guest_memory(context, address + lane * 4, 4) : 0;
+    std::memcpy(context->vector_registers[destination] + lane * 4, &value, 4);
+  }
+}
+
 // ROUNDSD rounds the low scalar double and preserves the destination's high
 // lane. Immediate bits 1:0 select nearest/down/up/truncate; bit 2 delegates to
 // MXCSR's rounding control.
@@ -2451,6 +2470,20 @@ inline std::uint64_t count_trailing_zeros(GuestContext* context, std::uint64_t v
   context->carry_flag = 0;
   std::uint64_t count = 0;
   while (((value >> count) & 1ull) == 0) ++count;
+  context->zero_flag = count == 0 ? 1 : 0;
+  return count;
+}
+
+inline std::uint64_t count_leading_zeros(GuestContext* context, std::uint64_t value, int width) {
+  if (value == 0) {
+    context->carry_flag = 1;
+    context->zero_flag = 1;
+    return static_cast<std::uint64_t>(width * 8);
+  }
+  context->carry_flag = 0;
+  const auto bits = width * 8;
+  std::uint64_t count = 0;
+  for (int bit = bits - 1; bit >= 0 && ((value >> bit) & 1ull) == 0; --bit) ++count;
   context->zero_flag = count == 0 ? 1 : 0;
   return count;
 }

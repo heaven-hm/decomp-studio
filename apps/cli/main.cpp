@@ -569,6 +569,7 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"memory_diagnosis\":" << recomp::common::quote_json(result.memory_diagnosis)
               << ",\"control_registers_match\":" << (result.control_registers_match ? "true" : "false")
               << ",\"control_diagnosis\":" << recomp::common::quote_json(result.control_diagnosis)
+              << ",\"verdict\":\"" << recomp::verification::verdict_name(result.verdict()) << "\""
               << ",\"candidate_ran\":" << (result.candidate_ran ? "true" : "false")
               << ",\"diagnosis\":" << recomp::common::quote_json(result.diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
@@ -761,6 +762,31 @@ struct HostTarget {
 class StdinCapture {
  public:
   explicit StdinCapture(const std::filesystem::path& output) {
+    const auto project_input = output / "recomp-stdin.txt";
+    if (const char* supplied_input = std::getenv("RECOMP_STDIN_FILE")) {
+      if (supplied_input[0] != '\0' && std::filesystem::is_regular_file(supplied_input)) {
+        const auto supplied_path = std::filesystem::absolute(supplied_input);
+        const auto project_path = std::filesystem::absolute(project_input);
+        if (supplied_path != project_path) {
+          std::error_code error;
+          std::filesystem::copy_file(supplied_path, project_path,
+                                     std::filesystem::copy_options::overwrite_existing, error);
+          if (error) throw std::runtime_error("cannot copy RECOMP_STDIN_FILE into the project: " + error.message());
+        }
+        path_ = project_path;
+        if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
+          throw std::runtime_error("cannot configure captured stdin");
+        active_ = true;
+        return;
+      }
+    }
+    if (std::filesystem::is_regular_file(project_input)) {
+      path_ = std::filesystem::absolute(project_input);
+      if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
+        throw std::runtime_error("cannot configure captured stdin");
+      active_ = true;
+      return;
+    }
     if (::isatty(STDIN_FILENO) != 0) return;
     std::ostringstream contents;
     contents << std::cin.rdbuf();
@@ -772,11 +798,12 @@ class StdinCapture {
     if (!file) throw std::runtime_error("cannot write captured stdin at " + path_.string());
     if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
       throw std::runtime_error("cannot configure captured stdin");
+    remove_on_exit_ = true;
     active_ = true;
   }
   ~StdinCapture() {
     if (active_) ::unsetenv("RECOMP_STDIN_FILE");
-    if (!path_.empty()) {
+    if (remove_on_exit_ && !path_.empty()) {
       std::error_code ignored;
       std::filesystem::remove(path_, ignored);
     }
@@ -787,6 +814,7 @@ class StdinCapture {
  private:
   std::filesystem::path path_;
   bool active_{};
+  bool remove_on_exit_{};
 };
 
 // Detect the host the studio is running on and map it to a target name. This is

@@ -524,6 +524,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
     run.failure_reason = state.budget_reached
                              ? "instruction budget reached"
                              : "instruction budget exhausted before ExitProcess";
+    run.truncated = state.budget_reached;
     return run;
   }
   run.completed = true;
@@ -542,6 +543,18 @@ bool within_one_ulp_of_a_double(const std::uint8_t* left, const std::uint8_t* ri
   std::memcpy(&b, right, 8);
   const auto difference = a > b ? a - b : b - a;
   return difference <= 1;
+}
+
+const char* verdict_name(Verdict verdict) {
+  switch (verdict) {
+    case Verdict::VERIFIED: return "VERIFIED";
+    case Verdict::DIVERGED: return "DIVERGED";
+    case Verdict::REFERENCE_UNSUPPORTED: return "REFERENCE_UNSUPPORTED";
+    case Verdict::CANDIDATE_UNSUPPORTED: return "CANDIDATE_UNSUPPORTED";
+    case Verdict::INCOMPLETE: return "INCOMPLETE";
+    case Verdict::NOT_RUN: return "NOT_RUN";
+  }
+  return "NOT_RUN";
 }
 
 DifferentialResult compare_project(const std::filesystem::path& project_directory,
@@ -664,6 +677,8 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
 
   ::unsetenv("RECOMP_CHECKPOINT");
   ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
+  result.truncated = reference.truncated ||
+                     candidate.standard_error.find("instruction budget") != std::string::npos;
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
   result.candidate_ran = true;

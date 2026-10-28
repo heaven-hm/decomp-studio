@@ -2326,6 +2326,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "system", msvcrt_system},
     {"msvcrt.dll", "time", msvcrt_time},
     {"msvcrt.dll", "_time64", msvcrt_time64},
+    {"msvcrt.dll", "puts", msvcrt_puts},
     {"msvcrt.dll", "putchar", msvcrt_putchar},
     {"msvcrt.dll", "signal", msvcrt_signal},
     {"msvcrt.dll", "strcoll", msvcrt_strcoll},

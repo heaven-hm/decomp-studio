@@ -156,7 +156,7 @@ const std::map<std::string, std::string>& vex_equivalents() {
       {"vpunpcklbw", "punpcklbw"}, {"vpunpckhbw", "punpckhbw"},
       {"vpunpcklwd", "punpcklwd"}, {"vpunpckhwd", "punpckhwd"},
       {"vpacksswb", "packsswb"}, {"vpackuswb", "packuswb"}, {"vpackssdw", "packssdw"},
-      {"vpshufb", "pshufb"}, {"vpshuflw", "pshuflw"}, {"vpshufhw", "pshufhw"},
+      {"vpshufb", "pshufb"}, {"vpshufd", "pshufd"}, {"vpshuflw", "pshuflw"}, {"vpshufhw", "pshufhw"},
       {"vpmovmskb", "pmovmskb"},
       {"vandps", "andps"},   {"vandpd", "andpd"},   {"vorps", "orps"},
       {"vorpd", "orpd"},     {"vxorps", "xorps"},   {"vxorpd", "xorpd"},
@@ -248,6 +248,13 @@ const std::map<std::string, std::string>& packed_immediate_helpers() {
 int vector_register_index(const std::string& name) {
   if (name.size() > 3 && (name.compare(0, 3, "xmm") == 0 || name.compare(0, 3, "ymm") == 0)) {
     try { return std::stoi(name.substr(3)); } catch (...) { return -1; }
+  }
+  return -1;
+}
+
+int mm_register_index(const std::string& name) {
+  if (name.size() > 2 && name.compare(0, 2, "mm") == 0) {
+    try { return std::stoi(name.substr(2)); } catch (...) { return -1; }
   }
   return -1;
 }
@@ -938,10 +945,15 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          std::to_string(vector_index(operands[1])) + ");");
     return;
   }
-  if (mnemonic == "pshufd" && operands.size() == 3 && is_vector_register(operands[0]) &&
-      operands[2].kind == discovery::Operand::Kind::Immediate) {
+  if (mnemonic == "pshufd" && (operands.size() == 2 || operands.size() == 3) &&
+      is_vector_register(operands[0]) &&
+      operands[operands.size() - 1].kind == discovery::Operand::Kind::Immediate) {
     const auto destination = std::to_string(vector_index(operands[0]));
-    const auto control = std::to_string(operands[2].immediate_value & 0xff);
+    const auto control = std::to_string(operands.back().immediate_value & 0xff);
+    if (operands.size() == 2) {
+      emit("vector_shuffle_dwords(context, " + destination + ", " + destination + ", " + control + ");");
+      return;
+    }
     if (is_vector_register(operands[1])) {
       emit("vector_shuffle_dwords(context, " + destination + ", " +
            std::to_string(vector_index(operands[1])) + ", " + control + ");");
@@ -1039,6 +1051,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       return;
     }
   }
+  if (mnemonic == "cvttps2pi" && operands.size() == 2) {
+    const auto destination = mm_register_index(operands[0].register_name);
+    if (destination >= 0 && is_vector_register(operands[1])) {
+      emit("convert_truncated_floats_to_mmx(context, " + std::to_string(destination) + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (destination >= 0 && operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("convert_truncated_floats_to_mmx_memory(context, " + std::to_string(destination) + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
+      return;
+    }
+  }
   if (mnemonic == "roundsd" && operands.size() == 3 && is_vector_register(operands[0]) &&
       operands[2].kind == discovery::Operand::Kind::Immediate) {
     const auto destination = std::to_string(vector_index(operands[0]));
@@ -1066,6 +1091,34 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     if (operands[1].kind == discovery::Operand::Kind::Memory) {
       emit("vector_pcmpistri_memory(context, " + destination + ", " +
            effective_address_expression(instruction, operands[1]) + ", " + immediate + ");");
+      return;
+    }
+  }
+  if (mnemonic == "pcmpestrm" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto immediate = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_pcmpestrm_register(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_pcmpestrm_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + immediate + ");");
+      return;
+    }
+  }
+  if (mnemonic == "ptest" && operands.size() == 2 && is_vector_register(operands[0])) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    if (is_vector_register(operands[1])) {
+      emit("vector_ptest_register(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_ptest_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ");");
       return;
     }
   }

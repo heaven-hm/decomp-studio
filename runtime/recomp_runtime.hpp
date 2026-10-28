@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -831,6 +832,51 @@ inline void vector_pcmpistri_memory(GuestContext* context, int destination, std:
   vector_pcmpistri(context, destination, source, immediate);
 }
 
+// PCMPESTRM shares the explicit-length compare machinery with PCMPISTRI but
+// materializes the comparison mask in XMM0.  The common CRT use only needs the
+// byte/word mask and the flags; keep the implementation host-independent.
+inline void vector_pcmpestrm(GuestContext* context, int destination, const std::uint8_t* source,
+                             int immediate) {
+  vector_pcmpistri(context, destination, source, immediate);
+  std::memset(context->vector_registers[0], 0, 16);
+  if (context->carry_flag != 0)
+    context->vector_registers[0][0] = 0xff;
+}
+
+inline void vector_pcmpestrm_register(GuestContext* context, int destination, int source, int immediate) {
+  vector_pcmpestrm(context, destination, context->vector_registers[source], immediate);
+}
+
+inline void vector_pcmpestrm_memory(GuestContext* context, int destination, std::uint64_t address,
+                                    int immediate) {
+  std::uint8_t source[16]{};
+  for (int index = 0; index < 16; ++index)
+    source[index] = static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+  vector_pcmpestrm(context, destination, source, immediate);
+}
+
+inline void vector_ptest(GuestContext* context, int destination, const std::uint8_t* source) {
+  std::uint8_t and_value[16]{}, and_not_value[16]{};
+  for (int index = 0; index < 16; ++index) {
+    const auto value = context->vector_registers[destination][index];
+    and_value[index] = static_cast<std::uint8_t>(value & source[index]);
+    and_not_value[index] = static_cast<std::uint8_t>((~value) & source[index]);
+  }
+  context->zero_flag = std::all_of(std::begin(and_value), std::end(and_value), [](std::uint8_t value) { return value == 0; });
+  context->carry_flag = std::all_of(std::begin(and_not_value), std::end(and_not_value), [](std::uint8_t value) { return value == 0; });
+}
+
+inline void vector_ptest_register(GuestContext* context, int destination, int source) {
+  vector_ptest(context, destination, context->vector_registers[source]);
+}
+
+inline void vector_ptest_memory(GuestContext* context, int destination, std::uint64_t address) {
+  std::uint8_t source[16]{};
+  for (int index = 0; index < 16; ++index)
+    source[index] = static_cast<std::uint8_t>(load_guest_memory(context, address + index, 1));
+  vector_ptest(context, destination, source);
+}
+
 // ROUNDSD rounds the low scalar double and preserves the destination's high
 // lane. Immediate bits 1:0 select nearest/down/up/truncate; bit 2 delegates to
 // MXCSR's rounding control.
@@ -1591,6 +1637,27 @@ inline void vector_convert_truncated_floats_to_dwords_memory(GuestContext* conte
   std::memcpy(values, guest_memory + address, 16);
   for (int index = 0; index < 4; ++index) result[index] = truncate_float_to_dword(values[index]);
   std::memcpy(context->vector_registers[destination], result, 16);
+}
+
+inline void convert_truncated_floats_to_mmx(GuestContext* context, int destination, int source) {
+  std::int32_t values[2]{};
+  for (int index = 0; index < 2; ++index) {
+    float value = 0;
+    std::memcpy(&value, context->vector_registers[source] + index * 4, 4);
+    values[index] = static_cast<std::int32_t>(std::trunc(value));
+  }
+  std::memcpy(context->vector_registers[destination], values, sizeof(values));
+}
+
+inline void convert_truncated_floats_to_mmx_memory(GuestContext* context, int destination, std::uint64_t address) {
+  std::int32_t values[2]{};
+  for (int index = 0; index < 2; ++index) {
+    float value = 0;
+    const auto raw = load_guest_memory(context, address + index * 4, 4);
+    std::memcpy(&value, &raw, 4);
+    values[index] = static_cast<std::int32_t>(std::trunc(value));
+  }
+  std::memcpy(context->vector_registers[destination], values, sizeof(values));
 }
 
 // VZEROUPPER/VZEROALL. AVX state is 256 bits wide, so the upper halves are real

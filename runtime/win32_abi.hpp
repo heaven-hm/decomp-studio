@@ -383,6 +383,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     // process-global on Windows; the native runtime has no control class registry,
     // so a successful no-op is the compatible startup behavior for console-safe paths.
     {"comctl32.dll", "#17", 0, false},
+    {"comctl32.dll", "InitCommonControls", 0, false},
     {"kernel32.dll", "GlobalAlloc", 2, true},
     {"kernel32.dll", "GlobalLock", 1, true},
     {"kernel32.dll", "GlobalUnlock", 1, true},

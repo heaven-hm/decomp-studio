@@ -4954,6 +4954,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "LCMapStringW", win32_lc_map_string_w},
     {"kernel32.dll", "GetLocaleInfoA", win32_get_locale_info_a},
     {"comctl32.dll", "#17", win32_zero},
+    {"comctl32.dll", "InitCommonControls", win32_zero},
     // msvcrt: cdecl, so the caller pops and callee_cleans_stack is false below.
     {"msvcrt.dll", "_initterm", msvcrt_initterm},
     {"msvcrt.dll", "_initterm_e", msvcrt_initterm_e},

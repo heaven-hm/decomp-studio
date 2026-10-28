@@ -145,6 +145,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"gdiplus.dll", "GdipLoadImageFromFile", 2, true},
     {"gdiplus.dll", "GdipFree", 1, true},
     {"gdiplus.dll", "GdipAlloc", 1, true},
+    {"comctl32.dll", "InitCommonControlsEx", 1, true},
     {"advapi32.dll", "RegOpenKeyExW", 5, true},
     {"advapi32.dll", "RegCreateKeyExW", 9, true},
     {"advapi32.dll", "RegQueryValueExW", 6, true},

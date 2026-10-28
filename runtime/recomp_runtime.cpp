@@ -4684,6 +4684,7 @@ const ShimDescriptor kShims[] = {
     {"gdiplus.dll", "GdipLoadImageFromFile", win32_gdiplus_write_result},
     {"gdiplus.dll", "GdipFree", win32_zero},
     {"gdiplus.dll", "GdipAlloc", win32_zero},
+    {"comctl32.dll", "InitCommonControlsEx", win32_one},
     {"advapi32.dll", "RegOpenKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegCreateKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegQueryValueExW", win32_registry_not_found},

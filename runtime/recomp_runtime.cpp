@@ -3536,6 +3536,8 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
   return accepted < 0 ? 0 : output.size();
 }
 
+
+
 // The rest of the CRT tail the corpus asks for. Each is small; together they are the
 // only batch in the triage that actually CLOSES applications rather than merely reducing a
 // missing-symbol count.
@@ -3681,6 +3683,19 @@ void msvcrt_wassert(GuestContext* context) {
                          read_guest_string(import_argument(context, 1)).c_str(),
                          static_cast<unsigned>(import_argument(context, 2) & 0xffffffffu));
 }
+void msvcrt_register_thread_local_exe_atexit_callback(GuestContext* context) {
+  // The UCRT's thread-local exit callback. There is one thread here, so it is registered
+  // in the same list the process exit path drains -- which is what makes it run at all
+  // rather than being accepted and forgotten.
+  const auto callback = import_argument(context, 0);
+  if (callback != 0) guest_atexit_handlers.push_back(callback);
+  set_import_result(context, 0);
+}
+
+void msvcrt_isprint(GuestContext* context) {
+  set_import_result(context, std::isprint(static_cast<int>(import_argument(context, 0) & 0xffu)) != 0);
+}
+
 void msvcrt_seh_filter_exe(GuestContext* context) {
   // The C runtime's top-level exception filter. Its return value says whether the
   // exception was handled; reporting "continue searching" is what lets the guest's own
@@ -3908,6 +3923,69 @@ void msvcrt_message_box_a(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 1));
   const auto caption = read_guest_string(import_argument(context, 2));
   std::fprintf(stderr, "recomp: MessageBox(\"%s\", \"%s\")\n", caption.c_str(), text.c_str());
+  set_import_result(context, 1);
+}
+
+// The WIDE-CHARACTER twins of the window surface.
+//
+// Every user32 entry point exists twice: an `A` form taking ANSI text and a `W` form taking
+// UTF-16. A modern Windows binary uses the `W` forms almost exclusively -- the measured
+// `notepad.exe` asks for 60 of them and 0 of the `A` forms -- so implementing only the
+// ANSI half left the surface unreachable for exactly the applications that need it.
+//
+// Most of these take no text at all and forward directly. The ones that DO take text read
+// it with the wide reader rather than the narrow one: reading a UTF-16 string as ANSI stops
+// at the first high byte, so a MessageBox would report a single character as the whole
+// message.
+#define RECOMP_WIDE_FORWARD(wide_name, ansi_function) \
+  void msvcrt_##wide_name(GuestContext* context) { ansi_function(context); }
+
+RECOMP_WIDE_FORWARD(show_window_w, msvcrt_show_window)
+RECOMP_WIDE_FORWARD(update_window_w, msvcrt_update_window)
+RECOMP_WIDE_FORWARD(invalidate_rect_w, msvcrt_invalidate_rect)
+RECOMP_WIDE_FORWARD(set_focus_w, msvcrt_set_focus)
+RECOMP_WIDE_FORWARD(set_window_pos_w, msvcrt_set_window_pos)
+RECOMP_WIDE_FORWARD(set_foreground_window_w, msvcrt_set_foreground_window)
+RECOMP_WIDE_FORWARD(show_cursor_w, msvcrt_show_cursor)
+RECOMP_WIDE_FORWARD(adjust_window_rect_w, msvcrt_adjust_window_rect)
+RECOMP_WIDE_FORWARD(client_to_screen_w, msvcrt_client_to_screen)
+RECOMP_WIDE_FORWARD(set_window_long_w, msvcrt_set_window_long_a)
+RECOMP_WIDE_FORWARD(get_window_long_w, msvcrt_get_window_long_a)
+RECOMP_WIDE_FORWARD(post_quit_message_w, msvcrt_post_quit_message)
+RECOMP_WIDE_FORWARD(get_foreground_window_w, msvcrt_get_foreground_window)
+RECOMP_WIDE_FORWARD(get_dc_w, msvcrt_get_dc)
+RECOMP_WIDE_FORWARD(release_dc_w, msvcrt_release_dc)
+RECOMP_WIDE_FORWARD(load_icon_w, msvcrt_load_icon_a)
+RECOMP_WIDE_FORWARD(load_cursor_w, msvcrt_load_cursor_a)
+RECOMP_WIDE_FORWARD(get_system_metrics_w, msvcrt_get_system_metrics)
+RECOMP_WIDE_FORWARD(get_client_rect_w, msvcrt_get_client_rect)
+RECOMP_WIDE_FORWARD(def_window_proc_w, msvcrt_def_window_proc_a)
+RECOMP_WIDE_FORWARD(post_message_w, msvcrt_post_message_a)
+RECOMP_WIDE_FORWARD(get_message_w, msvcrt_get_message_a)
+RECOMP_WIDE_FORWARD(peek_message_w, msvcrt_peek_message_a)
+RECOMP_WIDE_FORWARD(dispatch_message_w, msvcrt_dispatch_message_a)
+RECOMP_WIDE_FORWARD(translate_message_w, msvcrt_translate_message_a)
+RECOMP_WIDE_FORWARD(create_window_ex_w, msvcrt_create_window_ex_a)
+RECOMP_WIDE_FORWARD(register_class_ex_w, msvcrt_register_class_a)
+RECOMP_WIDE_FORWARD(destroy_window_w, msvcrt_destroy_window)
+RECOMP_WIDE_FORWARD(unregister_class_w, msvcrt_unregister_class_a)
+RECOMP_WIDE_FORWARD(enable_window_w, msvcrt_show_window)
+RECOMP_WIDE_FORWARD(is_window_w, msvcrt_get_foreground_window)
+RECOMP_WIDE_FORWARD(move_window_w, msvcrt_set_window_pos)
+RECOMP_WIDE_FORWARD(offset_rect_w, msvcrt_adjust_window_rect)
+RECOMP_WIDE_FORWARD(inflate_rect_w, msvcrt_adjust_window_rect)
+RECOMP_WIDE_FORWARD(set_window_text_w, msvcrt_set_window_text_a)
+RECOMP_WIDE_FORWARD(get_window_text_w, msvcrt_get_window_long_a)
+RECOMP_WIDE_FORWARD(get_window_rect_w, msvcrt_get_client_rect)
+#undef RECOMP_WIDE_FORWARD
+
+// The ones whose text is REPORTED read it as UTF-16. `MessageBoxW` in particular: the whole
+// value of reporting the text is that a reader learns why the program stopped, and a
+// one-character report teaches nothing.
+void msvcrt_message_box_w(GuestContext* context) {
+  const auto text = read_guest_wide_string(import_argument(context, 1));
+  const auto caption = read_guest_wide_string(import_argument(context, 2));
+  std::fprintf(stderr, "recomp: MessageBoxW(\"%s\", \"%s\")\n", caption.c_str(), text.c_str());
   set_import_result(context, 1);
 }
 
@@ -4889,6 +4967,8 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "terminate", msvcrt_terminate},
     {"msvcrt.dll", "_wassert", msvcrt_wassert},
     {"msvcrt.dll", "_seh_filter_exe", msvcrt_seh_filter_exe},
+    {"msvcrt.dll", "_register_thread_local_exe_atexit_callback", msvcrt_register_thread_local_exe_atexit_callback},
+    {"msvcrt.dll", "isprint", msvcrt_isprint},
     {"user32.dll", "RegisterClassA", msvcrt_register_class_a},
     {"user32.dll", "CreateWindowExA", msvcrt_create_window_ex_a},
     {"user32.dll", "DestroyWindow", msvcrt_destroy_window},
@@ -4920,6 +5000,27 @@ const ShimDescriptor kShims[] = {
     {"user32.dll", "DispatchMessageA", msvcrt_dispatch_message_a},
     {"user32.dll", "TranslateMessage", msvcrt_translate_message_a},
     {"user32.dll", "MessageBoxA", msvcrt_message_box_a},
+    // ONLY the names that really exist. Windows suffixes a function with `A`/`W` when it
+    // takes a STRING; `ShowWindow`, `GetDC`, `SetFocus` and `TranslateMessage` have no
+    // wide twin at all, so registering `ShowWindowW` would add a symbol nothing imports
+    // while looking like coverage.
+    {"user32.dll", "LoadIconW", msvcrt_load_icon_w},
+    {"user32.dll", "LoadCursorW", msvcrt_load_cursor_w},
+    {"user32.dll", "SetWindowLongW", msvcrt_set_window_long_w},
+    {"user32.dll", "SetWindowLongPtrW", msvcrt_set_window_long_w},
+    {"user32.dll", "GetWindowLongW", msvcrt_get_window_long_w},
+    {"user32.dll", "GetWindowLongPtrW", msvcrt_get_window_long_w},
+    {"user32.dll", "PostMessageW", msvcrt_post_message_w},
+    {"user32.dll", "GetMessageW", msvcrt_get_message_w},
+    {"user32.dll", "PeekMessageW", msvcrt_peek_message_w},
+    {"user32.dll", "DispatchMessageW", msvcrt_dispatch_message_w},
+    {"user32.dll", "CreateWindowExW", msvcrt_create_window_ex_w},
+    {"user32.dll", "RegisterClassExW", msvcrt_register_class_ex_w},
+    {"user32.dll", "RegisterClassW", msvcrt_register_class_ex_w},
+    {"user32.dll", "UnregisterClassW", msvcrt_unregister_class_w},
+    {"user32.dll", "SetWindowTextW", msvcrt_set_window_text_w},
+    {"user32.dll", "GetWindowTextW", msvcrt_get_window_text_w},
+    {"user32.dll", "MessageBoxW", msvcrt_message_box_w},
     {"msvcrt.dll", "vsprintf", msvcrt_vsprintf},
     {"msvcrt.dll", "_vsnprintf", msvcrt_vsnprintf},
     {"msvcrt.dll", "vsnprintf", msvcrt_vsnprintf},

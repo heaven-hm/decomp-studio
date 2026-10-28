@@ -115,6 +115,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"user32.dll", "MonitorFromWindow", 2, true},
     {"user32.dll", "SendMessageA", 4, true},
     {"user32.dll", "VkKeyScanA", 1, true},
+    {"user32.dll", "MonitorFromRect", 2, true},
     {"advapi32.dll", "RegOpenKeyExW", 5, true},
     {"advapi32.dll", "RegCreateKeyExW", 9, true},
     {"advapi32.dll", "RegQueryValueExW", 6, true},

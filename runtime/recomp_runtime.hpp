@@ -1352,6 +1352,93 @@ inline void vector_widen_bytes_to_qwords(GuestContext* context, int destination,
   std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
 }
 
+// CVTPS2PD: two packed SINGLES converted to two packed DOUBLES. It widens, so it is not
+// the same operation as the dword->float conversions above, and it is the single largest
+// unsupported class in two real applications (clipjar 96 occurrences, sqlite3 224).
+inline void vector_convert_floats_to_doubles(GuestContext* context, int destination, int source) {
+  float singles[4];
+  std::memcpy(singles, context->vector_registers[source], sizeof(singles));
+  double doubles[2] = {static_cast<double>(singles[0]), static_cast<double>(singles[1])};
+  std::memcpy(context->vector_registers[destination], doubles, sizeof(doubles));
+}
+inline void vector_convert_floats_to_doubles_memory(GuestContext* context, int destination,
+                                                    std::uint64_t address) {
+  const float first = load_guest_float(context, address);
+  const float second = load_guest_float(context, address + 4);
+  const double doubles[2] = {static_cast<double>(first), static_cast<double>(second)};
+  std::memcpy(context->vector_registers[destination], doubles, sizeof(doubles));
+}
+
+// CVTTPS2DQ: four singles converted to four dwords by TRUNCATION toward zero. The
+// truncating form is a different instruction from the rounding one (cvtps2dq), and using
+// the wrong one is a one-off error on every negative value: -2.7 must become -2, not -3.
+inline void vector_truncate_floats_to_dwords(GuestContext* context, int destination, int source) {
+  float singles[4];
+  std::memcpy(singles, context->vector_registers[source], sizeof(singles));
+  std::int32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    const auto value = singles[lane];
+    // Out-of-range and NaN produce the "integer indefinite" value, which is what the
+    // hardware does rather than something invented here.
+    if (std::isnan(value) || value >= 2147483648.0f || value < -2147483648.0f)
+      dwords[lane] = static_cast<std::int32_t>(0x80000000u);
+    else
+      dwords[lane] = static_cast<std::int32_t>(value);
+  }
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+inline void vector_truncate_floats_to_dwords_memory(GuestContext* context, int destination,
+                                                    std::uint64_t address) {
+  float singles[4];
+  for (int lane = 0; lane < 4; ++lane) singles[lane] = load_guest_float(context, address + lane * 4);
+  std::int32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    const auto value = singles[lane];
+    if (std::isnan(value) || value >= 2147483648.0f || value < -2147483648.0f)
+      dwords[lane] = static_cast<std::int32_t>(0x80000000u);
+    else
+      dwords[lane] = static_cast<std::int32_t>(value);
+  }
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+
+// The MEMORY forms of the widen family. A compiler emits these constantly -- `pmovzxdq
+// xmm0, qword ptr [rip+...]` is how a table of packed values is loaded and widened in one
+// step -- and the register-only guards in the lifter meant the form the binary actually
+// uses fell through to "unsupported instruction". Reading through a guest pointer keeps the
+// load inside the guest's address space, where a wild address is reported rather than
+// faulting the host.
+inline std::uint64_t load_guest_qword_checked(GuestContext* context, std::uint64_t address) {
+  return load_guest_memory(context, address, 8);
+}
+inline void vector_widen_dwords_to_qwords_memory(GuestContext* context, int destination,
+                                                 std::uint64_t address) {
+  std::uint32_t dwords[2] = {static_cast<std::uint32_t>(load_guest_memory(context, address, 4)),
+                             static_cast<std::uint32_t>(load_guest_memory(context, address + 4, 4))};
+  std::uint64_t qwords[2] = {dwords[0], dwords[1]};
+  std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
+}
+inline void vector_widen_words_to_dwords_memory(GuestContext* context, int destination,
+                                                std::uint64_t address) {
+  std::uint32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane)
+    dwords[lane] = static_cast<std::uint32_t>(load_guest_memory(context, address + lane * 2, 2));
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+inline void vector_widen_bytes_to_words_memory(GuestContext* context, int destination,
+                                               std::uint64_t address) {
+  std::uint16_t words[8];
+  for (int lane = 0; lane < 8; ++lane)
+    words[lane] = static_cast<std::uint16_t>(load_guest_memory(context, address + lane, 1));
+  std::memcpy(context->vector_registers[destination], words, sizeof(words));
+}
+inline void vector_widen_bytes_to_qwords_memory(GuestContext* context, int destination,
+                                                std::uint64_t address) {
+  std::uint64_t qwords[2] = {load_guest_memory(context, address, 1),
+                             load_guest_memory(context, address + 1, 1)};
+  std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
+}
+
 // PMINUB: the unsigned minimum of each byte. Unsigned matters -- a signed minimum would
 // treat 0x80 as negative and pick the wrong byte for any value above 0x7f.
 inline void vector_min_unsigned_bytes(GuestContext* context, int destination, int source) {

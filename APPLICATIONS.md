@@ -23,6 +23,11 @@ Host: `macos (macos-arm64)`
 | `base64_x86.exe` | x86 | windows | C | macos (macos-arm64) | 204 bytes | [view](screenshots/base64_x86-x86.png) |
 | `hangman_x64.exe` | x86_64 | windows | C | macos (macos-arm64) | 347 bytes | [view](screenshots/hangman_x64-x86_64.png) |
 | `hangman_x86.exe` | x86 | windows | C | macos (macos-arm64) | 178 bytes | [view](screenshots/hangman_x86-x86.png) |
+| `g64_game2048.exe` | x86_64 | windows | C | macos (macos-arm64) | 353 bytes | not yet captured |
+
+`g64_game2048.exe` is an external `cricket07-browser` build. Its recorded run
+completed with exit code 0, matching output, and 2/2 guest-state checkpoints;
+no screenshot has yet been captured, so the table states that gap explicitly.
 
 ## Refused, with the reason each one gave
 

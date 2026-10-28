@@ -9,6 +9,21 @@ translates but does not run, or runs but does not verify, is not a port and is
 not listed -- see the refused list at the end of this file for those, with the
 reason each one gave.
 
+**What VERIFIED does and does not mean.** The reference and the candidate call the SAME shim
+table, so a shim that is wrong in the same way on both sides agrees with itself. Verification
+therefore bounds the TRANSLATION -- that the machine code was lifted faithfully -- and not
+the Windows API semantics. A program can be VERIFIED and still behave differently from a real
+Windows machine.
+
+**Output is LF-normalized.** The recorder collapses CRLF, so a recorded byte count is not the
+raw byte count: `arith-calc` emits 172 raw bytes and is recorded as 161.
+
+**Not every port is deterministic.** `hangman_x64` picks a random word, so its output length
+varies between runs (observed 345, 347, 349, 353, 357) -- 347 is one sample, not a constant.
+And 2 of 36 verification runs of the same byte-identical `hangman` binaries DIVERGED
+(`state_match` false) with identical output, so rows 5 and 6 are reproducible MOST of the
+time, not always. The other four apps diverged 0 times in 24 runs.
+
 The screenshot is the ported program's own output, rendered as an image. For a
 console application that is the whole observable result, so the image is the
 evidence rather than a decoration.
@@ -28,7 +43,7 @@ binaries of that name were ported, and the architecture column is what distingui
 | 2 | `tetris.exe` | x86 | windows | C | macos (macos-arm64) | 220 bytes | [view](screenshots/tetris-x86.png) |
 | 3 | `base64_x64.exe` | x86_64 | windows | C | macos (macos-arm64) | 218 bytes | [view](screenshots/base64_x64-x86_64.png) |
 | 4 | `base64_x86.exe` | x86 | windows | C | macos (macos-arm64) | 204 bytes | [view](screenshots/base64_x86-x86.png) |
-| 5 | `hangman_x64.exe` | x86_64 | windows | C | macos (macos-arm64) | 347 bytes | [view](screenshots/hangman_x64-x86_64.png) |
+| 5 | `hangman_x64.exe` | x86_64 | windows | C | macos (macos-arm64) | 347 bytes (VARIABLE, see below) | [view](screenshots/hangman_x64-x86_64.png) |
 | 6 | `hangman_x86.exe` | x86 | windows | C | macos (macos-arm64) | 178 bytes | [view](screenshots/hangman_x86-x86.png) |
 
 | 7 | `g64_game2048.exe` | x86_64 | windows | C | macos (macos-arm64) | 353 bytes | not yet captured |
@@ -44,9 +59,29 @@ screenshot is rendered from a run rather than asserted. A row with a known gap i
 than a row that quietly claims one it does not have.
 
 Two more were measured as reaching `AUTORECOMP COMPLETE` in the corpus sweep and are
-deliberately NOT listed here: `arith-calc` and `base64` from `windows/x64/apps/`, which are
-the same two programs as rows 1, 3 and 4 above built from the same sources. Listing them
-again under their corpus path would inflate the count without adding a port.
+deliberately NOT listed here. The earlier version of this note attributed a `base64` to
+`windows/x64/apps/`; **no base64 binary exists there**. The x86_64 base64 build is
+`windows/cli-apps/4-base64-tool-c/build/base64_x64.exe`, which is already row 3. The
+`arith-calc` half was correct and reproduces. Listing either again under a second corpus path
+would inflate the count without adding a port.
+
+## Refused -- correct refusals, not defects
+
+**Coverage: this table lists 45 of the 157 executables in scope (6 ported + 45 refused = 51).
+The remaining 106 are unmeasured, and unmeasured is not the same as refused.**
+
+**These reasons are a SNAPSHOT and are now partly STALE.** A re-audit found that 15 of the 21
+instruction-based refusals no longer reproduce: 11 of them (`palisade`, `slant`, `keen`,
+`samegame`, `guess`, `unruly`, `magnets`, `cube`, `loopy`, `legacy-notepad-x64`, `singles`)
+now lift with ZERO unsupported instructions and fail later on a missing import, and 4
+(`clipjar`, `procexp64`, `putty`, `zoomit64`) fail on a different, smaller set. The refusal
+may still be correct; the REASON is out of date, and a reader would take it as current.
+Re-run before trusting any row.
+
+These are NOT failures to fix. Each one is the studio declining an input it cannot
+honestly port, with the reason it gave. **The reasons are DATED**: a re-audit found
+that 15 of the 21 instruction-based refusals no longer reproduce, because the
+instructions they name have since been implemented. See the note below the table.
 
 | application | source arch | language | reason |
 |---|---|---|---|
@@ -76,7 +111,6 @@ again under their corpus path would inflate the count without adding a port.
 | `guess.exe` | x86_64 | C | error: unsupported instruction 'addpd' at 0x140002c34ull |
 | `unruly.exe` | x86_64 | C | error: unsupported instruction 'mulps' at 0x140007fe1ull |
 | `singles.exe` | x86 | C | exited with code 3 |
-| `tents.exe` | x86 | C | exited with code 3 |
 | `guess.exe` | x86 | C | exited with code 3 |
 | `mosaic.exe` | x86 | C | exited with code 3 |
 | `unrulysolver.exe` | x86 | C | exited with code 3 |

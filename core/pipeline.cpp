@@ -238,8 +238,14 @@ RunReport run(const std::filesystem::path& output_directory) {
   // Named explicitly rather than left to the working directory, so `run` and the
   // differential harness choose the same root for the same project.
   ::setenv("RECOMP_APP_DIR", std::filesystem::absolute(output_directory).string().c_str(), 1);
+  // The executable path must be ABSOLUTE. The command below changes directory to the
+  // project, so a relative `output_directory/recomp-guest` is resolved against the project
+  // rather than against the caller -- `recomp-studio verify .audit/proj` from the repository
+  // root then fails with exit 127 and "No such file or directory", which reads as a broken
+  // port rather than as a path bug. Found by an independent audit that hit it.
   const auto command = "cd " + escape_shell(std::filesystem::absolute(output_directory)) +
-                       " && RECOMP_APP_NAME=" + escape_shell(app_name) + " " + escape_shell(executable);
+                       " && RECOMP_APP_NAME=" + escape_shell(app_name) + " " +
+                       escape_shell(std::filesystem::absolute(executable));
   return capture_process(command, error_path);
 }
 

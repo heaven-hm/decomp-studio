@@ -5131,8 +5131,9 @@ void note_watched_write(const GuestContext* context, std::uint64_t address, int 
 }
 
 void report_guest_memory_fault(GuestContext* context, std::uint64_t address, int width, int is_write) {
-  terminate_with_message("guest %s fault at 0x%" PRIx64 " (width %d) ip=0x%" PRIx64,
-                         is_write ? "write" : "read", address, width, context->instruction_pointer);
+  terminate_with_message("guest %s fault at 0x%" PRIx64 " (width %d) ip=0x%" PRIx64 "; %s",
+                         is_write ? "write" : "read", address, width, context->instruction_pointer,
+                         describe_registers(context).c_str());
 }
 // The candidate's instruction budget. The reference has had one since it was written
 // (`instruction budget exhausted before ExitProcess`); the candidate had none, so a

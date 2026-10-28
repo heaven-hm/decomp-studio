@@ -560,6 +560,7 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"candidate_completed\":" << (result.candidate_completed ? "true" : "false")
               << ",\"outputs_match\":" << (result.outputs_match ? "true" : "false")
               << ",\"checkpoints_compared\":" << result.checkpoints_compared
+              << ",\"dirty_pages_compared\":" << result.dirty_pages_compared
               << ",\"checkpoints_matched\":" << result.checkpoints_matched
               << ",\"checkpoints_total\":" << result.checkpoints_total
               << ",\"checkpoint_match_percent\":" << result.checkpoint_match_percent()

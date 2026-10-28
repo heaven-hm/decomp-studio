@@ -91,6 +91,9 @@ struct DifferentialResult {
   // to be loosened until it catches nothing, and both are worse than naming the
   // class.
   std::size_t x87_precision_differences{};
+  // Pages outside the fixed windows that were compared because the candidate wrote them.
+  // Reported so a PASS says how much of the writable set it actually covered.
+  std::size_t dirty_pages_compared{};
   // Control registers -- MXCSR and the x87 control and status words -- compared at
   // every checkpoint and reported, not gated. Two of the last three divergences
   // found were control registers that a guest read and that disagreed between the

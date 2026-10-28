@@ -5065,11 +5065,20 @@ void open_guest_memory_windows(const char* path) {
   guest_memory_windows = std::fopen(path, "wb");
 }
 
+std::FILE* guest_dirty_page_log = nullptr;
+
+void open_guest_dirty_page_log(const char* path) {
+  if (path == nullptr || path[0] == '\0') return;
+  guest_dirty_page_log = std::fopen(path, "w");
+}
+
 void open_guest_store_log(const char* path) {
   if (path == nullptr) return;
   guest_store_log = std::fopen(path, "w");
   guest_store_logging = guest_store_log != nullptr;
 }
+
+std::uint8_t* guest_page_dirty = nullptr;
 
 std::uint64_t guest_memory_digest(const GuestContext* context) {
   // The window starts AT the stack pointer, not below it. Memory below the stack
@@ -5100,6 +5109,20 @@ void capture_guest_checkpoint(GuestContext* context, std::uint64_t address) {
   checkpoint.x87_control_word = context->x87_control_word;
   checkpoint.x87_status_word = x87_status_value(context);
   checkpoint.memory_digest = guest_memory_digest(context);
+  // The pages this run has written, exported so the harness can hash the SAME addresses in
+  // both memories. The set decides what to compare; it never decides whether the two sides
+  // agree -- which is what the first attempt got wrong.
+  if (guest_dirty_page_log != nullptr && guest_page_dirty != nullptr) {
+    for (std::uint64_t page = 0; page < (guest_memory_size >> kGuestPageShift); ++page) {
+      if (guest_page_dirty[page] == 0) continue;
+      // The PAGE's digest, not its address alone. The candidate has exited by the time the
+      // harness compares, so its memory is gone; a per-page digest is what lets the
+      // reference's memory be hashed over the SAME pages and the two compared.
+      const auto page_digest = digest_bytes(14695981039346656037ull, page << kGuestPageShift, kGuestPageBytes);
+      std::fprintf(guest_dirty_page_log, "%llu %llu %llx\n", static_cast<unsigned long long>(index),
+                   static_cast<unsigned long long>(page), static_cast<unsigned long long>(page_digest));
+    }
+  }
   const auto checkpoint_number = index / guest_checkpoint_interval;
   if (guest_memory_windows != nullptr &&
       checkpoint_number < kMemoryWindowSampleLimit) {
@@ -5211,6 +5234,9 @@ bool invoke_shared_shim(GuestContext* context, const char* library_name, const c
 bool map_guest_memory(std::uint64_t bytes) {
   if (guest_memory != nullptr) return true;
   guest_memory_size = bytes;
+  // One byte per 4 KiB page: 2 MiB for the 8 GiB space, against the mapping it describes.
+  guest_page_dirty = static_cast<std::uint8_t*>(std::calloc(
+      static_cast<std::size_t>(guest_memory_size >> kGuestPageShift), sizeof(std::uint8_t)));
   guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
                                                  PROT_READ | PROT_WRITE,
                                                  MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0));
@@ -5292,6 +5318,7 @@ int run_recompiled_image(const RecompiledImage* image) {
   // The differential comparison asks for guest-state checkpoints at a fixed
   // interval; the reference uses the same one, so the two streams line up.
   open_guest_store_log(std::getenv("RECOMP_STORE_LOG"));
+  open_guest_dirty_page_log(std::getenv("RECOMP_DIRTY_PAGES"));
   open_guest_memory_windows(std::getenv("RECOMP_MEMORY_WINDOWS"));
   open_guest_mxcsr_log(std::getenv("RECOMP_MXCSR_LOG"));
   if (const char* interval = std::getenv("RECOMP_CHECKPOINT_INTERVAL"))

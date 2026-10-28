@@ -279,6 +279,29 @@ void record_guest_store(std::uint64_t instruction_address, std::uint64_t address
 // `movaps` is one line on both sides instead of two on one and one on the other.
 void record_guest_vector_store(std::uint64_t instruction_address, std::uint64_t address, int width);
 
+// Dirty pages, so the memory comparison can cover what the two fixed windows do not.
+//
+// The digest hashed a 4 KiB stack window and a 64 KiB image window: 68 KiB, which is 0.05%
+// of the writable set and 0% of the 128 MiB heap. Measured with the runtime's own store
+// log, the one allocating fixture sends 74% of its stores to heap blocks -- so a buffer
+// written and never printed was compared by nothing.
+//
+// A first attempt folded the dirty set into the DIGEST and made every fixture diverge: a
+// fixed window hashes the same addresses on both sides by construction, while a dirty set
+// depends on how many instructions have executed, and the two sides reach a checkpoint
+// having executed a different number. This version instead EXPORTS the pages the candidate
+// wrote, so the harness can hash those same addresses in both memories. The set decides
+// WHAT to compare; it never decides whether the two sides agree.
+constexpr std::uint64_t kGuestPageShift = 12;
+constexpr std::uint64_t kGuestPageBytes = 1ull << kGuestPageShift;
+extern std::uint8_t* guest_page_dirty;
+
+inline void mark_guest_page_dirty(std::uint64_t address) {
+  if (guest_page_dirty == nullptr) return;
+  const auto page = address >> kGuestPageShift;
+  if (page < (kGuestAddressSpaceBytes >> kGuestPageShift)) guest_page_dirty[page] = 1;
+}
+
 inline void store_guest_memory(GuestContext* context, std::uint64_t address, std::uint64_t value, int width) {
   note_watched_write(context, address, width);
   if (guest_store_logging) record_guest_store(context != nullptr ? context->instruction_pointer : 0, address, value, width);
@@ -287,6 +310,7 @@ inline void store_guest_memory(GuestContext* context, std::uint64_t address, std
     return;
   }
   std::memcpy(guest_memory + address, &value, static_cast<std::size_t>(width));
+  mark_guest_page_dirty(address);
 }
 
 inline std::uint64_t value_mask(int width) {

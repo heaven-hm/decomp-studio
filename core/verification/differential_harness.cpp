@@ -687,6 +687,9 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   const auto checkpoint_path = project_directory / "reports" / "candidate-checkpoints.txt";
   std::filesystem::create_directories(project_directory / "reports");
   std::filesystem::remove(checkpoint_path);
+  const auto dirty_pages_path = project_directory / "reports" / "candidate-dirty-pages.txt";
+  std::filesystem::remove(dirty_pages_path);
+  ::setenv("RECOMP_DIRTY_PAGES", dirty_pages_path.string().c_str(), 1);
   ::setenv("RECOMP_CHECKPOINT", checkpoint_path.string().c_str(), 1);
   ::setenv("RECOMP_CHECKPOINT_INTERVAL", std::to_string(kCheckpointInterval).c_str(), 1);
 
@@ -698,6 +701,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
 
   const auto candidate = pipeline::run(project_directory);
 
+  ::unsetenv("RECOMP_DIRTY_PAGES");
   ::unsetenv("RECOMP_CHECKPOINT");
   ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.truncated = reference.truncated ||
@@ -714,6 +718,52 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   }
   // The measured value. A candidate that failed to run is reported through its own
   // fields; overwriting this one with false destroyed the comparison that was made.
+  // The pages the CANDIDATE wrote, hashed in the reference's memory and compared.
+  //
+  // This is the coverage the fixed windows never had: 68 KiB of stack and image, against a
+  // 128 MiB heap that takes 74% of the stores in the one allocating fixture. A buffer
+  // written and never printed was compared by nothing, so a silent heap corruption could
+  // not be detected at all.
+  //
+  // The set of pages decides WHAT to compare and never whether the two sides agree -- which
+  // is what an earlier attempt got wrong by folding the set into the digest itself.
+  {
+    std::ifstream dirty_input(dirty_pages_path);
+    std::string line;
+    std::size_t pages_compared = 0;
+    std::string first_difference;
+    while (std::getline(dirty_input, line)) {
+      std::istringstream fields(line);
+      std::uint64_t checkpoint_index = 0;
+      std::uint64_t page = 0;
+      std::string expected_digest;
+      if (!(fields >> checkpoint_index >> page >> expected_digest)) continue;
+      const auto address = page << 12;
+      if (address + 0x1000 > guest_memory_size) continue;
+      // The reference's memory is the one this process holds, so the same digest function
+      // is applied to the same addresses.
+      std::uint64_t hash = 14695981039346656037ull;
+      const auto* bytes = guest_memory + address;
+      for (std::uint64_t offset = 0; offset < 0x1000; ++offset) {
+        hash ^= bytes[offset];
+        hash *= 1099511628211ull;
+      }
+      std::ostringstream rendered;
+      rendered << std::hex << hash;
+      ++pages_compared;
+      if (rendered.str() != expected_digest && first_difference.empty()) {
+        first_difference = "checkpoint " + std::to_string(checkpoint_index / 1000) + ": guest page at 0x" +
+                           hex_text(address) + " differs (candidate " + expected_digest + ", reference " +
+                           rendered.str() + ")";
+      }
+    }
+    result.dirty_pages_compared = pages_compared;
+    if (!first_difference.empty()) {
+      result.memory_match = false;
+      result.memory_diagnosis = first_difference;
+    }
+  }
+
   result.outputs_match = result.reference_output == result.candidate_output;
 
   // Byte-level memory comparison, when both sides produced windows. A difference is

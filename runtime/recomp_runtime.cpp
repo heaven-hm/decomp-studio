@@ -931,7 +931,15 @@ std::uint64_t heap_allocate(std::uint64_t requested) {
 }
 
 void win32_heap_alloc(GuestContext* context) {
-  set_import_result(context, heap_allocate(import_argument(context, 2)));
+  const auto flags = import_argument(context, 1);
+  const auto size = import_argument(context, 2);
+  const auto block = heap_allocate(size);
+  // HEAP_ZERO_MEMORY is part of the Win32 HeapAlloc contract.  CRT startup
+  // allocates callback tables with this flag and relies on unused slots being
+  // null; returning stale guest bytes turns them into wild function pointers.
+  if (block != 0 && (flags & 0x00000008ull) != 0 && size != 0)
+    std::memset(guest_memory + block, 0, static_cast<std::size_t>(size));
+  set_import_result(context, block);
 }
 
 // Releases a block and coalesces its free neighbours.
@@ -4510,6 +4518,12 @@ void win32_free_library(GuestContext* context) {
 
 void win32_get_module_handle_a(GuestContext* context) { win32_get_module_handle(context, false); }
 void win32_get_module_handle_w(GuestContext* context) { win32_get_module_handle(context, true); }
+void win32_get_module_handle_ex_w(GuestContext* context) {
+  const auto output = import_argument(context, 2);
+  if (output != 0) store_guest_memory(context, output, recompiled_image_base, guest_pointer_width);
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
 void win32_load_library_a(GuestContext* context) { win32_load_library(context, false); }
 void win32_load_library_w(GuestContext* context) { win32_load_library(context, true); }
 
@@ -4600,6 +4614,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "IsDebuggerPresent", win32_zero},
     {"kernel32.dll", "GetModuleHandleA", win32_get_module_handle_a},
     {"kernel32.dll", "GetModuleHandleW", win32_get_module_handle_w},
+    {"kernel32.dll", "GetModuleHandleExW", win32_get_module_handle_ex_w},
     {"kernel32.dll", "SetUnhandledExceptionFilter", win32_zero},
     {"kernel32.dll", "UnhandledExceptionFilter", win32_one},
     {"kernel32.dll", "IsProcessorFeaturePresent", win32_is_processor_feature_present},

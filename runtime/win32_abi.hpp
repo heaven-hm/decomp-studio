@@ -57,6 +57,7 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "IsDebuggerPresent", 0, true},
     {"kernel32.dll", "GetModuleHandleA", 1, true},
     {"kernel32.dll", "GetModuleHandleW", 1, true},
+    {"kernel32.dll", "GetModuleHandleExW", 3, true},
     {"kernel32.dll", "SetUnhandledExceptionFilter", 1, true},
     {"kernel32.dll", "UnhandledExceptionFilter", 1, true},
     {"kernel32.dll", "IsProcessorFeaturePresent", 1, true},

@@ -222,7 +222,16 @@ extern bool guest_mxcsr_logging;
 extern std::uint64_t guest_mxcsr_previous_address;
 void record_mxcsr_change(std::uint64_t address, std::uint32_t mxcsr);
 
+// A ceiling on the guest instructions a run may execute, when one is set. The
+// differential reference has always had one; the COMPILED candidate did not, so a
+// program that loops -- at end of input, or on a bug -- ran until something outside
+// killed it. Verification then hung with no diagnosis, which is worse than a wrong
+// answer because it looks like the tool is broken.
+void note_executed_instruction();
+inline std::uint64_t guest_executed_instructions = 0;
+
 inline void trace_instruction(GuestContext* context, std::uint64_t address) {
+  note_executed_instruction();
   context->instruction_pointer = address;
   if (guest_mxcsr_logging) record_mxcsr_change(address, context->mxcsr);
   guest_mxcsr_previous_address = address;

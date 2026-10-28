@@ -3,6 +3,8 @@
 #
 # Columns: fixture  input-sha256  generated-sha256  generated-bytes
 # packed.exe was rebuilt to add a memory-source PSHUFB regression fixture.
+# memory.exe changed when user-mode CLI/STI lifting became explicit no-ops; the
+# generated guest is intentionally refreshed for that lifter behavior change.
 #
 # The INPUT digest is pinned as well as the output. Without it a rebuilt fixture
 # reports as a changed compiler -- a misdiagnosis in the one test whose whole job
@@ -17,7 +19,7 @@ calls.exe 1ac2aa3aef58ea49d353a494474825b580bc881d9d658f8c53f90ed701195a78 d8870
 eflags.exe 5a35f8e1b7e19549f2564b9de2009fa6e0219cb40f18a1f497d042c1b272b966 304af5ff2cade8229dbf551d3bf859931de31204d387d79a8e2b6fd4d189c8f1 421460
 flagprobe.exe deb939046658226610e19289c9c24667d90fd46fc88f155c850f2c3459a79bc6 c5817221356752463ca27c9832aba2eefb502f43644218eab5076e934bac73ce 207140
 heap.exe 5a54849970b6304e3d400ab911274a4e241253b5e922782b689466e588d7b2d1 feb382b7f0dd3f4ad535766c9de68aedb992b51a6849d306017abbda7b689d04 351819
-memory.exe e5c16a5bc295edc1f38ebcc9bf1a200806771577b4d45fa186f3836919e323b4 eb5a5380defa8f43e6a5ad7b8284654e82e609a4dff98fabbb925862b107c4a2 543130
+memory.exe e5c16a5bc295edc1f38ebcc9bf1a200806771577b4d45fa186f3836919e323b4 26f51174aa9278b7f0b44f45b9947c1a1bed50c06b496e201ab854b41bc114e7 592653
 packed.exe cfc60a9dc5ad41b32039b790dcba4d54ddb1cb43a49808f2f01ccd3922cf683a 68e9093bf318c1eb25e46e326b6c4940637c4c34a6fd0ef962dbfbf3e771f99e 39931078
 pe32_abi.exe f54af9b0bcb7e9a97085f7b5708df80fcd1d260b2597d1eab9daa89515f2e498 3e3525806820b24b7b63eebfa511c916535aee59dea094b4c4da32a98439be15 235539
 pe32_arith.exe 9b59ee613acc7b5a1512f8a5fcc5f65317f0fa79452d01728e1715b63f23d7a6 44790fc4606f9065b80e7886dd1b0ab5c66c8e5356eb11e54e11be1fb6c5c7e5 888681

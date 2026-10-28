@@ -4532,8 +4532,13 @@ void msvcrt_clock(GuestContext* context) {
 void msvcrt_initterm(GuestContext* context) {
   const auto begin = import_argument(context, 0);
   const auto end = import_argument(context, 1);
-  for (std::uint64_t slot = begin; slot + 4 <= end; slot += 4) {
-    const auto entry = load_guest_memory(context, slot, 4);
+  // A CRT constructor table contains guest pointers.  PE32 uses four-byte
+  // entries while PE32+ uses eight; truncating the latter turns an image address
+  // such as 0x0000000140014e3c into 0x40014e3c, which can never match the
+  // recovered function table.
+  const auto pointer_bytes = guest_pointer_width;
+  for (std::uint64_t slot = begin; slot + pointer_bytes <= end; slot += pointer_bytes) {
+    const auto entry = load_guest_memory(context, slot, static_cast<int>(pointer_bytes));
     if (entry == 0) continue;
     if (auto function = lookup_guest_function(entry)) {
       function(context);

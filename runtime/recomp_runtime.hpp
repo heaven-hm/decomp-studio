@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <random>
 #include <limits>
 #include <string>
 #include <vector>
@@ -102,6 +103,15 @@ std::uint64_t initial_guest_stack_pointer(std::uint64_t stack_top, int pointer_w
 // capture what the program wrote, so that a shim written once can serve both
 // sides and the two outputs can still be compared.
 extern std::string* guest_output_capture;
+
+// Guest input. Output has had a capture since the beginning; input did not, and that
+// is a correctness problem for verification rather than a convenience: the reference
+// runs in this process and the candidate in a subprocess, so if both read the real
+// stdin the first one consumes it and the second sees EOF. They would then differ for
+// a reason that has nothing to do with the translation. With a capture set, both sides
+// read the same bytes from the same position.
+extern const std::string* guest_input_capture;
+extern std::size_t guest_input_position;
 
 // Called instead of terminating the host when the guest asks to exit. A generated
 // executable leaves this null, because exiting the process is exactly right there.
@@ -758,6 +768,28 @@ inline std::uint64_t bit_scan_forward(GuestContext* context, std::uint64_t value
   while ((value & 1u) == 0) { value >>= 1; ++index; }
   return index;
 }
+// movlps/movhps/movlpd/movhpd move 64 bits between memory and ONE HALF of a vector
+// register, leaving the other half alone -- that is the whole point of the
+// instruction. The whole-register helpers cannot express it: `vector_set_low` memsets
+// all 16 bytes, which destroys the half the instruction is required to preserve, and
+// `vector_get_low` reads the wrong half for the `h` forms.
+inline void load_guest_vector_half(GuestContext* context, std::uint64_t address, int vector_index, int offset) {
+  if (address + 8 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 8, 0);
+    return;
+  }
+  std::memcpy(context->vector_registers[vector_index] + offset, guest_memory + address, 8);
+}
+
+inline void store_guest_vector_half(GuestContext* context, std::uint64_t address, int vector_index, int offset) {
+  note_watched_write(context, address, 8);
+  if (address + 8 > guest_memory_size) {
+    report_guest_memory_fault(context, address, 8, 1);
+    return;
+  }
+  std::memcpy(guest_memory + address, context->vector_registers[vector_index] + offset, 8);
+}
+
 inline void store_guest_vector(GuestContext* context, std::uint64_t address, int vector_index, int byte_count) {
   note_watched_write(context, address, byte_count);
   // A vector store writes memory directly rather than through
@@ -1316,13 +1348,19 @@ inline void vector_shuffle_single_memory(GuestContext* context, int destination,
   vector_shuffle_single_lanes(context, destination, lanes, control);
 }
 
+// SHUFPD: two 64-bit lanes, and the selector bits mean something different from
+// SHUFPS. The LOW result is chosen from the DESTINATION by imm8[0] and the HIGH result
+// from the SOURCE by imm8[1], so the destination has to be read before it is written.
 inline void vector_shuffle_doubles_lanes(GuestContext* context, int destination,
                                          const std::uint64_t* source, int control) {
-  std::uint64_t old_destination[2], result[2];
-  std::memcpy(old_destination, context->vector_registers[destination], sizeof(old_destination));
-  result[0] = old_destination[control & 1];
-  result[1] = source[(control >> 1) & 1];
-  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+  std::uint64_t low = 0;
+  std::uint64_t high = 0;
+  std::memcpy(&low, context->vector_registers[destination], 8);
+  std::memcpy(&high, context->vector_registers[destination] + 8, 8);
+  const std::uint64_t result_low = (control & 1) ? high : low;
+  const std::uint64_t result_high = (control & 2) ? source[1] : source[0];
+  std::memcpy(context->vector_registers[destination], &result_low, 8);
+  std::memcpy(context->vector_registers[destination] + 8, &result_high, 8);
 }
 
 inline void vector_shuffle_doubles(GuestContext* context, int destination, int source, int control) {
@@ -1331,11 +1369,55 @@ inline void vector_shuffle_doubles(GuestContext* context, int destination, int s
   vector_shuffle_doubles_lanes(context, destination, lanes, control);
 }
 
-inline void vector_shuffle_doubles_memory(GuestContext* context, int destination,
-                                          std::uint64_t address, int control) {
-  std::uint64_t lanes[2] = {load_guest_memory(context, address, 8),
-                            load_guest_memory(context, address + 8, 8)};
+inline void vector_shuffle_doubles_memory(GuestContext* context, int destination, std::uint64_t address,
+                                          int control) {
+  std::uint64_t lanes[2];
+  lanes[0] = load_guest_memory(context, address, 8);
+  lanes[1] = load_guest_memory(context, address + 8, 8);
   vector_shuffle_doubles_lanes(context, destination, lanes, control);
+}
+
+// RDRAND/RDSEED. These are the hardware random-number instructions, and their result
+// is nondeterministic BY DEFINITION -- there is no correct fixed answer to return, so
+// returning a real random value is the faithful implementation rather than a
+// substitute for one. The carry flag reports success and is set, because the host
+// always has a source. Windows CRT startup uses them to seed the stack cookie, which
+// is why they appear in ordinary 32-bit programs.
+inline std::uint64_t guest_random_value() {
+  static std::mt19937_64 engine{std::random_device{}()};
+  return engine();
+}
+
+inline void random_into_register(GuestContext* context, int register_index, int width) {
+  const auto value = guest_random_value();
+  if (width >= 8) {
+    context->registers[register_index] = value;
+  } else if (width == 4) {
+    context->registers[register_index] =
+        (context->registers[register_index] & ~0xffffffffull) | static_cast<std::uint32_t>(value);
+  } else {
+    context->registers[register_index] =
+        (context->registers[register_index] & ~0xffffull) | static_cast<std::uint16_t>(value);
+  }
+  context->carry_flag = 1;
+}
+
+// PUSHAD/PUSHAL pushes EAX, ECX, EDX, EBX, the ORIGINAL ESP, EBP, ESI and EDI, in that
+// order, so EDI ends up at the lowest address. The original ESP is the value from
+// before any of the pushes, which is why it is read first.
+inline void push_all_general(GuestContext* context) {
+  // Raw indices: the runtime holds the register file positionally and the named
+  // constants for them live in the lifter, not here. 0=RAX 1=RCX 2=RDX 3=RBX 4=RSP
+  // 5=RBP 6=RSI 7=RDI.
+  const auto original_stack_pointer = context->registers[4];
+  push_guest_stack(context, context->registers[0]);
+  push_guest_stack(context, context->registers[1]);
+  push_guest_stack(context, context->registers[2]);
+  push_guest_stack(context, context->registers[3]);
+  push_guest_stack(context, original_stack_pointer);
+  push_guest_stack(context, context->registers[5]);
+  push_guest_stack(context, context->registers[6]);
+  push_guest_stack(context, context->registers[7]);
 }
 
 inline void vector_unpack_dwords(GuestContext* context, int destination, int source, int high) {

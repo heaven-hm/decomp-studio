@@ -196,10 +196,10 @@ def check_universal_crt_alias(root: Path) -> None:
     library = root / "libucrt-test.a"
     source = root / "ucrt.c"
     executable = root / "ucrt.exe"
-    definition.write_text("LIBRARY api-ms-win-crt-stdio-l1-1-0.dll\nEXPORTS\n strlen\n fgets\n")
+    definition.write_text("LIBRARY api-ms-win-crt-stdio-l1-1-0.dll\nEXPORTS\n strlen\n tmpfile\n")
     source.write_text('__declspec(dllimport) unsigned long long strlen(const char *);\n'
-                      '__declspec(dllimport) char *fgets(char *, int, void *);\n'
-                      'void recomp_entry(void) { strlen("hello"); fgets((char *)0, 0, (void *)0); }\n')
+                      '__declspec(dllimport) void *tmpfile(void);\n'
+                      'void recomp_entry(void) { strlen("hello"); tmpfile(); }\n')
     subprocess.run(["x86_64-w64-mingw32-dlltool", "-d", str(definition), "-l", str(library)], check=True)
     subprocess.run(["x86_64-w64-mingw32-gcc", "-nostdlib", "-fno-builtin", "-Wl,-e,recomp_entry",
                     "-o", str(executable), str(source), str(library)], check=True)
@@ -212,7 +212,7 @@ def check_universal_crt_alias(root: Path) -> None:
           f"expected both fixture imports, got {payload['import_count']}")
     check("ucrt-alias/known", ("api-ms-win-crt-stdio-l1-1-0.dll", "strlen") not in missing,
           f"strlen is implemented by the runtime but reported missing: {missing}")
-    check("ucrt-alias/unknown", ("api-ms-win-crt-stdio-l1-1-0.dll", "fgets") in missing,
+    check("ucrt-alias/unknown", ("api-ms-win-crt-stdio-l1-1-0.dll", "tmpfile") in missing,
           f"unimplemented fgets was not reported missing: {missing}")
 
 
@@ -221,6 +221,7 @@ def main() -> int:
     check_argument_handling()
 
     with tempfile.TemporaryDirectory() as temporary:
+        check_universal_crt_alias(Path(temporary))
         fixture_binaries = Path(temporary) / "bin"
         build_fixtures(fixture_binaries)
         if shutil.which("x86_64-w64-mingw32-dlltool") is not None:

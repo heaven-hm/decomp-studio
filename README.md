@@ -33,6 +33,8 @@ GUI-heavy programs, broad Win32 imports, managed .NET/JVM binaries, Windows
 ARM64 guests, and many instructions remain outside the current frontend or
 runtime scope. See the [full application audit](reports/apps-running-results.md)
 for the complete 166-row ledger, logs, limitations, and evidence links.
+Use the [verified-port inventory](reports/ported-apps.md) as the skip list for
+new compatibility work; it contains only end-to-end verified native ports.
 See [DESIGN.md](DESIGN.md) for the external-project integration policy and
 deferred Wine/Remill/runtime backlog.
 

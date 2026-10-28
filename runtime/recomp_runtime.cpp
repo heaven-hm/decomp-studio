@@ -2058,17 +2058,33 @@ void msvcrt_strcat(GuestContext* context) {
                        index < tail.size() ? static_cast<std::uint8_t>(tail[index]) : 0, 1);
   set_import_result(context, destination);
 }
+// `strchr(s, 0)` is defined to return a pointer to the TERMINATING NUL, not null. The
+// string read here stops before the terminator, so searching for a zero character found
+// nothing and returned null -- wrong for a case callers really use, because
+// `strchr(s, 0)` is the standard way to get a pointer to the end of a string.
 void msvcrt_strchr(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = import_argument(context, 0);
+  const auto text = read_guest_string(base);
   const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  if (character == '\0') {
+    set_import_result(context, base + text.size());
+    return;
+  }
   const auto found = text.find(character);
-  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+  set_import_result(context, found == std::string::npos ? 0 : base + found);
 }
 void msvcrt_strrchr(GuestContext* context) {
-  const auto text = read_guest_string(import_argument(context, 0));
+  const auto base = import_argument(context, 0);
+  const auto text = read_guest_string(base);
   const auto character = static_cast<char>(import_argument(context, 1) & 0xffu);
+  // The same rule for the reverse search: the terminator is the LAST occurrence of a
+  // zero character, and the search stops there.
+  if (character == '\0') {
+    set_import_result(context, base + text.size());
+    return;
+  }
   const auto found = text.rfind(character);
-  set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
+  set_import_result(context, found == std::string::npos ? 0 : base + found);
 }
 void msvcrt_strstr(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 0));
@@ -2076,28 +2092,86 @@ void msvcrt_strstr(GuestContext* context) {
   const auto found = text.find(needle);
   set_import_result(context, found == std::string::npos ? 0 : import_argument(context, 0) + found);
 }
-void msvcrt_strtol(GuestContext* context) {
+// The string-to-number family, on the HOST's implementation.
+//
+// What was here used `std::stol(text, &consumed, base == 0 ? 10 : base)`, and that
+// ternary is wrong in a way that is easy to miss: `strtol` with base 0 is defined to
+// DETECT the base from the text, so `strtol("0x1f", NULL, 0)` is 31 and `strtol("010",
+// NULL, 0)` is 8. Forcing base 10 made the first return 0 and the second return 10.
+// It also threw on overflow and on a string with no digits, which `strtol` does not do
+// -- it returns a clamped value and sets the end pointer to the start.
+//
+// The host has the real implementation, so it is called directly. Only the guest's
+// calling convention is this function's business.
+std::uint64_t msvcrt_parse_integer(GuestContext* context, bool is_signed, int width) {
   const auto text = read_guest_string(import_argument(context, 0));
   const auto base = static_cast<int>(import_argument(context, 2));
-  std::size_t consumed = 0;
-  long value = 0;
-  try {
-    value = std::stol(text, &consumed, base == 0 ? 10 : base);
-  } catch (...) {
-    value = 0;
-    consumed = 0;
+  char* end = nullptr;
+  std::uint64_t value = 0;
+  if (is_signed) {
+    const auto parsed = std::strtoll(text.c_str(), &end, base);
+    value = static_cast<std::uint64_t>(width >= 8 ? parsed : static_cast<std::int32_t>(parsed));
+  } else {
+    const auto parsed = std::strtoull(text.c_str(), &end, base);
+    value = width >= 8 ? parsed : static_cast<std::uint32_t>(parsed);
   }
-  const auto end = import_argument(context, 1);
-  if (end != 0) store_guest_memory(context, end, import_argument(context, 0) + consumed, 4);
-  set_import_result(context, static_cast<std::uint64_t>(value));
+  const auto end_pointer = import_argument(context, 1);
+  if (end_pointer != 0) {
+    // The end pointer is a GUEST address, and it points at the first character not
+    // consumed. When nothing was consumed that is the start of the string, which is
+    // what `strtol` reports and what a caller checking for "no digits" relies on.
+    const auto consumed = static_cast<std::uint64_t>(end - text.c_str());
+    store_guest_memory(context, end_pointer, import_argument(context, 0) + consumed, guest_pointer_width);
+  }
+  return value;
+}
+
+void msvcrt_strtol(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, true, 4));
+}
+void msvcrt_strtoul(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, false, 4));
+}
+// The 64-bit forms exist because the guest's `long` is 32 bits on Windows while the
+// host's is 64: `strtol` must truncate to what the guest asked for, and `strtoll` must
+// not.
+void msvcrt_strtoll(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, true, 8));
+}
+void msvcrt_strtoull(GuestContext* context) {
+  set_import_result(context, msvcrt_parse_integer(context, false, 8));
+}
+
+// strtod/atof, on the host's parser: the same reasoning, and the host's is correct for
+// infinities, subnormals, exponents and the C locale's decimal point.
+void msvcrt_strtod(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  char* end = nullptr;
+  const auto value = std::strtod(text.c_str(), &end);
+  const auto end_pointer = import_argument(context, 1);
+  if (end_pointer != 0) {
+    const auto consumed = static_cast<std::uint64_t>(end - text.c_str());
+    store_guest_memory(context, end_pointer, import_argument(context, 0) + consumed, guest_pointer_width);
+  }
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  set_import_result(context, bits);
+}
+void msvcrt_atof(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  const auto value = std::strtod(text.c_str(), nullptr);
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  set_import_result(context, bits);
 }
 void msvcrt_atoi(GuestContext* context) {
   const auto text = read_guest_string(import_argument(context, 0));
-  try {
-    set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::stol(text))));
-  } catch (...) {
-    set_import_result(context, 0);
-  }
+  set_import_result(context, static_cast<std::uint64_t>(static_cast<std::int64_t>(std::atoll(text.c_str()))));
+}
+void msvcrt_atol(GuestContext* context) {
+  const auto text = read_guest_string(import_argument(context, 0));
+  set_import_result(context, static_cast<std::uint64_t>(
+                                 static_cast<std::int64_t>(static_cast<std::int32_t>(std::atoll(text.c_str())))));
 }
 void msvcrt_toupper(GuestContext* context) {
   set_import_result(context, static_cast<std::uint64_t>(
@@ -2849,6 +2923,7 @@ void msvcrt_wcstombs(GuestContext* context) {
 // something wrong.
 // The formatting itself, shared by msvcrt's vfprintf and the UCRT's
 // __stdio_common_vfprintf, which differ only in where their arguments sit.
+// Defined below, next to the formatter it calls.
 std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
                                         const std::string& format, std::uint64_t arguments);
 
@@ -2858,53 +2933,130 @@ void msvcrt_vfprintf(GuestContext* context) {
   const auto arguments = import_argument(context, 2);
   set_import_result(context, msvcrt_format_into_stream(context, stream, format, arguments));
 }
+
+// Formats one conversion by handing the HARD PART to the host C library.
+//
+// The version this replaces parsed width, precision and flags and then discarded them,
+// read every argument as four bytes regardless of the guest's pointer width, and had no
+// floating-point conversions at all -- so `%-10d` lost its padding, `%s` on a 64-bit
+// guest read half a pointer, and any `%f` terminated the program. The host already has
+// a complete, correct implementation of printf's formatting, so the work here is only
+// the part the host cannot know: reading the guest's argument list.
+//
+// One conversion is rebuilt into a host format string and passed to `snprintf` with the
+// argument read at the width the guest's own length modifier asks for. What is left to
+// this function is the ABI, and what is left to the host is everything that is easy to
+// get wrong.
 std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t stream,
                                         const std::string& format, std::uint64_t arguments) {
   std::string output;
   const auto descriptor = static_cast<int>(cxx_stream_descriptor(context, stream, true));
+  const int pointer_width = static_cast<int>(guest_pointer_width);
+
+  // Reads one argument from the guest's list. `slot` is the width the conversion asks
+  // for, which the guest's ABI advances by: a 32-bit guest's list is 4-byte slots and a
+  // 64-bit guest's is 8-byte, whatever the value's own width.
+  const auto next = [&arguments, context, pointer_width](int slot) -> std::uint64_t {
+    const auto value = load_guest_memory(context, arguments, slot);
+    arguments += static_cast<std::uint64_t>(pointer_width);
+    return value;
+  };
+
   for (std::size_t index = 0; index < format.size(); ++index) {
     if (format[index] != '%') { output.push_back(format[index]); continue; }
     if (index + 1 >= format.size()) break;
-    auto specifier = format[++index];
-    while (specifier == '-' || specifier == '+' || specifier == ' ' || specifier == '#' || specifier == '0')
-      specifier = format[++index];
-    while (specifier >= '0' && specifier <= '9') specifier = format[++index];
-    if (specifier == 'l' || specifier == 'h') specifier = format[++index];
-    const auto next = [&arguments, context] {
-      const auto value = load_guest_memory(context, arguments, 4);
-      arguments += 4;
-      return value;
-    };
+    const auto conversion_start = index;
+    ++index;
+    if (format[index] == '%') { output.push_back('%'); continue; }
+
+    // Collect the whole conversion so it can be handed to the host unchanged: flags,
+    // width, precision and length modifier are all part of what `snprintf` understands.
+    std::size_t cursor = index;
+    while (cursor < format.size() && std::strchr("-+ #0", format[cursor]) != nullptr) ++cursor;
+    while (cursor < format.size() && format[cursor] >= '0' && format[cursor] <= '9') ++cursor;
+    if (cursor < format.size() && format[cursor] == '.') {
+      ++cursor;
+      while (cursor < format.size() && format[cursor] >= '0' && format[cursor] <= '9') ++cursor;
+    }
+    std::size_t length_begin = cursor;
+    while (cursor < format.size() && std::strchr("hljztL", format[cursor]) != nullptr) ++cursor;
+    const auto length = format.substr(length_begin, cursor - length_begin);
+    if (cursor >= format.size()) break;
+    const char specifier = format[cursor];
+    index = cursor;
+
+    // The conversion as the guest wrote it, minus the leading `%`, for the host.
+    std::string host_format = "%" + format.substr(conversion_start + 1, cursor - conversion_start - 1);
+    char buffer[512];
+    int written = 0;
     switch (specifier) {
-      case '%': output.push_back('%'); break;
-      case 'c': output.push_back(static_cast<char>(next() & 0xffu)); break;
-      case 'd':
-      case 'i': output += std::to_string(static_cast<std::int32_t>(next() & 0xffffffffu)); break;
-      case 'u': output += std::to_string(static_cast<std::uint32_t>(next() & 0xffffffffu)); break;
-      case 'x': {
-        std::ostringstream text;
-        text << std::hex << static_cast<std::uint32_t>(next() & 0xffffffffu);
-        output += text.str();
+      case 'c':
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                static_cast<int>(next(4) & 0xffu));
         break;
-      }
+      case 'd':
+      case 'i':
+        if (length.find("ll") != std::string::npos || length.find('j') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<long long>(next(8)));
+        else if (length.find('l') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<long>(next(8)));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<int>(next(4) & 0xffffffffu));
+        break;
+      case 'u':
+      case 'x':
+      case 'X':
+      case 'o':
+        if (length.find("ll") != std::string::npos || length.find('j') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned long long>(next(8)));
+        else if (length.find('l') != std::string::npos)
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned long>(next(8)));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                  static_cast<unsigned int>(next(4) & 0xffffffffu));
+        break;
+      case 'f':
+      case 'F':
+      case 'e':
+      case 'E':
+      case 'g':
+      case 'G':
+        // A float argument arrives in the guest's list as an 8-byte double: the Windows
+        // ABI promotes it exactly as the C rules require.
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
+                                static_cast<double>(next(8)));
+        break;
       case 's': {
-        const auto address = next();
-        output += address == 0 ? std::string("(null)") : read_guest_string(address);
+        const auto address = next(pointer_width);
+        const auto text = address == 0 ? std::string("(null)") : read_guest_string(address);
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(), text.c_str());
         break;
       }
       case 'p': {
-        std::ostringstream text;
-        text << "0x" << std::hex << next();
-        output += text.str();
+        // The guest prints its own pointer value, so it is formatted as an integer of
+        // the guest's width rather than as a host pointer, which would be a different
+        // number entirely.
+        const auto value = next(pointer_width);
+        if (pointer_width >= 8)
+          written = std::snprintf(buffer, sizeof(buffer), "0x%llx", static_cast<unsigned long long>(value));
+        else
+          written = std::snprintf(buffer, sizeof(buffer), "0x%x", static_cast<unsigned int>(value));
         break;
       }
       default:
         terminate_with_message("vfprintf: unsupported conversion '%%%c' (ip=0x%" PRIx64 ")", specifier,
                                context->instruction_pointer);
     }
+    if (written < 0) continue;
+    output.append(buffer, std::min<std::size_t>(static_cast<std::size_t>(written), sizeof(buffer) - 1));
   }
-  write_guest_output(descriptor, output.data(), output.size());
-  return output.size();
+  const auto accepted = write_guest_output(descriptor, output.data(), output.size());
+  return accepted < 0 ? 0 : output.size();
 }
 
 // _initterm runs the table of static initialisers the CRT is given: the C++
@@ -3522,6 +3674,14 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "strrchr", msvcrt_strrchr},
     {"msvcrt.dll", "strstr", msvcrt_strstr},
     {"msvcrt.dll", "strtol", msvcrt_strtol},
+    {"msvcrt.dll", "strtoul", msvcrt_strtoul},
+    {"msvcrt.dll", "strtoll", msvcrt_strtoll},
+    {"msvcrt.dll", "_strtoi64", msvcrt_strtoll},
+    {"msvcrt.dll", "_strtoui64", msvcrt_strtoull},
+    {"msvcrt.dll", "strtoull", msvcrt_strtoull},
+    {"msvcrt.dll", "strtod", msvcrt_strtod},
+    {"msvcrt.dll", "atof", msvcrt_atof},
+    {"msvcrt.dll", "atol", msvcrt_atol},
     {"msvcrt.dll", "atoi", msvcrt_atoi},
     {"msvcrt.dll", "toupper", msvcrt_toupper},
     {"msvcrt.dll", "tolower", msvcrt_tolower},

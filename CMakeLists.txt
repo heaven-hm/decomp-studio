@@ -81,6 +81,11 @@ target_compile_features(runtime_time_test PRIVATE cxx_std_20)
 target_include_directories(runtime_time_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME runtime_time COMMAND runtime_time_test)
 
+add_executable(runtime_crt_test tests/compat/runtime_crt_test.cpp runtime/recomp_runtime.cpp)
+target_compile_features(runtime_crt_test PRIVATE cxx_std_20)
+target_include_directories(runtime_crt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+add_test(NAME runtime_crt COMMAND runtime_crt_test)
+
 add_executable(diagnostic_test tests/compat/diagnostic_test.cpp core/common/diagnostic.cpp)
 target_compile_features(diagnostic_test PRIVATE cxx_std_20)
 target_include_directories(diagnostic_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

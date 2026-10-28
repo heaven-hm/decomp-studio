@@ -1258,6 +1258,73 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     return;
   }
+  // The integer SIMD forms that were the largest remaining classes after FMA.
+  // The VEX form of a two-operand SSE instruction has THREE operands, and the first two
+  // are its sources: `vpmaddubsw xmm1, xmm2, xmm3` computes xmm1 = xmm2 op xmm3, where
+  // `pmaddubsw xmm1, xmm2` computes xmm1 = xmm1 op xmm2. Normalising the MNEMONIC does not
+  // normalise the OPERAND LIST, so a two-operand check never matched a VEX instruction --
+  // the implementation was present and still refused. This resolves the two forms to the
+  // same (destination, source) pair.
+  const auto binary_simd_sources = [&](int expected_operands) -> std::optional<std::pair<int, int>> {
+    if (static_cast<int>(operands.size()) != expected_operands) return std::nullopt;
+    if (expected_operands == 2) {
+      if (!is_vector_register(operands[0]) || !is_vector_register(operands[1])) return std::nullopt;
+      return std::make_pair(vector_index(operands[0]), vector_index(operands[1]));
+    }
+    if (!is_vector_register(operands[0]) || !is_vector_register(operands[1]) ||
+        !is_vector_register(operands[2]))
+      return std::nullopt;
+    // `vex` forms write the first source into the destination, then apply the second.
+    return std::make_pair(vector_index(operands[1]), vector_index(operands[2]));
+  };
+  if ((mnemonic == "pmaddubsw" || mnemonic == "vpmaddubsw") &&
+      (operands.size() == 2 || operands.size() == 3)) {
+    const auto pair = binary_simd_sources(static_cast<int>(operands.size()));
+    if (pair && (operands.size() == 2 || pair->first == vector_index(operands[1]))) {
+      if (operands.size() == 3) {
+        // Copy the first source into the destination first: the VEX form is a three-input
+        // operation and the helper reads its accumulator from the destination.
+        emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) +
+             "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], 16);");
+      }
+      emit("vector_multiply_add_unsigned_signed_bytes(context, " +
+           std::to_string(vector_index(operands[0])) + ", " + std::to_string(pair->second) + ");");
+      return;
+    }
+  }
+  if ((mnemonic == "psignb" || mnemonic == "vpsignb") && operands.size() >= 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands.back())) {
+    if (operands.size() == 3 && is_vector_register(operands[1]))
+      emit("std::memcpy(context->vector_registers[" + std::to_string(vector_index(operands[0])) +
+           "], context->vector_registers[" + std::to_string(vector_index(operands[1])) + "], 16);");
+    emit("vector_sign_bytes(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands.back())) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxbd" || mnemonic == "vpmovzxbd") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_bytes_to_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "vinsertps" || mnemonic == "insertps") && operands.size() == 3 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    emit("vector_insert_single(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
+  if ((mnemonic == "vpinsrd" || mnemonic == "pinsrd" || mnemonic == "vpinsrq" || mnemonic == "pinsrq") &&
+      operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const bool qword = mnemonic.find("rq") != std::string::npos;
+    const auto value = operand_read_expression(instruction, operands[1], qword ? 8 : 4);
+    emit(std::string(qword ? "vector_insert_qword" : "vector_insert_dword") + "(context, " +
+         std::to_string(vector_index(operands[0])) + ", " + value + ", " +
+         std::to_string(operands[2].immediate_value & 0xff) + ");");
+    return;
+  }
   // FMA, in the three operand orderings the mnemonic's digits encode. The digits are not
   // decoration: `213` and `231` compute different products from the same three registers.
   {

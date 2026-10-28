@@ -797,6 +797,75 @@ inline void vector_square_root_doubles_memory(GuestContext* context, int destina
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
 
+// PMADDUBSW: unsigned bytes times signed bytes, adjacent PAIRS summed into signed words.
+// The mixed signedness is the point -- one operand is unsigned, the other signed -- and
+// the pair sum SATURATES to a signed 16-bit range rather than wrapping, which is what
+// makes it usable for pixel and audio arithmetic.
+inline void vector_multiply_add_unsigned_signed_bytes(GuestContext* context, int destination,
+                                                      int source) {
+  const std::uint8_t* left = context->vector_registers[destination];
+  const std::int8_t* right = reinterpret_cast<const std::int8_t*>(context->vector_registers[source]);
+  std::int16_t result[8];
+  for (int pair = 0; pair < 8; ++pair) {
+    const auto sum = static_cast<std::int32_t>(left[pair * 2]) * right[pair * 2] +
+                     static_cast<std::int32_t>(left[pair * 2 + 1]) * right[pair * 2 + 1];
+    result[pair] = static_cast<std::int16_t>(sum > 32767 ? 32767 : sum < -32768 ? -32768 : sum);
+  }
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
+// PSIGNB: negate, zero or leave each byte according to the SIGN of the corresponding
+// byte in the source. Zero in the source zeroes the destination lane.
+inline void vector_sign_bytes(GuestContext* context, int destination, int source) {
+  std::int8_t* value = reinterpret_cast<std::int8_t*>(context->vector_registers[destination]);
+  const std::int8_t* sign = reinterpret_cast<const std::int8_t*>(context->vector_registers[source]);
+  for (int lane = 0; lane < 16; ++lane)
+    value[lane] = sign[lane] < 0 ? static_cast<std::int8_t>(-value[lane])
+                                  : sign[lane] == 0 ? 0 : value[lane];
+}
+
+// PMOVZXBD: widen four bytes to four dwords, zero-extending. A zero-EXTEND, not a sign
+// extend -- the sign-extending sibling is a different mnemonic.
+inline void vector_widen_bytes_to_dwords(GuestContext* context, int destination, int source) {
+  std::uint8_t bytes[4];
+  std::memcpy(bytes, context->vector_registers[source], sizeof(bytes));
+  std::uint32_t result[4];
+  for (int lane = 0; lane < 4; ++lane) result[lane] = bytes[lane];
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
+// VINSERTPS inserts one single from the source into one lane of the destination, and the
+// immediate's upper bits say which source lane and which destination lane, with an option
+// to zero the rest. Only the zeroing form is handled here, and the immediate is decoded
+// rather than ignored: ignoring it inserts the wrong lane.
+inline void vector_insert_single(GuestContext* context, int destination, int source, int immediate) {
+  const int source_lane = (immediate >> 6) & 3;
+  const int destination_lane = (immediate >> 4) & 3;
+  vector_set_float_lane(context, destination, destination_lane,
+                        vector_get_float_lane(context, source, source_lane));
+  if ((immediate & 0x0f) != 0) {
+    // The low four bits name lanes to ZERO after the insert.
+    for (int lane = 0; lane < 4; ++lane)
+      if (((immediate >> lane) & 1) != 0 && lane != destination_lane)
+        vector_set_float_lane(context, destination, lane, 0.0f);
+  }
+}
+
+// VPINSRD/VPINSRQ insert a GENERAL register's value into one lane selected by the
+// immediate. The lane index is the low bits, and an index past the register is clamped
+// rather than writing outside it.
+inline void vector_insert_dword(GuestContext* context, int destination, std::uint64_t value,
+                                int immediate) {
+  const int lane = immediate & 3;
+  std::memcpy(context->vector_registers[destination] + lane * 4,
+              &value, 4);
+}
+inline void vector_insert_qword(GuestContext* context, int destination, std::uint64_t value,
+                                int immediate) {
+  const int lane = immediate & 1;
+  std::memcpy(context->vector_registers[destination] + lane * 8, &value, 8);
+}
+
 // FMA. The whole point of these instructions is that the multiply and the add happen
 // with ONE rounding: the intermediate product is exact, and only the final result is
 // rounded. Computing `a * b + c` in C++ rounds TWICE -- once for the product and once for

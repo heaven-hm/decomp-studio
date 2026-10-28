@@ -7,9 +7,17 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cctype>
+#include <clocale>
+#include <cwchar>
+#include <cwctype>
+#include <climits>
 #include <cstdlib>
 #include <array>
 #include <sstream>
+#include <fstream>
+#include <condition_variable>
+#include <mutex>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <system_error>
@@ -227,6 +235,8 @@ enum GuestHandleType {
   kGuestHandleFind = 3,
   kGuestHandleHeap = 4,
   kGuestHandleMutex = 5,
+  kGuestHandleEvent = 6,
+  kGuestHandleSemaphore = 7,
 };
 
 struct GuestHandle {
@@ -238,11 +248,17 @@ struct GuestHandle {
   bool may_write{false};
   // The guest path it was opened through, for diagnostics that name the file.
   std::string path;
+  bool signaled{false};
+  bool manual_reset{false};
+  std::uint32_t semaphore_count{0};
+  std::uint32_t semaphore_maximum{0};
 };
 
 constexpr std::uint32_t kGuestHandleBase = 0x1000;
 constexpr std::uint32_t kGuestHandleCount = 1024;
 GuestHandle guest_handles[kGuestHandleCount];
+std::mutex guest_sync_mutex;
+std::condition_variable guest_sync_changed;
 GuestHandle standard_handles[3] = {{kGuestHandleStandard, STDIN_FILENO, true, false, "<stdin>"},
                                    {kGuestHandleStandard, STDOUT_FILENO, false, true, "<stdout>"},
                                    {kGuestHandleStandard, STDERR_FILENO, false, true, "<stderr>"}};
@@ -286,11 +302,7 @@ void guest_handle_close(std::uint64_t handle) {
   auto* entry = guest_handle_lookup(handle);
   if (entry == nullptr || entry->type == kGuestHandleStandard) return;
   if (entry->host_descriptor >= 0) ::close(entry->host_descriptor);
-  entry->type = kGuestHandleFree;
-  entry->host_descriptor = -1;
-  entry->may_read = false;
-  entry->may_write = false;
-  entry->path.clear();
+  *entry = GuestHandle{};
 }
 
 // The descriptor behind a handle, checked for the access the caller wants. An
@@ -557,8 +569,17 @@ void win32_set_handle_count(GuestContext* context) {
   set_import_result(context, import_argument(context, 0));
 }
 void win32_release_mutex(GuestContext* context) {
-  (void)import_argument(context, 0);
+  const auto handle = import_argument(context, 0);
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleMutex || entry->signaled) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  entry->signaled = true;
   set_import_result(context, 1);
+  guest_sync_changed.notify_all();
 }
 void win32_free_environment_strings_w(GuestContext* context) {
   (void)import_argument(context, 0);
@@ -590,6 +611,75 @@ void win32_close_handle(GuestContext* context) {
   guest_handle_close(import_argument(context, 0));
   set_import_result(context, 1);
 }
+// The same-process pseudo-thread case follows the narrow DuplicateHandle
+// handling in cricket07-browser/host/kernel32.c (MIT, commit
+// 4febc615b6e07d3e70b22c05a65bf37959c6989a). Its guest handles are different,
+// so this runtime preserves its own pseudo handle instead of using Cricket's
+// private 0x1FFFFFFC alias. Real file descriptors are duplicated with dup(2).
+void win32_duplicate_handle(GuestContext* context) {
+  constexpr std::uint64_t kCurrentProcess = static_cast<std::uint64_t>(-1);
+  constexpr std::uint64_t kCurrentThread = static_cast<std::uint64_t>(-2);
+  constexpr std::uint32_t kDuplicateCloseSource = 1;
+  constexpr std::uint32_t kDuplicateSameAccess = 2;
+  const auto source_process = import_argument(context, 0);
+  const auto source_handle = import_argument(context, 1);
+  const auto target_process = import_argument(context, 2);
+  const auto output_pointer = import_argument(context, 3);
+  const auto options = static_cast<std::uint32_t>(import_argument(context, 6));
+  if (source_process != kCurrentProcess || target_process != kCurrentProcess || output_pointer == 0 ||
+      (options & ~(kDuplicateCloseSource | kDuplicateSameAccess)) != 0) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+
+  // GetCurrentThread returns a pseudo handle that is process-local and must not
+  // be closed. Duplicating it in this single-threaded guest runtime retains the
+  // same pseudo-handle value; CloseHandle already treats pseudo handles as
+  // non-owned values.
+  if (source_handle == kCurrentThread && (options & kDuplicateCloseSource) == 0) {
+    store_guest_memory(context, output_pointer, kCurrentThread, guest_pointer_width);
+    set_import_result(context, 1);
+    return;
+  }
+
+  auto* source = guest_handle_lookup(source_handle);
+  if (source == nullptr || (source->type != kGuestHandleFile && source->type != kGuestHandleStandard) ||
+      source->host_descriptor < 0) {
+    set_guest_last_error(source == nullptr ? kErrorInvalidHandle : kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  const int duplicate_descriptor = ::dup(source->host_descriptor);
+  if (duplicate_descriptor < 0) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto duplicate = guest_file_handle_new(duplicate_descriptor, source->may_read, source->may_write, source->path);
+  if (duplicate == 0) {
+    ::close(duplicate_descriptor);
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  store_guest_memory(context, output_pointer, duplicate, guest_pointer_width);
+  if ((options & kDuplicateCloseSource) != 0) guest_handle_close(source_handle);
+  clear_guest_last_error();
+  set_import_result(context, 1);
+}
+// These two Win32 fallbacks match cricket07-browser/host/kernel32.c (MIT,
+// commit 4febc615b6e07d3e70b22c05a65bf37959c6989a): thread priority is not
+// scheduled by the single-threaded compatibility runtime.
+void win32_set_thread_priority(GuestContext* context) {
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, 1);
+}
+void win32_get_thread_priority(GuestContext* context) {
+  (void)import_argument(context, 0);
+  set_import_result(context, 0);
+}
 void win32_set_std_handle(GuestContext* context) {
   (void)import_argument(context, 0);
   (void)import_argument(context, 1);
@@ -597,9 +687,186 @@ void win32_set_std_handle(GuestContext* context) {
 }
 void win32_create_mutex_a(GuestContext* context) {
   (void)import_argument(context, 0);  // attributes
-  (void)import_argument(context, 1);  // initial owner
+  const bool initial_owner = import_argument(context, 1) != 0;
   (void)import_argument(context, 2);  // name
-  set_import_result(context, guest_handle_new(kGuestHandleMutex));
+  const auto handle = guest_handle_new(kGuestHandleMutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr) entry->signaled = !initial_owner;
+  set_import_result(context, handle);
+}
+
+// These handles model the Win32 event/semaphore state used by CRT startup and
+// synchronization. The API contract follows Wine's kernelbase sync wrappers;
+// this runtime stores the guest-visible object state locally instead of requiring
+// Wine's NT object manager.
+void win32_create_event_a(GuestContext* context) {
+  (void)import_argument(context, 0);  // security attributes
+  const bool manual_reset = import_argument(context, 1) != 0;
+  const bool initial_state = import_argument(context, 2) != 0;
+  const auto name = import_argument(context, 3);
+  if (name != 0) {
+    set_guest_last_error(kErrorNotSupported);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto handle = guest_handle_new(kGuestHandleEvent);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr) {
+    entry->manual_reset = manual_reset;
+    entry->signaled = initial_state;
+  }
+  set_import_result(context, handle);
+}
+
+void win32_set_event(GuestContext* context) {
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleEvent) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  entry->signaled = true;
+  set_import_result(context, 1);
+  guest_sync_changed.notify_all();
+}
+
+void win32_reset_event(GuestContext* context) {
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(import_argument(context, 0));
+  if (entry == nullptr || entry->type != kGuestHandleEvent) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, 0);
+    return;
+  }
+  entry->signaled = false;
+  set_import_result(context, 1);
+}
+
+void win32_create_semaphore_a(GuestContext* context) {
+  (void)import_argument(context, 0);  // security attributes
+  const auto initial = static_cast<std::int32_t>(import_argument(context, 1));
+  const auto maximum = static_cast<std::int32_t>(import_argument(context, 2));
+  const auto name = import_argument(context, 3);
+  if (initial < 0 || maximum <= 0 || initial > maximum || name != 0) {
+    set_guest_last_error(name != 0 ? kErrorNotSupported : kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  const auto handle = guest_handle_new(kGuestHandleSemaphore);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry != nullptr) {
+    entry->semaphore_count = static_cast<std::uint32_t>(initial);
+    entry->semaphore_maximum = static_cast<std::uint32_t>(maximum);
+  }
+  set_import_result(context, handle);
+}
+
+void win32_release_semaphore(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  const auto release_count = import_argument(context, 1);
+  const auto previous_count = import_argument(context, 2);
+  std::lock_guard lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || entry->type != kGuestHandleSemaphore || release_count == 0 ||
+      release_count > entry->semaphore_maximum - entry->semaphore_count) {
+    set_guest_last_error(entry == nullptr || entry->type != kGuestHandleSemaphore
+                             ? kErrorInvalidHandle : kErrorInvalidParameter);
+    set_import_result(context, 0);
+    return;
+  }
+  if (previous_count != 0) store_guest_memory(context, previous_count, entry->semaphore_count, 4);
+  entry->semaphore_count += static_cast<std::uint32_t>(release_count);
+  set_import_result(context, 1);
+  guest_sync_changed.notify_all();
+}
+
+constexpr std::uint32_t kWaitObject0 = 0;
+constexpr std::uint32_t kWaitTimeout = 0x102;
+constexpr std::uint32_t kWaitFailed = 0xffffffffu;
+constexpr std::uint32_t kInfiniteTimeout = 0xffffffffu;
+constexpr std::uint32_t kMaximumWaitObjects = 64;
+
+bool guest_sync_ready(const GuestHandle* entry) {
+  if (entry == nullptr) return false;
+  if (entry->type == kGuestHandleEvent || entry->type == kGuestHandleMutex) return entry->signaled;
+  return entry->type == kGuestHandleSemaphore && entry->semaphore_count != 0;
+}
+
+void guest_sync_consume(GuestHandle* entry) {
+  if (entry->type == kGuestHandleEvent && !entry->manual_reset) entry->signaled = false;
+  else if (entry->type == kGuestHandleSemaphore) --entry->semaphore_count;
+  else if (entry->type == kGuestHandleMutex) entry->signaled = false;
+}
+
+void win32_wait_for_single_object(GuestContext* context) {
+  const auto handle = import_argument(context, 0);
+  const auto timeout = static_cast<std::uint32_t>(import_argument(context, 1));
+  std::unique_lock lock(guest_sync_mutex);
+  auto* entry = guest_handle_lookup(handle);
+  if (entry == nullptr || (entry->type != kGuestHandleEvent && entry->type != kGuestHandleSemaphore &&
+                           entry->type != kGuestHandleMutex)) {
+    set_guest_last_error(kErrorInvalidHandle);
+    set_import_result(context, kWaitFailed);
+    return;
+  }
+  const auto ready = [&] { return guest_sync_ready(entry); };
+  const bool signaled = timeout == kInfiniteTimeout
+                            ? (guest_sync_changed.wait(lock, ready), true)
+                            : guest_sync_changed.wait_for(lock, std::chrono::milliseconds(timeout), ready);
+  if (!signaled) {
+    set_import_result(context, kWaitTimeout);
+    return;
+  }
+  guest_sync_consume(entry);
+  set_import_result(context, kWaitObject0);
+}
+
+void win32_wait_for_multiple_objects(GuestContext* context) {
+  const auto count = import_argument(context, 0);
+  const auto handles_address = import_argument(context, 1);
+  const bool wait_all = import_argument(context, 2) != 0;
+  const auto timeout = static_cast<std::uint32_t>(import_argument(context, 3));
+  if (count == 0 || count > kMaximumWaitObjects || handles_address == 0) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, kWaitFailed);
+    return;
+  }
+  std::vector<GuestHandle*> entries;
+  entries.reserve(static_cast<std::size_t>(count));
+  for (std::uint64_t index = 0; index < count; ++index) {
+    const auto handle = load_guest_memory(context, handles_address + index * guest_pointer_width,
+                                          guest_pointer_width);
+    auto* entry = guest_handle_lookup(handle);
+    if (entry == nullptr || (entry->type != kGuestHandleEvent && entry->type != kGuestHandleSemaphore &&
+                             entry->type != kGuestHandleMutex)) {
+      set_guest_last_error(kErrorInvalidHandle);
+      set_import_result(context, kWaitFailed);
+      return;
+    }
+    entries.push_back(entry);
+  }
+  std::unique_lock lock(guest_sync_mutex);
+  const auto ready = [&] {
+    if (wait_all) return std::all_of(entries.begin(), entries.end(), guest_sync_ready);
+    return std::any_of(entries.begin(), entries.end(), guest_sync_ready);
+  };
+  const bool signaled = timeout == kInfiniteTimeout
+                            ? (guest_sync_changed.wait(lock, ready), true)
+                            : guest_sync_changed.wait_for(lock, std::chrono::milliseconds(timeout), ready);
+  if (!signaled) {
+    set_import_result(context, kWaitTimeout);
+    return;
+  }
+  if (wait_all) {
+    for (auto* entry : entries) guest_sync_consume(entry);
+    set_import_result(context, kWaitObject0);
+  } else {
+    const auto ready_entry = std::find_if(entries.begin(), entries.end(), guest_sync_ready);
+    const auto index = static_cast<std::uint32_t>(std::distance(entries.begin(), ready_entry));
+    guest_sync_consume(*ready_entry);
+    set_import_result(context, kWaitObject0 + index);
+  }
 }
 
 void win32_get_process_heap(GuestContext* context) { set_import_result(context, 0x1000); }
@@ -2038,6 +2305,7 @@ void msvcrt_p_fmode(GuestContext* context) { set_import_result(context, msvcrt_f
 void msvcrt_iob_pointer(GuestContext* context) { set_import_result(context, msvcrt_iob); }
 void msvcrt_pctype(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x300); }
 void msvcrt_mb_cur_max(GuestContext* context) { set_import_result(context, msvcrt_data_block + 0x320); }
+void msvcrt_mb_cur_max_func(GuestContext* context) { set_import_result(context, 4); }
 
 // ---- msvcrt: strings and numeric conversion -------------------------------
 void msvcrt_strlen(GuestContext* context) {
@@ -2298,6 +2566,16 @@ void msvcrt_isctype(GuestContext* context) {
   const auto character = import_argument(context, 1);
   set_import_result(context, classify_character(static_cast<std::uint32_t>(character & 0xffu)) != 0 ? 1 : 0);
 }
+void msvcrt_wctype(GuestContext* context) {
+  const auto name = read_guest_string(import_argument(context, 0));
+  const auto descriptor = std::wctype(name.c_str());
+  set_import_result(context, static_cast<std::uint64_t>(descriptor));
+}
+void msvcrt_iswctype(GuestContext* context) {
+  const auto character = static_cast<wint_t>(import_argument(context, 0));
+  const auto descriptor = static_cast<std::wctype_t>(import_argument(context, 1));
+  set_import_result(context, std::iswctype(character, descriptor) != 0 ? 1 : 0);
+}
 void msvcrt_mbstowcs(GuestContext* context) {
   const auto destination = import_argument(context, 0);
   const auto source = import_argument(context, 1);
@@ -2315,6 +2593,142 @@ void msvcrt_mbstowcs(GuestContext* context) {
   } else {
     set_import_result(context, static_cast<std::uint64_t>(-1));
   }
+}
+namespace {
+std::mutex guest_multibyte_state_mutex;
+std::map<std::uint64_t, std::mbstate_t> guest_multibyte_states;
+
+locale_t guest_utf8_locale() {
+  static const locale_t locale = [] {
+    auto created = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", nullptr);
+    if (created == nullptr) created = newlocale(LC_CTYPE_MASK, "C.UTF-8", nullptr);
+    return created;
+  }();
+  return locale;
+}
+
+std::size_t guest_mbrtowc(wchar_t* output, const char* input, std::size_t length, std::mbstate_t* state) {
+  const auto locale = guest_utf8_locale();
+  const auto previous = locale != nullptr ? uselocale(locale) : static_cast<locale_t>(0);
+  const auto converted = std::mbrtowc(output, input, length, state);
+  if (locale != nullptr) uselocale(previous);
+  return converted;
+}
+
+std::mbstate_t guest_multibyte_state(std::uint64_t address) {
+  std::lock_guard lock(guest_multibyte_state_mutex);
+  return guest_multibyte_states[address];
+}
+
+void store_guest_multibyte_state(std::uint64_t address, const std::mbstate_t& state) {
+  std::lock_guard lock(guest_multibyte_state_mutex);
+  guest_multibyte_states[address] = state;
+}
+
+void store_guest_utf16(GuestContext* context, std::uint64_t destination, wchar_t value) {
+  const auto codepoint = static_cast<std::uint32_t>(value);
+  if (codepoint <= 0xffffu) {
+    store_guest_memory(context, destination, codepoint, 2);
+    return;
+  }
+  const auto scalar = codepoint - 0x10000u;
+  store_guest_memory(context, destination, 0xd800u + (scalar >> 10), 2);
+  store_guest_memory(context, destination + 2, 0xdc00u + (scalar & 0x3ffu), 2);
+}
+}  // namespace
+
+void msvcrt_mbrtowc(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source = import_argument(context, 1);
+  const auto length = import_argument(context, 2);
+  const auto state_address = import_argument(context, 3);
+  auto state = guest_multibyte_state(state_address);
+  if (source == 0) {
+    std::memset(&state, 0, sizeof(state));
+    store_guest_multibyte_state(state_address, state);
+    set_import_result(context, 0);
+    return;
+  }
+  std::string bytes;
+  for (std::uint64_t index = 0; index < std::min<std::uint64_t>(length, 8); ++index) {
+    const auto byte = static_cast<std::uint8_t>(load_guest_memory(context, source + index, 1));
+    bytes.push_back(static_cast<char>(byte));
+    if (byte == 0) break;
+  }
+  wchar_t converted_character = 0;
+  const auto converted = guest_mbrtowc(&converted_character, bytes.data(), bytes.size(), &state);
+  store_guest_multibyte_state(state_address, state);
+  if (converted == static_cast<std::size_t>(-1) || converted == static_cast<std::size_t>(-2)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(converted));
+    return;
+  }
+  if (destination != 0) store_guest_utf16(context, destination, converted_character);
+  set_import_result(context, converted);
+}
+
+void msvcrt_mbsrtowcs(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto source_pointer = import_argument(context, 1);
+  const auto maximum = import_argument(context, 2);
+  const auto state_address = import_argument(context, 3);
+  auto source = load_guest_memory(context, source_pointer, guest_pointer_width);
+  auto state = guest_multibyte_state(state_address);
+  std::size_t converted_units = 0;
+  while (source != 0 && (destination == 0 || converted_units < maximum)) {
+    std::string bytes;
+    for (std::size_t index = 0; index < MB_LEN_MAX; ++index) {
+      const auto byte = static_cast<std::uint8_t>(load_guest_memory(context, source + index, 1));
+      bytes.push_back(static_cast<char>(byte));
+      if (byte == 0) break;
+    }
+    wchar_t character = 0;
+    const auto consumed = guest_mbrtowc(&character, bytes.data(), bytes.size(), &state);
+    if (consumed == static_cast<std::size_t>(-1) || consumed == static_cast<std::size_t>(-2)) {
+      set_guest_last_error(kErrorInvalidParameter);
+      set_import_result(context, static_cast<std::uint64_t>(-1));
+      return;
+    }
+    if (consumed == 0) {
+      if (destination != 0) store_guest_memory(context, destination + converted_units * 2, 0, 2);
+      source = 0;
+      break;
+    }
+    source += consumed;
+    if (destination != 0) store_guest_utf16(context, destination + converted_units * 2, character);
+    ++converted_units;
+  }
+  if (destination != 0) {
+    store_guest_memory(context, source_pointer, source, guest_pointer_width);
+    store_guest_multibyte_state(state_address, state);
+  }
+  set_import_result(context, converted_units);
+}
+void msvcrt_wcrtomb(GuestContext* context) {
+  const auto destination = import_argument(context, 0);
+  const auto wide_character = static_cast<wchar_t>(import_argument(context, 1) & 0xffffu);
+  const auto state_address = import_argument(context, 2);
+  if (destination == 0) {
+    set_import_result(context, 1);
+    return;
+  }
+
+  auto state = guest_multibyte_state(state_address);
+
+  char bytes[MB_LEN_MAX]{};
+  const auto locale = guest_utf8_locale();
+  const auto previous_locale = locale != nullptr ? uselocale(locale) : static_cast<locale_t>(0);
+  const auto converted = std::wcrtomb(bytes, wide_character, &state);
+  if (locale != nullptr) uselocale(previous_locale);
+  if (converted == static_cast<std::size_t>(-1)) {
+    set_guest_last_error(kErrorInvalidParameter);
+    set_import_result(context, static_cast<std::uint64_t>(-1));
+    return;
+  }
+  store_guest_multibyte_state(state_address, state);
+  for (std::size_t index = 0; index < converted; ++index)
+    store_guest_memory(context, destination + index, static_cast<std::uint8_t>(bytes[index]), 1);
+  set_import_result(context, converted);
 }
 void msvcrt_setlocale(GuestContext* context) {
   (void)import_argument(context, 0);
@@ -3012,7 +3426,7 @@ std::uint64_t msvcrt_format_into_stream(GuestContext* context, std::uint64_t str
     index = cursor;
 
     // The conversion as the guest wrote it, minus the leading `%`, for the host.
-    std::string host_format = "%" + format.substr(conversion_start + 1, cursor - conversion_start - 1);
+    std::string host_format = "%" + format.substr(conversion_start + 1, cursor - conversion_start);
     char buffer[512];
     int written = 0;
     switch (specifier) {
@@ -3688,6 +4102,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_stricoll", msvcrt_strcoll},
     {"msvcrt.dll", "_fullpath", msvcrt_fullpath},
     {"msvcrt.dll", "wcstombs", msvcrt_wcstombs},
+    {"msvcrt.dll", "wcrtomb", msvcrt_wcrtomb},
     {"msvcrt.dll", "vfprintf", msvcrt_vfprintf},
     {"msvcrt.dll", "__getmainargs", msvcrt_getmainargs},
     {"msvcrt.dll", "strlen", msvcrt_strlen},
@@ -3719,6 +4134,7 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_iob", msvcrt_iob_pointer},
     {"msvcrt.dll", "_pctype", msvcrt_pctype},
     {"msvcrt.dll", "__mb_cur_max", msvcrt_mb_cur_max},
+    {"msvcrt.dll", "___mb_cur_max_func", msvcrt_mb_cur_max_func},
     {"msvcrt.dll", "malloc", msvcrt_malloc},
     {"msvcrt.dll", "calloc", msvcrt_calloc},
     {"msvcrt.dll", "realloc", msvcrt_realloc},
@@ -3742,7 +4158,11 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "abort", msvcrt_abort},
     {"msvcrt.dll", "exit", msvcrt_exit},
     {"msvcrt.dll", "_isctype", msvcrt_isctype},
+    {"msvcrt.dll", "wctype", msvcrt_wctype},
+    {"msvcrt.dll", "iswctype", msvcrt_iswctype},
     {"msvcrt.dll", "mbstowcs", msvcrt_mbstowcs},
+    {"msvcrt.dll", "mbrtowc", msvcrt_mbrtowc},
+    {"msvcrt.dll", "mbsrtowcs", msvcrt_mbsrtowcs},
     {"msvcrt.dll", "setlocale", msvcrt_setlocale},
     {"ole32.dll", "CoInitialize", win32_co_initialize},
     {"ole32.dll", "CoUninitialize", win32_co_uninitialize},
@@ -3752,7 +4172,17 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "CloseHandle", win32_close_handle},
     {"kernel32.dll", "SetStdHandle", win32_set_std_handle},
     {"kernel32.dll", "CreateMutexA", win32_create_mutex_a},
+    {"kernel32.dll", "CreateEventA", win32_create_event_a},
+    {"kernel32.dll", "SetEvent", win32_set_event},
+    {"kernel32.dll", "ResetEvent", win32_reset_event},
+    {"kernel32.dll", "CreateSemaphoreA", win32_create_semaphore_a},
+    {"kernel32.dll", "ReleaseSemaphore", win32_release_semaphore},
+    {"kernel32.dll", "WaitForSingleObject", win32_wait_for_single_object},
+    {"kernel32.dll", "WaitForMultipleObjects", win32_wait_for_multiple_objects},
     {"kernel32.dll", "SetHandleCount", win32_set_handle_count},
+    {"kernel32.dll", "DuplicateHandle", win32_duplicate_handle},
+    {"kernel32.dll", "SetThreadPriority", win32_set_thread_priority},
+    {"kernel32.dll", "GetThreadPriority", win32_get_thread_priority},
     {"kernel32.dll", "ReleaseMutex", win32_release_mutex},
     {"kernel32.dll", "FlushFileBuffers", win32_flush_file_buffers},
     {"kernel32.dll", "FreeEnvironmentStringsW", win32_free_environment_strings_w},

@@ -122,7 +122,8 @@ GeneratedProject ProjectGenerator::generate(const std::filesystem::path& output_
   const auto runtime_directory = configuration_.runtime_directory;
   for (const auto name : {"recomp_runtime.hpp", "recomp_runtime.cpp", "win32_abi.hpp",
                           "guest_file_system.hpp", "upstream_scanf.c",
-                          "scanf.h", "hisahi-scanf-LICENSE", "igi-recomp-LICENSE"}) {
+                          "scanf.h", "hisahi-scanf-LICENSE", "igi-recomp-LICENSE",
+                          "cricket07-browser-LICENSE"}) {
     const auto source = runtime_directory / name;
     const auto destination = output_directory / name;
     std::ofstream output(destination, std::ios::binary);

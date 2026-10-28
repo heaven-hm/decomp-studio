@@ -328,6 +328,8 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"kernel32.dll", "InitializeCriticalSectionAndSpinCount", 2, true},
     {"kernel32.dll", "GetSystemTimeAsFileTime", 1, true},
     {"kernel32.dll", "GetStartupInfoA", 1, true},
+    {"kernel32.dll", "GetStartupInfoW", 1, true},
+    {"api-ms-win-crt-runtime-l1-1-0.dll", "_get_narrow_winmain_command_line", 0, true},
     {"kernel32.dll", "GetCommandLineA", 0, true},
     {"kernel32.dll", "GetEnvironmentStrings", 0, true},
     {"kernel32.dll", "FreeEnvironmentStringsA", 1, true},

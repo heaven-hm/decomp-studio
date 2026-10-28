@@ -3679,7 +3679,9 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
   const auto limit = static_cast<std::size_t>(import_argument(context, 2));
   const auto format = read_guest_string(import_argument(context, 3));
   const auto arguments = import_argument(context, 4);
-  if ((options & ~std::uint64_t{2}) != 0)
+  // UCRT uses bit 0 for its internal locale/formatting mode and bit 1 for
+  // legacy compatibility; both are representable by the shared formatter.
+  if ((options & ~std::uint64_t{3}) != 0)
     terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
                            static_cast<unsigned long long>(options));
   const auto output = msvcrt_format_arguments(context, format, arguments);

@@ -4634,6 +4634,7 @@ const ShimDescriptor kShims[] = {
     {"user32.dll", "MonitorFromWindow", win32_zero},
     {"user32.dll", "SendMessageA", win32_zero},
     {"user32.dll", "VkKeyScanA", win32_zero},
+    {"user32.dll", "MonitorFromRect", win32_zero},
     {"advapi32.dll", "RegOpenKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegCreateKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegQueryValueExW", win32_registry_not_found},

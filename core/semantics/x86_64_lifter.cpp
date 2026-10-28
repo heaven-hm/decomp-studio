@@ -1051,6 +1051,21 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
       return;
     }
   }
+  if (mnemonic == "pcmpistri" && operands.size() == 3 && is_vector_register(operands[0]) &&
+      operands[2].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto immediate = std::to_string(operands[2].immediate_value & 0xff);
+    if (is_vector_register(operands[1])) {
+      emit("vector_pcmpistri_register(context, " + destination + ", " +
+           std::to_string(vector_index(operands[1])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[1].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_pcmpistri_memory(context, " + destination + ", " +
+           effective_address_expression(instruction, operands[1]) + ", " + immediate + ");");
+      return;
+    }
+  }
   if (mnemonic == "cpuid") { emit("execute_cpuid(context);"); return; }
   if (mnemonic == "prefetchnta" || mnemonic == "prefetcht0" || mnemonic == "prefetcht1" ||
       mnemonic == "prefetcht2" || mnemonic == "prefetchw")
@@ -1441,7 +1456,7 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   // decoration: `213` and `231` compute different products from the same three registers.
   {
     static const std::map<std::string, std::string> fma_orderings = {
-        {"132", "fma132"}, {"213", "fma213"}, {"231", "fma231"}};
+        {"132", "132"}, {"213", "213"}, {"231", "231"}};
     std::string digits;
     for (const auto& candidate : {std::string("132"), std::string("213"), std::string("231")}) {
       if (mnemonic.find(candidate) != std::string::npos) { digits = candidate; break; }
@@ -1490,6 +1505,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
            effective_address_expression(instruction, operands[1]) + ");");
     }
     return;
+  }
+  if (mnemonic == "vinsertf128" && operands.size() == 4 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1]) && operands[3].kind == discovery::Operand::Kind::Immediate) {
+    const auto destination = std::to_string(vector_index(operands[0]));
+    const auto source = std::to_string(vector_index(operands[1]));
+    const auto immediate = std::to_string(operands[3].immediate_value & 0xff);
+    if (is_vector_register(operands[2])) {
+      emit("vector_insert_128(context, " + destination + ", " + source + ", " +
+           std::to_string(vector_index(operands[2])) + ", " + immediate + ");");
+      return;
+    }
+    if (operands[2].kind == discovery::Operand::Kind::Memory) {
+      emit("vector_insert_128_memory(context, " + destination + ", " + source + ", " +
+           effective_address_expression(instruction, operands[2]) + ", " + immediate + ");");
+      return;
+    }
   }
   if ((mnemonic == "vinsertf128" || mnemonic == "vextractf128") && operands.size() == 3 &&
       is_vector_register(operands[0]) && is_vector_register(operands[1]) &&

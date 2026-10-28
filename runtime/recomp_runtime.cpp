@@ -4601,6 +4601,7 @@ const ShimDescriptor kShims[] = {
     {"kernel32.dll", "GetProcAddress", win32_get_proc_address},
     {"kernel32.dll", "LoadLibraryA", win32_load_library_a},
     {"kernel32.dll", "LoadLibraryW", win32_load_library_w},
+    {"kernel32.dll", "LoadLibraryExW", win32_load_library_w},
     {"kernel32.dll", "FreeLibrary", win32_free_library},
     // kernel32 file services, all of which go through the handle table and the
     // app-directory policy rather than touching a host path directly.

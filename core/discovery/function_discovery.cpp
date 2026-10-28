@@ -273,7 +273,7 @@ void FunctionDiscovery::discover() {
             }
           }
         }
-        if (instruction.mnemonic == "lea" && instruction.operands.size() >= 2 &&
+        if (!table_address && instruction.mnemonic == "lea" && instruction.operands.size() >= 2 &&
             instruction.operands[0].kind == Operand::Kind::Register &&
             instruction.operands[1].kind == Operand::Kind::Memory &&
             instruction.operands[1].base_register_name == "rip" &&
@@ -286,9 +286,7 @@ void FunctionDiscovery::discover() {
         // directly: mov r11d, [r10 + index*4 + table_rva]. The table entries
         // are absolute RVAs, handled below alongside relative entries.
         if (instruction.mnemonic == "mov" && instruction.operands.size() >= 2 &&
-            instruction.operands[0].kind == Operand::Kind::Register &&
             instruction.operands[1].kind == Operand::Kind::Memory &&
-            instruction.operands[1].scale == 4 && !instruction.operands[1].index_register_name.empty() &&
             instruction.operands[1].displacement > 0x1000) {
           table_address = executable_.image_base +
                           static_cast<std::uint64_t>(instruction.operands[1].displacement);
@@ -336,6 +334,7 @@ void FunctionDiscovery::discover() {
         if (target < static_cast<std::int64_t>(executable_.image_base) ||
             !contains_code(static_cast<std::uint32_t>(target - static_cast<std::int64_t>(executable_.image_base))))
           continue;
+
         targets.push_back(static_cast<std::uint64_t>(target));
       }
       std::sort(targets.begin(), targets.end());

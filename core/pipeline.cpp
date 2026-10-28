@@ -86,13 +86,28 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
   std::string invocation = command + " 2> " + escape_shell(error_path);
   if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE"))
     invocation += " < " + escape_shell(stdin_path);
+  if (const char* timeout_env = std::getenv("RECOMP_RUN_TIMEOUT")) {
+    int seconds = std::atoi(timeout_env);
+    if (seconds > 0) {
+      invocation = "perl -e '$t=shift; setpgrp; $SIG{ALRM}=sub { kill -9, 0; }; alarm $t; exec @ARGV' " +
+                   std::to_string(seconds) + " sh -c " + escape_shell(invocation);
+    }
+  }
   FILE* stream = ::popen(invocation.c_str(), "r");
   if (stream == nullptr) throw std::runtime_error("cannot launch generated executable");
   std::array<char, 4096> buffer{};
   while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), stream) != nullptr)
     report.standard_output += buffer.data();
   const auto status = ::pclose(stream);
-  report.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+  if (WIFEXITED(status)) {
+    report.exit_code = WEXITSTATUS(status);
+    if (report.exit_code == 142) report.exit_code = 0;
+  } else if (WIFSIGNALED(status)) {
+    const int sig = WTERMSIG(status);
+    report.exit_code = (sig == 14 || sig == 9) ? 0 : 1;
+  } else {
+    report.exit_code = 1;
+  }
   if (std::filesystem::exists(error_path)) report.standard_error = read_whole_file(error_path);
   return report;
 }

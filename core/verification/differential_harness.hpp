@@ -28,7 +28,12 @@ struct ReferenceRun {
 
 struct DifferentialResult {
   bool reference_completed{};     // reference executed and captured output
-  bool candidate_completed{};     // candidate exited with status 0
+  bool candidate_completed{};
+  // False when the candidate was never executed. Without this, a run that stopped
+  // because the REFERENCE did not complete reported `candidate_bytes: 0` and
+  // `outputs_match: false`, which reads as "the candidate ran and produced nothing" --
+  // a claim about a program that was never started.
+  bool candidate_ran{};     // candidate exited with status 0
   bool outputs_match{};
   // Guest-state comparison: how many checkpoints were compared, whether they
   // agreed, and -- when they did not -- where the machine stopped matching, which

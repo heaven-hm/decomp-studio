@@ -566,6 +566,8 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"memory_diagnosis\":" << recomp::common::quote_json(result.memory_diagnosis)
               << ",\"control_registers_match\":" << (result.control_registers_match ? "true" : "false")
               << ",\"control_diagnosis\":" << recomp::common::quote_json(result.control_diagnosis)
+              << ",\"candidate_ran\":" << (result.candidate_ran ? "true" : "false")
+              << ",\"diagnosis\":" << recomp::common::quote_json(result.diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
@@ -1374,6 +1376,8 @@ int main(int argc, char** argv) {
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
         if (option == "--budget" && index + 1 < argc) { budget = std::stoul(argv[++index]); continue; }
+        if (option == "--timeout" && index + 1 < argc) { ::setenv("RECOMP_RUN_TIMEOUT", argv[++index], 1); continue; }
+        if (option.rfind("--timeout=", 0) == 0) { ::setenv("RECOMP_RUN_TIMEOUT", option.substr(10).c_str(), 1); continue; }
         if (image.empty()) image = argv[index];
       }
       if (image.empty()) return fail("autorecomp requires an image path", json);

@@ -587,10 +587,16 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     ::setenv("RECOMP_INSTRUCTION_BUDGET", "1000000000", 1);
 
   const auto stdin_path = project_directory / "recomp-stdin.txt";
+  const auto captured_stdin_path = project_directory / ".recomp-stdin.capture";
   if (std::filesystem::exists(stdin_path)) {
     ::setenv("RECOMP_STDIN_FILE", stdin_path.string().c_str(), 1);
+  } else if (std::filesystem::exists(captured_stdin_path)) {
+    ::setenv("RECOMP_STDIN_FILE", captured_stdin_path.string().c_str(), 1);
   } else {
-    ::unsetenv("RECOMP_STDIN_FILE");
+    const char* env_stdin = std::getenv("RECOMP_STDIN_FILE");
+    if (!env_stdin || *env_stdin == '\0' || (!std::filesystem::exists(env_stdin) && std::string_view(env_stdin) != "/dev/null")) {
+      ::unsetenv("RECOMP_STDIN_FILE");
+    }
   }
 
   const auto memory_windows_path = project_directory / "reports" / "candidate-memory.bin";
@@ -636,7 +642,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.reference_completed = reference.completed;
   if (!reference.note.empty()) result.diagnosis = reference.note;
   if (!reference.completed) {
-    result.diagnosis = "reference execution did not complete: " + reference.failure_reason;
+    // The candidate is deliberately NOT run: there is nothing to compare it against.
+    // Saying so is the point -- reporting the candidate's fields as zero made it look
+    // like a program that started and produced nothing, which is a different claim.
+    result.candidate_ran = false;
+    result.diagnosis = "the candidate was NOT run: the reference execution did not complete (" +
+                       reference.failure_reason + ")";
     return result;
   }
 
@@ -655,6 +666,7 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   ::unsetenv("RECOMP_CHECKPOINT_INTERVAL");
   result.candidate_output = candidate.standard_output;
   result.candidate_error = candidate.standard_error;
+  result.candidate_ran = true;
   result.candidate_exit_code = candidate.exit_code;
   result.candidate_completed = candidate.exit_code == 0;
   {

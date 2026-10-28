@@ -1258,6 +1258,29 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit("recomp_trap(context, \"" + mnemonic + "\");");
     return;
   }
+  // The BMI2 variable shifts. Their count comes from a general register, not CL, and
+  // they leave the flags ALONE -- which is the whole reason a compiler emits them in
+  // preference to `shl`/`shr` when it needs the flags preserved.
+  if ((mnemonic == "shlx" || mnemonic == "shrx" || mnemonic == "sarx") && operands.size() == 3 &&
+      operands[0].kind == discovery::Operand::Kind::Register &&
+      operands[1].kind == discovery::Operand::Kind::Register) {
+    const auto width = operand_width(operands[0], 4);
+    const auto count = operand_read_expression(instruction, operands[2], width);
+    const auto value = operand_read_expression(instruction, operands[1], width);
+    const std::string helper = mnemonic == "shlx"   ? "variable_shift_left"
+                              : mnemonic == "shrx" ? "variable_shift_right"
+                                                   : "variable_shift_right_arithmetic";
+    operand_write(output, instruction, operands[0],
+                  helper + "(" + value + ", " + count + ", " + std::to_string(width) + ")", width);
+    return;
+  }
+  // `pmulld` multiplies four 32-bit lanes and keeps the LOW half of each product.
+  if (mnemonic == "pmulld" && operands.size() == 2 && is_vector_register(operands[0]) &&
+      is_vector_register(operands[1])) {
+    emit("vector_multiply_low_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
   // LFENCE/MFENCE/SFENCE order memory operations for OTHER observers. A single-threaded
   // guest has none, and the generated code touches guest memory through helpers that the
   // compiler may not reorder across, so there is nothing left for these to do. They are

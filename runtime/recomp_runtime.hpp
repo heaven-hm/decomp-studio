@@ -797,6 +797,32 @@ inline void vector_square_root_doubles_memory(GuestContext* context, int destina
   vector_set_double(context, destination, std::sqrt(load_guest_double(context, address)));
 }
 
+// PMULLD: four 32-bit lanes, each multiplied, keeping only the LOW 32 bits of each
+// product. Taking the full 64-bit product would put every result in the wrong lane.
+inline void vector_multiply_low_dwords(GuestContext* context, int destination, int source) {
+  std::uint32_t left[4];
+  std::uint32_t right[4];
+  std::memcpy(left, context->vector_registers[destination], sizeof(left));
+  std::memcpy(right, context->vector_registers[source], sizeof(right));
+  std::uint32_t result[4];
+  for (int lane = 0; lane < 4; ++lane)
+    result[lane] = static_cast<std::uint32_t>(
+        static_cast<std::uint64_t>(left[lane]) * static_cast<std::uint64_t>(right[lane]));
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+inline void vector_multiply_low_dwords_memory(GuestContext* context, int destination,
+                                              std::uint64_t address) {
+  std::uint32_t left[4];
+  std::memcpy(left, context->vector_registers[destination], sizeof(left));
+  std::uint32_t result[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    const auto right = static_cast<std::uint32_t>(load_guest_memory(context, address + lane * 4, 4));
+    result[lane] = static_cast<std::uint32_t>(static_cast<std::uint64_t>(left[lane]) *
+                                              static_cast<std::uint64_t>(right));
+  }
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
 // The PACKED square roots. `sqrtss`/`sqrtsd` above take the low lane only; these take
 // every lane, which is what the `ps`/`pd` mnemonics mean.
 inline void vector_square_root_packed_floats(GuestContext* context, int destination, int source) {
@@ -820,6 +846,31 @@ inline void vector_square_root_packed_doubles_memory(GuestContext* context, int 
   for (int lane = 0; lane < 2; ++lane)
     vector_set_double_lane(context, destination, lane,
                            std::sqrt(load_guest_double(context, address + lane * 8)));
+}
+
+// BMI2 variable shifts. `shlx`/`shrx`/`sarx` shift by a COUNT IN A REGISTER, and they
+// differ from the older `shl`/`shr`/`sar` in two ways that matter: the count register is
+// a separate operand rather than CL, and the FLAGS ARE NOT AFFECTED. Using the older
+// implementation would set flags the instruction is specified not to touch, and a later
+// conditional jump would read them.
+inline std::uint64_t variable_shift_left(std::uint64_t value, std::uint64_t count, int width) {
+  const int bits = width * 8;
+  count &= static_cast<std::uint64_t>(bits - 1);
+  const auto shifted = value << count;
+  return width >= 8 ? shifted : (shifted & ((1ull << bits) - 1));
+}
+inline std::uint64_t variable_shift_right(std::uint64_t value, std::uint64_t count, int width) {
+  const int bits = width * 8;
+  count &= static_cast<std::uint64_t>(bits - 1);
+  const auto masked = width >= 8 ? value : (value & ((1ull << bits) - 1));
+  return masked >> count;
+}
+inline std::uint64_t variable_shift_right_arithmetic(std::uint64_t value, std::uint64_t count, int width) {
+  const int bits = width * 8;
+  count &= static_cast<std::uint64_t>(bits - 1);
+  if (width >= 8) return static_cast<std::uint64_t>(static_cast<std::int64_t>(value) >> count);
+  return static_cast<std::uint64_t>(static_cast<std::uint32_t>(
+      static_cast<std::int32_t>(static_cast<std::uint32_t>(value)) >> count));
 }
 
 // MIN/MAX. The one case worth stating: when an operand is NaN the result is the SECOND

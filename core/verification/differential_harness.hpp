@@ -27,6 +27,11 @@ struct ReferenceRun {
   // two can be compared directly.
   std::vector<GuestCheckpoint> checkpoints;
   std::vector<std::vector<std::uint8_t>> memory_windows;
+  // Per checkpoint, the digest of each page the reference had written by then. The
+  // candidate exports the same thing, and the two are compared AT THE SAME CHECKPOINT --
+  // comparing a candidate checkpoint against the reference's final memory compares two
+  // different instants and reports every page as diverging.
+  std::vector<std::map<std::uint64_t, std::uint64_t>> page_digests;
 };
 
 // What a verification run actually established. Issue #11 asks for an explicit verdict

@@ -205,6 +205,16 @@ int main() {
               std::to_string(call("strlen", left)) + ", the host says " + std::to_string(std::strlen(test.left)));
   }
 
+  // strerror takes one errno argument and returns a guest pointer to CRT-owned
+  // storage. The returned pointer must be directly readable by the guest and the
+  // ABI must not consume a fictitious destination-buffer argument.
+  for (const int error : {0, 2, 13}) {
+    const auto result = call("strerror", static_cast<std::uint64_t>(error));
+    check(result != 0, "strerror returns a guest pointer");
+    check(get_string(result) == std::strerror(error),
+          std::string("strerror(") + std::to_string(error) + ") matches the host CRT");
+  }
+
   // --- strcpy/strncpy/strcat, including the padding strncpy is required to do -------
   {
     const auto source = put_string(0x200000, "hello");

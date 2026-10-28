@@ -10,6 +10,7 @@
 
 | App and source path | Source architecture | Target | Build/run and differential check | Manual input smoke | Evidence |
 | --- | --- | --- | --- | --- | --- |
+| `prime-gen_x86.exe` — `/Users/haseeb-mir/Downloads/recomp-apps/windows/cli-apps/1-prime-generator-c/build/prime-gen_x86.exe` | x86 Windows | macOS arm64 | Build passed; scripted stdin (`1`, `20`, `3`) completed with exit 0; differential output matched byte for byte (196 bytes); all 45 imports shimmed. | Script exercised menu selection, upper bound and exit. | `$TEMP/recomp-apps-audit/prime-gen-replay/autorecomp.log` |
 | `hangman_x64.exe` — `/Users/haseeb-mir/Downloads/recomp-apps/windows/x64/games/hangman_x64.exe` | x64 Windows | macOS arm64 | Build passed; exit 0; differential output matched (292 bytes with stdin at EOF). One uncalled import remains: `api-ms-win-crt-private-l1-1-0.dll!__C_specific_handler`. | Native output responded to scripted guesses and exited 0. | ![Run evidence for hangman_x64.exe](../apps-running-screenshots/hangman_x64.png) |
 | `hangman_x86.exe` — `/Users/haseeb-mir/Downloads/recomp-apps/windows/x86/games/hangman_x86.exe` | x86 Windows | macOS arm64 | Build passed; exit 0; differential verification passed; no missing imports reported. | Native output responded to scripted guesses and exited 0. | ![Run evidence for hangman_x86.exe](../apps-running-screenshots/hangman_x86.png) |
 
@@ -22,9 +23,10 @@
 
 ## Current count
 
-- Distinct real corpus EXEs exercised in this pass: 4
+- Distinct real corpus EXEs exercised in this pass: 5
+- Console apps with scripted input and differential output verified: 1 (Prime Generator)
 - Console apps with interactive native output observed: 2 (Hangman x64 and x86)
 - No-output smoke only: 1 (Filling Solver)
 - Failed to run: 1 (Cube)
 
-The Hangman differential runs used stdin at EOF because the current `autorecomp --buildrun` interface does not replay scripted input to both the Unicorn reference and native child. Scripted guesses were separately sent to each generated native executable and produced interactive output. GUI behavior has not been verified by these console checks.
+`autorecomp --buildrun` now captures piped stdin once and replays it to the initial native run, the Unicorn reference and the differential candidate. Prime Generator verified this path using scripted input. GUI behavior has not been verified by these console checks.

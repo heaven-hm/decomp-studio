@@ -3008,8 +3008,17 @@ void msvcrt_stdio_common_vfscanf(GuestContext* context) {
     (void)load_guest_memory(context, guest_pointer, 1);
     translated.push_back(guest_memory + guest_pointer);
   }
-  const auto getch = [](void* input) { return std::fgetc(static_cast<std::FILE*>(input)); };
-  const auto ungetch = [](int ch, void* input) { (void)std::ungetc(ch, static_cast<std::FILE*>(input)); };
+  const auto getch = [](void* input) {
+    if (guest_input_capture != nullptr) return guest_read_byte();
+    return std::fgetc(static_cast<std::FILE*>(input));
+  };
+  const auto ungetch = [](int ch, void* input) {
+    if (guest_input_capture != nullptr) {
+      if (ch != EOF && guest_input_position > 0) --guest_input_position;
+      return;
+    }
+    (void)std::ungetc(ch, static_cast<std::FILE*>(input));
+  };
   // On this platform a va_list is a pointer, so an array of translated destinations
   // IS a valid argument list -- the same representation the guest uses.
   const auto result = vfctscanf_(getch, ungetch, stdin, format.c_str(),

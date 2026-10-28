@@ -749,6 +749,37 @@ struct HostTarget {
   std::string target;
 };
 
+class StdinCapture {
+ public:
+  explicit StdinCapture(const std::filesystem::path& output) {
+    if (::isatty(STDIN_FILENO) != 0) return;
+    std::ostringstream contents;
+    contents << std::cin.rdbuf();
+    path_ = output / ".recomp-stdin.capture";
+    std::ofstream file(path_, std::ios::binary | std::ios::trunc);
+    if (!file) throw std::runtime_error("cannot capture piped stdin at " + path_.string());
+    file << contents.str();
+    file.close();
+    if (!file) throw std::runtime_error("cannot write captured stdin at " + path_.string());
+    if (::setenv("RECOMP_STDIN_FILE", path_.c_str(), 1) != 0)
+      throw std::runtime_error("cannot configure captured stdin");
+    active_ = true;
+  }
+  ~StdinCapture() {
+    if (active_) ::unsetenv("RECOMP_STDIN_FILE");
+    if (!path_.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove(path_, ignored);
+    }
+  }
+  StdinCapture(const StdinCapture&) = delete;
+  StdinCapture& operator=(const StdinCapture&) = delete;
+
+ private:
+  std::filesystem::path path_;
+  bool active_{};
+};
+
 // Detect the host the studio is running on and map it to a target name. This is
 // runtime detection through uname rather than a compile-time guess, so the
 // reported target is what the machine actually is.
@@ -776,6 +807,8 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
   const bool animate = stdout_is_a_terminal() && !json;
   const bool colour = colour_is_enabled(animate);
   std::filesystem::create_directories(output);
+  std::unique_ptr<StdinCapture> stdin_capture;
+  if (build_and_run) stdin_capture = std::make_unique<StdinCapture>(output);
   const auto log_path = output / "autorecomp.log";
   std::ofstream log_file(log_path, std::ios::trunc);
   if (!log_file) throw std::runtime_error("cannot open the log file " + log_path.string());

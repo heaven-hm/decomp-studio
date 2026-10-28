@@ -83,7 +83,10 @@ std::string escape_shell(const std::filesystem::path& value) {
 
 RunReport capture_process(const std::string& command, const std::filesystem::path& error_path) {
   RunReport report;
-  FILE* stream = ::popen((command + " 2> " + escape_shell(error_path)).c_str(), "r");
+  std::string invocation = command + " 2> " + escape_shell(error_path);
+  if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE"))
+    invocation += " < " + escape_shell(stdin_path);
+  FILE* stream = ::popen(invocation.c_str(), "r");
   if (stream == nullptr) throw std::runtime_error("cannot launch generated executable");
   std::array<char, 4096> buffer{};
   while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), stream) != nullptr)

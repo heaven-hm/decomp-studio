@@ -289,7 +289,7 @@ void FunctionDiscovery::discover() {
             instruction.operands[0].kind == Operand::Kind::Register &&
             instruction.operands[1].kind == Operand::Kind::Memory &&
             instruction.operands[1].scale == 4 && !instruction.operands[1].index_register_name.empty() &&
-            instruction.operands[1].displacement > 0x1000 && !table_address) {
+            instruction.operands[1].displacement > 0x1000) {
           table_address = executable_.image_base +
                           static_cast<std::uint64_t>(instruction.operands[1].displacement);
         }

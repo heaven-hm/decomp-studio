@@ -5,14 +5,50 @@
 # Recomp Studio
 
 Recomp Studio is an experimental, open-source static recompilation CLI for
-legally obtained Windows executables. Its verified MVP accepts genuine PE32
-(x86) and PE32+ (x64) machine code and produces a native macOS ARM64 host
-program for a deliberately small, tested instruction subset.
+legally obtained Windows executables. It analyzes genuine PE32 (x86) and
+PE32+ (x64) machine code, lifts a tested instruction subset, emits portable
+C++20, and can build a native macOS arm64 host program.
 
 The project is intentionally fail-closed: unsupported formats, instructions,
 imports, and runtime behavior report errors rather than fabricated success.
 
-## Status
+## Verified snapshot
+
+The latest corpus run attempted **166 canonical Windows PE files** on macOS
+arm64. **21 completed the full build/run/differential pipeline**, including
+console samples such as Base64, Hangman, 2048, Snake, Tetris, and Tic-Tac-Toe.
+Every successful result is backed by a repository-local screenshot or an
+explicit no-output note.
+
+| | Result |
+| --- | ---: |
+| Canonical inputs attempted | **166** |
+| Complete verified passes | **21** |
+| x86 passes | **12** |
+| x86-64 passes | **9** |
+| Screenshot-backed passes | **20** |
+
+This is a measured subset, not a claim of universal Windows compatibility.
+GUI-heavy programs, broad Win32 imports, managed .NET/JVM binaries, Windows
+ARM64 guests, and many instructions remain outside the current frontend or
+runtime scope. See the [full application audit](reports/apps-running-results.md)
+for the complete 166-row ledger, logs, limitations, and evidence links.
+
+### Evidence gallery
+
+| x86 | x86-64 |
+| --- | --- |
+| ![Base64 x86](apps-running-screenshots/base64_x86.png) | ![Base64 x64](apps-running-screenshots/base64_x64.png) |
+| ![Hangman x86](apps-running-screenshots/hangman_x86_terminal.png) | ![Hangman x64](apps-running-screenshots/hangman_x64_terminal.png) |
+| ![Snake x86](apps-running-screenshots/snake_x86.png) | ![Snake x64](apps-running-screenshots/snake_x64.png) |
+| ![Tetris x86](apps-running-screenshots/tetris_x86_terminal.png) | ![Tetris x64](apps-running-screenshots/tetris_x64.png) |
+| ![Tic-Tac-Toe x86](apps-running-screenshots/tictactoe_x86_terminal.png) | ![Tic-Tac-Toe x64](apps-running-screenshots/tictactoe_x64.png) |
+
+All images above are checked-in captures of generated native programs. A
+successful lift or build without a completed differential run is not shown as
+a success.
+
+## Capability status
 
 | Capability | Status |
 | --- | --- |

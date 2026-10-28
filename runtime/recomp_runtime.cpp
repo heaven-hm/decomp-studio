@@ -491,6 +491,11 @@ void win32_registry_not_found(GuestContext* context) {
   // ERROR_FILE_NOT_FOUND result lets callers take their normal default path.
   set_import_result(context, 2);
 }
+void win32_path_find_filename_w(GuestContext* context) {
+  // Preserve a valid guest pointer; callers that only need to test for a path
+  // component still take their normal fallback path in headless mode.
+  set_import_result(context, import_argument(context, 0));
+}
 void win32_gdiplus_startup(GuestContext* context) {
   const auto token = import_argument(context, 0);
   if (token != 0) store_guest_memory(context, token, 1, guest_pointer_width);
@@ -4685,6 +4690,39 @@ const ShimDescriptor kShims[] = {
     {"gdiplus.dll", "GdipFree", win32_zero},
     {"gdiplus.dll", "GdipAlloc", win32_zero},
     {"comctl32.dll", "InitCommonControlsEx", win32_one},
+    {"shlwapi.dll", "PathFindFileNameW", win32_path_find_filename_w},
+    {"comdlg32.dll", "PrintDlgW", win32_zero},
+    {"comdlg32.dll", "ChooseFontW", win32_zero},
+    {"comdlg32.dll", "GetOpenFileNameW", win32_zero},
+    {"comdlg32.dll", "PageSetupDlgW", win32_zero},
+    {"comdlg32.dll", "GetSaveFileNameW", win32_zero},
+    {"shell32.dll", "DragQueryFileW", win32_zero},
+    {"shell32.dll", "DragFinish", win32_zero},
+    {"shell32.dll", "DragAcceptFiles", win32_zero},
+    {"shell32.dll", "ExtractIconExW", win32_zero},
+    {"user32.dll", "GetKeyState", win32_zero},
+    {"user32.dll", "LoadAcceleratorsW", win32_zero},
+    {"user32.dll", "TranslateAcceleratorW", win32_zero},
+    {"user32.dll", "GetMenu", win32_zero},
+    {"user32.dll", "CheckMenuItem", win32_zero},
+    {"user32.dll", "GetMenuItemCount", win32_zero},
+    {"user32.dll", "GetMenuItemInfoW", win32_zero},
+    {"user32.dll", "DrawTextW", win32_zero},
+    {"user32.dll", "GetWindowDC", msvcrt_get_dc},
+    {"user32.dll", "ModifyMenuW", win32_zero},
+    {"user32.dll", "GetSysColorBrush", win32_zero},
+    {"user32.dll", "DefDlgProcW", win32_zero},
+    {"user32.dll", "GetDlgItem", win32_zero},
+    {"user32.dll", "SetLayeredWindowAttributes", win32_one},
+    {"user32.dll", "GetWindow", win32_zero},
+    {"user32.dll", "GetClassNameW", win32_zero},
+    {"user32.dll", "InflateRect", win32_one},
+    {"user32.dll", "FrameRect", win32_one},
+    {"user32.dll", "DrawFocusRect", win32_one},
+    {"user32.dll", "GetWindowTextW", win32_zero},
+    {"user32.dll", "EndDialog", win32_one},
+    {"user32.dll", "IsWindow", win32_one},
+    {"user32.dll", "MoveWindow", win32_one},
     {"advapi32.dll", "RegOpenKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegCreateKeyExW", win32_registry_not_found},
     {"advapi32.dll", "RegQueryValueExW", win32_registry_not_found},

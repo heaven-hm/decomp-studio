@@ -115,6 +115,11 @@ inline constexpr Win32ImportAbi kWin32ImportAbiTable[] = {
     {"user32.dll", "MonitorFromWindow", 2, true},
     {"user32.dll", "SendMessageA", 4, true},
     {"user32.dll", "VkKeyScanA", 1, true},
+    {"advapi32.dll", "RegOpenKeyExW", 5, true},
+    {"advapi32.dll", "RegCreateKeyExW", 9, true},
+    {"advapi32.dll", "RegQueryValueExW", 6, true},
+    {"advapi32.dll", "RegSetValueExW", 6, true},
+    {"advapi32.dll", "RegCloseKey", 1, true},
     // libstdc++ is cdecl: the caller pops. The mangled names are the ABI, so
     // they are reproduced exactly as the linker records them.
     {"libstdc++-6.dll", "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode", 3, false, true},

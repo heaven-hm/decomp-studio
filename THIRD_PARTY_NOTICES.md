@@ -22,6 +22,9 @@ They are licensed under Apache-2.0; the license is reproduced in [LICENSE](LICEN
 The `AAS` translation and PE32 fixture also adapt Remill's
 `lib/Arch/X86/Semantics/DECIMAL.cpp` and `tests/X86/DECIMAL/AAS.S` at the same
 revision under the same license.
+The `PINSRW` translation, runtime lane helper, and fixture adapt the lane model
+from Remill's `lib/Arch/X86/Semantics/MMX.cpp` at the same revision under the
+same Apache-2.0 license.
 
 `runtime/upstream_scanf.c` and `runtime/scanf.h` are unmodified copies of
 [hisahi/scanf](https://github.com/hisahi/scanf) at commit

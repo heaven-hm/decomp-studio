@@ -43,6 +43,7 @@ FIXTURES = [
     ("movhps", "SSE upper-qword load preserving the lower half"),
     ("file_streams", "CRT and Win32 file access through the guest runtime"),
     ("shufpd", "SSE2 packed double shuffle register and memory forms"),
+    ("pinsrw", "SSE2 word insertion with register and memory sources"),
 ]
 
 # 32-bit (PE32) fixtures. These exercise the independent x86 decode mode, the
@@ -72,6 +73,7 @@ EXPECTED_OUTPUT = {
     "pe32_file_streams": ["fopen_write=1", "matches_source=1", "handle_matches=1",
                           "fopen_escape_null=1", "module_name_last_is_exe=1", "file_streams:done"],
     "shufpd": ["shufpd_reg_ok=1", "shufpd_mem_ok=1"],
+    "pinsrw": ["pinsrw_register_ok=1", "pinsrw_memory_ok=1"],
     "pe32_shufpd": ["shufpd_reg_ok=1", "shufpd_mem_ok=1"],
     "pe32_popal": ["popal_registers=1", "popal_stack=1"],
     "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],

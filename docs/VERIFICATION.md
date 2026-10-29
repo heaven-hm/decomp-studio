@@ -52,6 +52,12 @@ a run that finished.
 | `exit_codes_match` | the two sides returned the same status |
 | `control_registers_match` | control registers agree |
 
+The checkpoint does not include `xmm`/`ymm`/MMX register contents. The candidate models
+`mm0`-`mm7` as the low 64 bits of `vector_registers[0]`-`[7]`, with no x87 tag word, so
+`emms` is a no-op; MMX results are verified only through their copies to general
+registers and memory (`tests/fixtures/apps/mmx.c` does exactly that). MMX-only state is
+therefore outside the compared set, in the same category as vector state.
+
 Every one of these defaults to **false** and is set true only where a comparison actually
 ran. They defaulted true once, and a run with zero checkpoints printed "guest-memory digest
 agrees: yes" -- an agreement between two things that were never read.
@@ -69,6 +75,19 @@ The directive names this as a limitation to address. Addressing it needs an **in
 oracle**: execution of the original on real Windows, or Frida instrumentation of it. Neither
 is implemented. Until one is, this section is the honest scope of every verification claim
 the project makes.
+
+## Instructions the reference itself cannot execute
+
+The Unicorn reference runs with a null CS at CPL0 and no GDT. A protected-mode `IRETD`
+reloads CS through the GDT, so **every** IRET faults in the reference whatever selector the
+frame carries; a GDT can be installed through GDTR, but writing a CS selector is rejected by
+the engine as an exception. The `pe32_iretd32` fixture is therefore reported **candidate
+only**: its output (restored flags,
+unchanged ESP across the handler call) is checked against hand-computed expectations, and
+the test prints that the reference was not involved instead of calling the fixture
+`VERIFIED`. IRETD in real binaries is still exercised for translation and build by the
+instruction census and the corpus runs. The same applies to any future instruction that
+depends on privilege state the reference does not model.
 
 ## Gates, and the test that tries to defeat each
 

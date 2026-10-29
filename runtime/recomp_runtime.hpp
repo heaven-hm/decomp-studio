@@ -357,6 +357,39 @@ inline std::uint8_t decimal_adjust_after_addition(GuestContext* context, std::ui
   return value;
 }
 
+// DAS follows the pre-subtract AL value and the incoming borrow, in the BCD
+// sense the manual defines. OF is undefined by the ISA, so leave it untouched.
+inline std::uint8_t decimal_adjust_after_subtraction(GuestContext* context, std::uint8_t value) {
+  const auto old_value = value;
+  const auto old_carry = context->carry_flag;
+  if ((old_value & 0x0fu) > 9 || context->auxiliary_flag != 0) {
+    value = static_cast<std::uint8_t>(value - 0x06u);
+    context->carry_flag = (old_value < 6u || old_carry != 0) ? 1 : 0;
+    context->auxiliary_flag = 1;
+  } else {
+    context->carry_flag = 0;
+    context->auxiliary_flag = 0;
+  }
+  if (old_value > 0x99u || old_carry != 0) {
+    value = static_cast<std::uint8_t>(value - 0x60u);
+    context->carry_flag = 1;
+  }
+  update_zero_sign_parity(context, value, 1);
+  return value;
+}
+
+// ARPL raises the requested privilege level in the destination selector and
+// reports whether it changed anything. In the flat user-mode model the selector
+// value has no other meaning, so this is the instruction's whole effect.
+inline std::uint64_t adjust_requested_privilege_level(GuestContext* context, std::uint64_t destination,
+                                                      std::uint64_t source) {
+  const auto destination_level = destination & 3u;
+  const auto source_level = source & 3u;
+  context->zero_flag = destination_level < source_level ? 1 : 0;
+  if (destination_level < source_level) return (destination & ~0x3ull) | source_level;
+  return destination;
+}
+
 inline std::uint64_t add_with_flags(GuestContext* context, std::uint64_t left, std::uint64_t right, int width) {
   const auto mask = value_mask(width);
   const auto result = (left + right) & mask;
@@ -621,6 +654,13 @@ inline void push_guest_stack(GuestContext* context, std::uint64_t value) {
 inline std::uint64_t pop_guest_stack(GuestContext* context) {
   const auto value = load_guest_memory(context, context->registers[4], guest_pointer_width);
   context->registers[4] = mask_guest_address(context->registers[4] + static_cast<std::uint64_t>(guest_pointer_width));
+  return value;
+}
+
+// POPAW advances ESP by two bytes per slot, not by the guest pointer width.
+inline std::uint64_t pop_guest_stack16(GuestContext* context) {
+  const auto value = load_guest_memory(context, context->registers[4], 2);
+  context->registers[4] = mask_guest_address(context->registers[4] + 2);
   return value;
 }
 

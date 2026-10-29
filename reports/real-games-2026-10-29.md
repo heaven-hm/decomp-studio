@@ -31,6 +31,30 @@ the original CLI incorrectly displayed exit code 0 for those failures. The
 instruction addresses are discovery candidates, not proof that each instruction
 is reachable code. The two built programs did not pass differential verification.
 
+## Follow-up: legacy instruction coverage, 2026-10-29
+
+After adding lifters for `arpl`, `das`, `popaw`, `aad`, `salc`, `iretd`, `jcxz`
+and the `fdisi8087_nop` encoding, four of the blocked PE32 games were re-measured
+with `recomp-studio autorecomp <exe> --output <dir>` (no `--buildrun`, instruction
+census from step 4):
+
+| Game | Before | After |
+| --- | --- | --- |
+| Cave Story | stopped at `iretd` | **27341/27341 lifted, 0 unsupported; native build succeeded** |
+| Noiz2sa | stopped at `arpl` | **384200/384200 lifted, 0 unsupported; native build succeeded** |
+| Torus Trooper | stopped at `jcxz` | **126497/126497 lifted; native build succeeded; 20 s run timed out with no output because 102 SDL/OpenGL/bulletml imports are unimplemented** |
+| rRootage | stopped at `arpl` | 354584/354601 lifted; 17 unsupported, all `movd` |
+| Hero Core | stopped at `arpl` | 1999492/2000475 lifted; 983 unsupported across x87/MMX/system classes, first `fbstp`; the total sits just above the discovery's 2000000-instruction ceiling (`function_discovery.cpp`), and because the cap produces no diagnostic this run cannot distinguish a full traversal from a truncated one |
+
+The other ten games were not re-run. "Native build succeeded" means translate and
+build finished, not that the game is playable or that differential verification
+passed; library imports remain the dominant blocker once translation succeeds.
+
+The lifter previously rejected every `movd` whose operands were not `xmm`/`ymm`; the
+mm-register forms are now covered by `pe32_mmx` and verify differentially. If rRootage's
+17 `movd` instructions were those forms, its count is stale -- but the game binary was
+not available locally for a re-run, so no post-fix measurement exists.
+
 ## Separate PCRecomp experiment: Ikachan
 
 PCRecomp commit `a85ea970f9e0640ab6546d2ca7a01fccb132973d` generated and

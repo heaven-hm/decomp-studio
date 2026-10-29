@@ -38,6 +38,14 @@ if(RECOMP_PCRECOMP_SOURCE)
     set_tests_properties(pcrecomp_${test_name} PROPERTIES
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   endforeach()
+  add_executable(pcrecomp_stateless_crt_test ${PCRECOMP_HLE_SOURCES}
+    runtime/recomp_runtime.cpp runtime/pcrecomp_stateless_crt.cpp tests/compat/pcrecomp_stateless_crt_test.cpp)
+  target_compile_features(pcrecomp_stateless_crt_test PRIVATE cxx_std_20)
+  target_include_directories(pcrecomp_stateless_crt_test PRIVATE runtime "${PCRECOMP_HLE_DIR}"
+    "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+  target_link_libraries(pcrecomp_stateless_crt_test PRIVATE PkgConfig::PCRECOMP_SDL Threads::Threads m)
+  add_test(NAME pcrecomp_stateless_crt COMMAND pcrecomp_stateless_crt_test)
+  set_tests_properties(pcrecomp_stateless_crt PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   find_program(PCRECOMP_MINGW_CC i686-w64-mingw32-gcc)
   if(PCRECOMP_MINGW_CC)
     add_test(NAME pcrecomp_pe32_fixture COMMAND ${Python3_EXECUTABLE}

@@ -1,8 +1,8 @@
-# Recomp-Agent
+# Decomp Studio
 
 **Recover, recompile, and verify software for the future.**
 
-Recomp-Agent (formerly Recomp Studio) is a general-purpose hybrid decompilation
+Decomp Studio (formerly Recomp Studio; earlier roadmap name Recomp-Agent) is a general-purpose hybrid decompilation
 and static recompilation project, with an initial focus on preserving 2D and 3D
 games. It combines machine-level translation with external analysis providers
 and aims to produce source and native executables whose behavior can be tested
@@ -34,6 +34,42 @@ successful build do not establish behavioral equivalence.
 original game files and a scripted Enter key. This is not the standard
 `autorecomp` pipeline, a verified gameplay scenario, or a released port.*
 
+## How it compares
+
+These tools overlap and can complement one another; this table compares their
+published focus with Decomp Studio's **planned** workflow, not their maturity.
+
+| Project | Published focus | Decomp Studio's direction |
+| --- | --- | --- |
+| [rev.ng](https://rev.ng/) | Binary analysis and high-level decompilation across several architectures. | Combine its analysis artifacts with other providers, low-level recompilation and game-runtime verification. The adapter is experimental. |
+| [decompdecomp](https://github.com/n-delic/decompdecomp) | AI-assisted game decompilation targeting matching, byte-for-byte rebuilds. | Aim for observable behavioral equivalence and native outputs; AI is optional and exact original machine-code matching is not the goal. |
+| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | General reverse engineering, disassembly and decompilation framework. | Use Ghidra as an analysis provider within a larger intended source-to-native-build workflow. |
+| [PCRecomp](https://github.com/sp00nznet/pcrecomp) | Static recompilation tools and runtime infrastructure for PC software. | Reuse compatible pieces alongside semantic analysis and verification; the runtime bridge is experimental. |
+| [N64Recomp](https://github.com/N64Recomp/N64Recomp) | Static recompilation of Nintendo 64 game code. | Target general software formats and host architectures, initially legacy Windows games; those broader targets are not yet implemented. |
+
+## Third-party foundations
+
+| Component | License | Current relationship |
+| --- | --- | --- |
+| [PCRecomp](https://github.com/sp00nznet/pcrecomp) | MIT | External tools and optional runtime tests; adapted GDI source. |
+| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | Apache-2.0 | Optional external analysis and decompiler adapter. |
+| [rev.ng](https://github.com/revng/revng) | GPL-2.0 | External-process adapter tested with a stand-in; real provider not verified here. |
+| [Remill](https://github.com/lifting-bits/remill) | Apache-2.0 | Selected instruction semantics adapted with attribution. |
+| [LLVM / Clang](https://github.com/llvm/llvm-project) | Apache-2.0 with LLVM exception | Compiler for generated C++. |
+| [Unicorn](https://github.com/unicorn-engine/unicorn) | GPL-2.0 | Optional reference CPU emulation; shared shims limit independence. |
+| [Capstone](https://github.com/capstone-engine/capstone) | BSD-3-Clause | Instruction decoding. |
+| [igi-recomp](https://github.com/HenryKun55/igi-recomp) and [project-igi-browser](https://github.com/Dhaiwat10/project-igi-browser) | MIT | Selected attributed runtime adaptations. |
+| [SDL](https://github.com/libsdl-org/SDL) | zlib | Optional PCRecomp runtime dependency; indexed-bitmap technique adapted. |
+| [hisahi/scanf](https://github.com/hisahi/scanf), [nlohmann/json](https://github.com/nlohmann/json) | MIT | Vendored scanner and JSON parser. |
+| [CMake](https://cmake.org/), [Ninja](https://github.com/ninja-build/ninja) | BSD-3-Clause, Apache-2.0 | Build tools. |
+| [mingw-w64](https://github.com/mingw-w64/mingw-w64) | Mixed; see notices | Optional Windows fixture compiler and headers. |
+
+LIEF, Zydis, angr, Z3, radare2, Frida, Wine, Anvill and Rellic are optional
+research or future integrations, not a claim they are installed or used by the
+current pipeline. See [upstream components](docs/UPSTREAM_COMPONENTS.md),
+[tools.lock.json](tools.lock.json), and [third-party notices](THIRD_PARTY_NOTICES.md)
+for file-level provenance, exact versions, and distribution obligations.
+
 ## Build and try
 
 Install a C++20 toolchain, CMake, Ninja, and the dependencies listed in `CMakeLists.txt`, then:
@@ -44,7 +80,8 @@ build/recomp-studio doctor
 build/recomp-studio autorecomp /path/to/game.exe --output /tmp/recomp-game --buildrun --timeout 5
 ```
 
-Use a legally obtained executable and assets. Generated output is experimental;
+The executable is currently named `recomp-studio`; the project name change does not
+rename the CLI yet. Use a legally obtained executable and assets. Generated output is experimental;
 a built executable is not necessarily functional. Run `build/recomp-studio --help`
 for commands and `ctest --test-dir build --output-on-failure` for tests.
 

@@ -1,6 +1,6 @@
-# Recomp-Agent direction and implementation plan
+# Decomp Studio direction and implementation plan
 
-Recomp-Agent is a general-purpose hybrid decompilation and recompilation system.
+Decomp Studio is a general-purpose hybrid decompilation and recompilation system.
 Game preservation is the initial priority: first small 2D games, then 3D games,
 including Project I.G.I. Its intended input and output operating systems are
 Windows, macOS and Linux; intended CPU architectures are x86, x86-64, ARM32

@@ -1,6 +1,6 @@
 # Architecture
 
-Recomp-Agent aims to reconstruct source and native executables from binaries, with
+Decomp Studio aims to reconstruct source and native executables from binaries, with
 2D and 3D game preservation as its initial focus. The current pipeline targets a subset
 of Windows PE32/x86 and PE32+/x64 binaries and can compare selected behavior under Unicorn. This document describes what the
 system ACTUALLY does today, with the file that does it, and separates that from what is

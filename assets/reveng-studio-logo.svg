@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">RevEng-Studio</title>
+  <desc id="desc">Blue and white geometric R mark beside the RevEng-Studio wordmark, for game reverse engineering and legacy game recompilation.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#101d31"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#58c7ff"/>
+      <stop offset="1" stop-color="#1675f5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="320" rx="24" fill="url(#bg)"/>
+  <path d="M72 88H160L190 118H125L94 150H58L91 113Z" fill="url(#blue)"/>
+  <path d="M72 232H160L190 202H125L94 170H58L91 207Z" fill="url(#blue)"/>
+  <path d="M119 83H190L234 128L204 158L234 188L190 233H119L151 201H178L191 188L167 164L190 141L177 128H151Z" fill="#f4f8ff"/>
+  <path d="M209 83H247L294 131L266 160L294 189L247 233H209L257 188L229 160L257 131Z" fill="url(#blue)"/>
+  <text x="342" y="148" fill="#f4f8ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="72" font-weight="750" letter-spacing="-2">RevEng-<tspan fill="url(#blue)">Studio</tspan></text>
+  <text x="347" y="207" fill="#a9bdd7" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="25" font-weight="600" letter-spacing="5">LEGACY GAME REVERSE ENGINEERING</text>
+  <path d="M344 235H1108" stroke="#243a56" stroke-width="2"/>
+  <text x="347" y="275" fill="#d3e2f5" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22">Decompile  /  Recompile  /  Play Across Platforms</text>
+</svg>

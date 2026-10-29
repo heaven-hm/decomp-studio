@@ -1,87 +1,63 @@
-# Decomp Studio
+# RevEng-Studio
 
-**Recover, recompile, and verify software for the future.**
+<p align="center">
+  <img src="assets/reveng-studio-logo.svg" alt="RevEng-Studio — legacy game reverse engineering" width="760">
+</p>
 
-Decomp Studio (formerly Recomp Studio; earlier roadmap name Recomp-Agent) is a general-purpose hybrid decompilation
-and static recompilation project, with an initial focus on preserving 2D and 3D
-games. It combines machine-level translation with external analysis providers
-and aims to produce source and native executables whose behavior can be tested
-against the original.
+<p align="center">
+  <strong>Decompile. Recompile. Bring legacy games to modern operating systems.</strong>
+</p>
 
-## Direction and current status
+RevEng-Studio is a **game-only reverse-engineering and recompilation toolkit** for understanding, rebuilding, and preserving old games. The goal is to take legacy game executables and their supporting code, analyze how they work, reconstruct or translate their behavior, and produce native builds for modern platforms.
 
-Our target is Windows, macOS, and Linux software across x86, x86-64, ARM32,
-and ARM64, both as input architectures and native targets. These are **project
-goals, not a support guarantee**. Initial work concentrates on Windows x86 and
-x86-64 PE executables and macOS ARM64 output. Other formats, architectures,
-runtimes, graphics, audio, and input require further implementation and testing.
+It is designed as a **generic, extensible solution for games**, not a one-game port and not a general-purpose application decompiler. Shared pipelines handle common binary-analysis and recompilation work; game-specific adapters can provide engine, graphics, audio, input, filesystem, and operating-system compatibility where required.
 
-The existing pipeline can inspect PE files, recover candidate functions, lift a
-subset of x86 instructions, emit low-level C++, compile it, and compare selected
-behavior using Unicorn. `translate --source-mode hybrid` classifies every
-function as `high-level verified`, `low-level fallback`, or `unresolved` and
-delivers the classification with the source (`recomp-source-map.json`,
-`recomp-source-manifest.json`, and a build manifest that hashes the exact
-compiled tree). The current recognizers cover whole-body constant-return,
-stack-argument-return, and register-argument-return leaves; every function
-outside a proven pattern remains explicit machine-level fallback code.
-`--source-quality human-readable` is a fail-closed gate that refuses to emit a
-tree unless the measured census supports the claim. Ghidra analysis and rev.ng
-artifacts have external-tool adapters. The PCRecomp runtime has experimental
-integration tests. This is not yet broad type recovery or a complete
-high-level reconstruction pipeline, and the Windows-native target rows of the
-matrix are explicitly unsupported.
+## What it aims to do
 
-A [15-game test](reports/real-games-2026-10-29.md) produced **zero verified
-playable games**. An independent Windows oracle, a complete GUI/game runtime,
-and verified gameplay scenarios remain open work. Instruction coverage and a
-successful build do not establish behavioral equivalence.
+- **Analyze legacy game binaries** — inspect executable formats, identify functions, and collect evidence from reverse-engineering tools.
+- **Decompile and translate code** — recover higher-level information where possible and use lower-level translation when reliable source reconstruction is not available.
+- **Recompile for other platforms** — build native game code for supported host architectures and operating systems, with compatibility layers for legacy APIs.
+- **Reuse generic game infrastructure** — support multiple games and engines through modular format, analysis, and runtime adapters instead of hard-coding the entire pipeline to one title.
+- **Verify behavior** — compare observable execution against the original game and document what works, what fails, and what remains unverified.
 
-<p align="center"><img src="apps-running-screenshots/ikachan-pcrecomp-title.png" alt="Ikachan title screen in an experimental native PCRecomp host" width="640"></p>
+The long-term goal is to help legacy PC games run on **Windows, Linux, macOS, and other platforms as support is implemented**. Cross-platform support is a design goal, not a promise that every game or operating system works today.
 
-*Experimental PCRecomp host rendering Ikachan's title screen using the user's
-original game files and a scripted Enter key. This is not the standard
-`autorecomp` pipeline, a verified gameplay scenario, or a released port.*
+## Design inspiration
 
-## How it compares
+RevEng-Studio combines ideas from existing reverse-engineering and recompilation projects:
 
-These tools overlap and can complement one another; this table compares their
-published focus with Decomp Studio's **planned** workflow, not their maturity.
-
-| Project | Published focus | Decomp Studio's direction |
+| Project | What it contributes to the ecosystem | RevEng-Studio's intended use |
 | --- | --- | --- |
-| [rev.ng](https://rev.ng/) | Binary analysis and high-level decompilation across several architectures. | Combine its analysis artifacts with other providers, low-level recompilation and game-runtime verification. The adapter is experimental. |
-| [decompdecomp](https://github.com/n-delic/decompdecomp) | AI-assisted game decompilation targeting matching, byte-for-byte rebuilds. | Aim for observable behavioral equivalence and native outputs; AI is optional and exact original machine-code matching is not the goal. |
-| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | General reverse engineering, disassembly and decompilation framework. | Use Ghidra as an analysis provider within a larger intended source-to-native-build workflow. |
-| [PCRecomp](https://github.com/sp00nznet/pcrecomp) | Static recompilation tools and runtime infrastructure for PC software. | Reuse compatible pieces alongside semantic analysis and verification; the runtime bridge is experimental. |
-| [N64Recomp](https://github.com/N64Recomp/N64Recomp) | Static recompilation of Nintendo 64 game code. | Target general software formats and host architectures, initially legacy Windows games; those broader targets are not yet implemented. |
+| [PCRecomp](https://github.com/sp00nznet/pcrecomp) | Static recompilation tools and runtime infrastructure for PC software. | Reuse compatible recompilation/runtime techniques as part of a game-focused pipeline. Integration is experimental. |
+| [rev.ng](https://rev.ng/) | Binary analysis and decompilation across architectures. | Use analysis artifacts and provider adapters to inform reconstruction and recompilation. The adapter is experimental. |
+| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | Disassembly, decompilation, and reverse-engineering framework. | Optional analysis provider for examining game binaries. |
+| [N64Recomp](https://github.com/N64Recomp/N64Recomp) | Static recompilation focused on Nintendo 64 games. | A reference point for game recompilation workflows; RevEng-Studio targets a broader set of legacy game formats and hosts over time. |
 
-## Third-party foundations
+These projects have different scopes and maturity levels. RevEng-Studio is not a replacement for them; it aims to connect reusable analysis, translation, runtime, and verification components into a more general workflow for legacy games.
 
-| Component | License | Current relationship |
-| --- | --- | --- |
-| [PCRecomp](https://github.com/sp00nznet/pcrecomp) | MIT | External tools and optional runtime tests; adapted GDI source. |
-| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | Apache-2.0 | Optional external analysis and decompiler adapter. |
-| [rev.ng](https://github.com/revng/revng) | GPL-2.0 | External-process adapter tested with a stand-in; real provider not verified here. |
-| [Remill](https://github.com/lifting-bits/remill) | Apache-2.0 | Selected instruction semantics adapted with attribution. |
-| [LLVM / Clang](https://github.com/llvm/llvm-project) | Apache-2.0 with LLVM exception | Compiler for generated C++. |
-| [Unicorn](https://github.com/unicorn-engine/unicorn) | GPL-2.0 | Optional reference CPU emulation; shared shims limit independence. |
-| [Capstone](https://github.com/capstone-engine/capstone) | BSD-3-Clause | Instruction decoding. |
-| [igi-recomp](https://github.com/HenryKun55/igi-recomp) and [project-igi-browser](https://github.com/Dhaiwat10/project-igi-browser) | MIT | Selected attributed runtime adaptations. |
-| [SDL](https://github.com/libsdl-org/SDL) | zlib | Optional PCRecomp runtime dependency; indexed-bitmap technique adapted. |
-| [hisahi/scanf](https://github.com/hisahi/scanf), [nlohmann/json](https://github.com/nlohmann/json) | MIT | Vendored scanner and JSON parser. |
-| [CMake](https://cmake.org/), [Ninja](https://github.com/ninja-build/ninja) | BSD-3-Clause, Apache-2.0 | Build tools. |
-| [mingw-w64](https://github.com/mingw-w64/mingw-w64) | Mixed; see notices | Optional Windows fixture compiler and headers. |
+## Current status
 
-LIEF, Zydis, angr, Z3, radare2, Frida, Wine, Anvill and Rellic are optional
-research or future integrations, not a claim they are installed or used by the
-current pipeline. See [upstream components](docs/UPSTREAM_COMPONENTS.md),
-[tools.lock.json](tools.lock.json), and [third-party notices](THIRD_PARTY_NOTICES.md)
-for file-level provenance, exact versions, and distribution obligations.
+The project is experimental. The current pipeline can inspect PE files, recover candidate functions, lift a subset of x86 instructions, emit low-level C++, compile it, and compare selected behavior using Unicorn. `translate --source-mode hybrid` classifies every function as `high-level verified`, `low-level fallback`, or `unresolved` and delivers the classification with the source (`recomp-source-map.json`, `recomp-source-manifest.json`, and a build manifest that hashes the exact compiled tree). The current recognizers cover whole-body constant-return, stack-argument-return, and register-argument-return leaves; every function outside a proven pattern remains explicit machine-level fallback code. `--source-quality human-readable` is a fail-closed gate that refuses to emit a tree unless the measured census supports the claim. Ghidra analysis and rev.ng artifacts have external-tool adapters. PCRecomp runtime integration is experimental, and the Windows-native target rows of the matrix are explicitly unsupported.
+
+**Playable-game support is not yet verified.** A 15-game test produced zero verified playable games. A reliable original-Windows oracle, a complete game runtime, and verified gameplay scenarios remain open work. A successful build or instruction-coverage result does not prove that a game works correctly.
+
+An experimental PCRecomp host has rendered the Ikachan title screen using the user's original game files and a scripted Enter key. This is not a verified playable port or proof that the standard recompilation pipeline works end to end.
+
+## How the pipeline fits together
+
+1. **Inspect:** identify the executable format, architecture, and candidate functions.
+2. **Analyze:** gather disassembly and decompilation evidence through supported tools and adapters.
+3. **Translate and recompile:** generate low-level translated code where higher-level reconstruction is not yet reliable, then compile for a supported host.
+4. **Add game compatibility:** connect the runtime and platform services a particular game needs, such as graphics, audio, input, files, and timing.
+5. **Verify:** compare observable behavior against a suitable original-game reference and record evidence and limitations.
+
+Game-specific compatibility may still be required. “Generic” means the architecture is intended to be reusable across games; it does not mean every game can be ported automatically without per-game work.
 
 ## Build and try
 
-Install a C++20 toolchain, CMake, Ninja, and the dependencies listed in `CMakeLists.txt`, then:
+The CLI is currently named `recomp-studio`; the repository and product name are **RevEng-Studio**.
+
+Install a C++20 toolchain, CMake, Ninja, and the dependencies listed in `CMakeLists.txt`, then run:
 
 ```sh
 ./scripts/build.sh
@@ -89,25 +65,7 @@ build/recomp-studio doctor
 build/recomp-studio autorecomp /path/to/game.exe --output /tmp/recomp-game --buildrun --timeout 5
 ```
 
-The executable is currently named `recomp-studio`; the project name change does not
-rename the CLI yet. Use a legally obtained executable and assets. Generated output is experimental;
-a built executable is not necessarily functional. Run `build/recomp-studio --help`
-for commands and `ctest --test-dir build --output-on-failure` for tests.
-
-## How it fits together
-
-1. **Inspect and analyze:** parse the binary and recover candidate functions;
-   use Ghidra and other providers for additional evidence.
-2. **Reconstruct and recompile:** retain low-level translated code where
-   high-level reconstruction is not verified, and compile the delivered source.
-3. **Provide compatibility:** reuse appropriately licensed runtime components
-   for OS and game APIs, reporting missing behavior explicitly.
-4. **Verify:** compare execution and observable behavior, recording the oracle,
-   coverage, limitations, and evidence for each scenario.
-
-Verification currently shares some runtime shims between the candidate and its
-Unicorn reference, so agreement can miss errors common to both. Independent
-execution of the original on Windows remains a priority.
+Use legally obtained game executables and assets. Generated output is experimental and may not run correctly.
 
 ## Project documentation
 
@@ -116,5 +74,4 @@ execution of the original on Windows remains a priority.
 - [Upstream components](docs/UPSTREAM_COMPONENTS.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
 - [Game test results](reports/real-games-2026-10-29.md) and [historical application results](reports/apps-running-results.md)
 
-Game binaries and assets are not distributed with this project. See [LICENSE](LICENSE)
-and the third-party notices for source licensing and attribution.
+Game binaries and assets are not distributed with this project. See [LICENSE](LICENSE) and the third-party notices for licensing and attribution.

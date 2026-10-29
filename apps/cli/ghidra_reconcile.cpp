@@ -83,10 +83,34 @@ int main(int argc, char** argv) {
 
     // This project's functions, as ABSOLUTE addresses so the two sides are comparable.
     // The provider reports absolute addresses; discovery keys on them too.
+    //
+    // The CALLING CONVENTION is derived from the function's own `ret` instruction, which is
+    // the ABI signal the machine actually carries: `ret` returns with no stack adjustment
+    // (cdecl), and `ret N` pops N bytes (stdcall). This is not a guess about the source --
+    // it is what the epilogue does, and the lifter already emits it
+    // (`return_from_guest_function(context, N)` in core/semantics/x86_64_lifter.cpp).
+    struct LocalFunction {
+      std::string convention;
+      std::uint64_t stack_bytes{};
+    };
     std::set<std::uint64_t> local;
+    std::map<std::uint64_t, LocalFunction> local_conventions;
     for (const auto& [address, function] : discovery.functions()) {
-      (void)function;
       local.insert(address);
+      LocalFunction fact{"unknown", 0};
+      for (const auto& [instruction_address, instruction] : function.instructions) {
+        (void)instruction_address;
+        if (instruction.mnemonic != "ret") continue;
+        if (!instruction.operands.empty() &&
+            instruction.operands[0].kind == recomp::discovery::Operand::Kind::Immediate) {
+          fact.stack_bytes = instruction.operands[0].immediate_value;
+          fact.convention = "stdcall";
+        } else {
+          fact.convention = "cdecl";
+        }
+        break;  // the first `ret` is the epilogue that matters
+      }
+      local_conventions[address] = fact;
     }
 
     const auto provider = provider_addresses(read_file(argv[2]));
@@ -135,7 +159,22 @@ int main(int argc, char** argv) {
     emit(agreed, "agreed");
     emit(provider_only, "provider-only");
     emit(local_only, "local-only");
-    std::cout << "]}\n";
+    std::cout << "],\"conventions\":{";
+    // Reported, never applied. The reconciliation rule is explicit: a calling convention is
+    // not changed without an ABI test, so a disagreement here is EVIDENCE for a later test,
+    // not a reason to rewrite anything.
+    std::map<std::string, std::size_t> tally;
+    for (const auto& [address, fact] : local_conventions) {
+      (void)address;
+      tally[fact.convention] += 1;
+    }
+    bool first_convention = true;
+    for (const auto& [name, count] : tally) {
+      if (!first_convention) std::cout << ',';
+      first_convention = false;
+      std::cout << '"' << name << "\":" << count;
+    }
+    std::cout << "}}\n";
     // ANY unresolved disagreement is a finding, not a success. The first rule here was
     // `agreed.empty() && !provider.empty()`, which exited zero whenever the two sides
     // agreed on ANYTHING -- so a record that agreed on 36 functions and invented a 37th

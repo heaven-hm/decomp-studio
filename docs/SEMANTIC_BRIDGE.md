@@ -76,10 +76,15 @@ never been shown a contradiction has not been shown to detect one.
 - **It does not change the translator.** No output of the reconciler feeds back into code
   generation. Using an unverified provider to change what is emitted is exactly what the
   `unverified` marking exists to prevent.
-- **It reconciles addresses only.** The provider record also carries `calling_convention`,
-  `flags`, `body_bytes` and `references`; those are **not yet compared**. Calling conventions
-  are the next fact worth reconciling, and the rule for them is already fixed: a convention
-  is not changed without an ABI test.
+- **It reports calling conventions but does not compare them against the provider's yet.**
+  The convention is derived from the function's own `ret` instruction -- the ABI signal the
+  machine actually carries: `ret` returns with no stack adjustment (cdecl), `ret N` pops N
+  bytes (stdcall). It is not a guess about the source; it is what the epilogue does, and the
+  lifter already emits it (`return_from_guest_function(context, N)` in
+  `core/semantics/x86_64_lifter.cpp`). A function with no `ret` at all -- one that ends in a
+  `jmp`, or a thunk -- is reported `unknown` rather than defaulted to cdecl.
+  The provider's `calling_convention` field is **not yet read**, so the two are not compared.
+- **`flags`, `body_bytes` and `references` are not compared either.**
 - **It has no rev.ng input**, because there is no rev.ng adapter -- and per
   `docs/UPSTREAM_COMPONENTS.md` any future one must be an external process, since rev.ng is
   GPLv2.

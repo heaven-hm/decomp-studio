@@ -95,6 +95,22 @@ if mixed:
 check("reconcile/conflict-preserved", bool(invented) if mixed else False,
       "the conflicting hypothesis was discarded instead of reported")
 
+# CALLING CONVENTIONS, reported from the function's own `ret` and never applied. The
+# reconciliation rule is that a convention is not changed without an ABI test, so the tool
+# must REPORT what it derived rather than rewrite anything.
+check("reconcile/reports-conventions", isinstance(agreed.get("conventions"), dict) if agreed else False,
+      "no conventions reported")
+if agreed and isinstance(agreed.get("conventions"), dict):
+    total = sum(agreed["conventions"].values())
+    check("reconcile/conventions-cover-functions", total == len(local_addresses),
+          f"conventions cover {total} of {len(local_addresses)} functions")
+    check("reconcile/conventions-are-named",
+          all(k in ("cdecl", "stdcall", "unknown") for k in agreed["conventions"]),
+          f"unexpected convention names: {list(agreed['conventions'])}")
+    check("reconcile/unknown-is-not-guessed",
+          "unknown" not in agreed["conventions"] or agreed["conventions"]["unknown"] < len(local_addresses),
+          "every function was reported unknown, so the `ret` scan is not reading anything")
+
 for line in PASSES:
     print("PASS " + line)
 for line in FAILURES:

@@ -1,4 +1,5 @@
 #include "core/common/sha256.hpp"
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -37,7 +38,9 @@ int main(int argc, char** argv) {
     if (posix_spawn(&child, raw[0], nullptr, nullptr, raw.data(), environ) != 0)
       throw std::runtime_error("could not launch Ghidra");
     int status{};
-    if (waitpid(child, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
       throw std::runtime_error("Ghidra failed; inspect the output logs");
     std::string name = binary.filename().string();
     for (const auto* suffix : {".dll", ".exe"}) {

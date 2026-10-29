@@ -69,6 +69,8 @@ add_executable(ghidra-import apps/cli/ghidra_import.cpp core/common/sha256.cpp)
 add_executable(ghidra-run apps/cli/ghidra_run.cpp core/common/sha256.cpp)
 target_compile_features(ghidra-run PRIVATE cxx_std_20)
 target_include_directories(ghidra-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME ghidra_run COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_run_test.py $<TARGET_FILE:ghidra-run>)
 target_compile_features(ghidra-import PRIVATE cxx_std_20)
 target_include_directories(ghidra-import PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME ghidra_import COMMAND ${Python3_EXECUTABLE}

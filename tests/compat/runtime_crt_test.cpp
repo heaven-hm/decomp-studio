@@ -125,6 +125,11 @@ int main() {
     store_guest_memory(&context, context.registers[4] + 20, text_format, 4);
     invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
     check(get_string(0x240000) == "CUBE_DEFAULT", "UCRT 0x26 narrow string format");
+    const auto integer_format = put_string(0x220000, ",%d");
+    store_guest_memory(&context, 0x230000, 42, 4);
+    store_guest_memory(&context, context.registers[4] + 20, integer_format, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(get_string(0x240000) == ",42", "UCRT 0x26 integer format");
     guest_pointer_width = 8;
   }
 

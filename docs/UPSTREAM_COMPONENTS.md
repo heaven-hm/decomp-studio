@@ -1,0 +1,81 @@
+# Upstream components
+
+What this project uses from other projects, under what licence, and by what integration
+mechanism. Every entry states the mechanism because **the mechanism is what determines the
+obligation**: adapting source into the core is not the same act as invoking a program.
+
+The authoritative inventory is `tools.lock.json`; the authoritative attribution record is
+`THIRD_PARTY_NOTICES.md`. This document explains the reasoning behind both.
+
+## The licence position, in one table
+
+| component | licence | used how | in the core? |
+|---|---|---|---|
+| Capstone | BSD-3-Clause | linked, instruction decoding | **yes** |
+| LLVM / clang++ | Apache-2.0 with LLVM exception | invoked to compile the generated project | no |
+| CMake / Ninja | BSD-3-Clause / Apache-2.0 | build | no |
+| Remill | Apache-2.0 | **semantics adapted**, with attribution | **yes** (attributed) |
+| igi-recomp | MIT | **shims adapted**, with attribution | **yes** (attributed) |
+| project-igi-browser | MIT | **shims and one lifter technique adapted** | **yes** (attributed) |
+| hisahi/scanf | MIT | vendored | **yes** (attributed) |
+| Ghidra | Apache-2.0 | **external process** | no |
+| Unicorn | **GPL-2.0** | linked into the test/verification tooling | **not in the shipped core** |
+| radare2 | **LGPL-3.0-only** | not integrated | no |
+| LIEF, Zydis, angr, Z3, Frida | Apache-2.0 / MIT / BSD-2 / MIT / wxWindows | optional, `required=false` | no |
+
+`tools.lock.json` marks each entry `required`. **Unicorn is `required=false` and radare2 is
+`required=false`, and that is a licensing decision, not a technical one**: a copyleft
+dependency must not become load-bearing for the shipped artifact.
+
+## The two integration mechanisms, and why they are different
+
+### Adaptation (source enters the core)
+
+Permitted only for permissive licences, and only with attribution that names the upstream
+file and the exact commit. `THIRD_PARTY_NOTICES.md` records, for each adaptation:
+
+- upstream repository and **exact commit**;
+- the **source file**;
+- **copyright holder**;
+- **licence**, with the licence text reproduced under `third_party/`;
+- **what was modified** -- in every case the semantics are re-expressed against this
+  project's `GuestContext` rather than copied verbatim.
+
+Examples with their recorded commits: Remill's `lib/Arch/X86/Semantics/MMX.cpp` at
+`56918a8c2554088e93389e97d292f4035286506c` for the `PINSRW`/`PEXTRW` lane model; igi-recomp's
+`shim/src/kernel32.c` at `278eaf6394f7f42c7de6cffef2cf982154f59899` for `GetLocalTime`;
+project-igi-browser's `host/kernel32.c` for the console and heap adapters.
+
+### Invocation (a program runs, its output is read)
+
+Ghidra is a JVM application, so `apps/cli/ghidra_run.cpp` spawns `analyzeHeadless` and
+`apps/cli/ghidra_import.cpp` parses its output. **This is not a claim that process isolation
+removes the obligation.** What it changes is the nature of the obligation: the project
+distributes no Ghidra code and links nothing from it, so the Apache-2.0 notice requirement
+attaches to the tool the user installs, not to this source tree. That distinction is real
+but narrow, and it is recorded here rather than relied on silently.
+
+## What is deliberately NOT used
+
+- **rev.ng** -- assigned high-level source reconstruction by the directive. **No adapter
+  exists and no rev.ng code is present.** rev.ng's licence and the availability of the
+  specific components the directive lists have not been verified, and the directive warns
+  against assuming every advertised feature is publicly available or usable through one
+  interface. This is an open gap.
+- **Wine** -- the directive suggests Wine as an API provider. Wine's `msvcrt` is
+  **LGPL-2.1+**, which cannot be copied into this core. The project implements its own CRT
+  surface and used MIT `hisahi/scanf` where a scanner was needed.
+- **QEMU, Box64, FEX, DARWIN, Proton** -- GPL or otherwise out of scope for linking; none is
+  integrated.
+
+## Rules this project follows
+
+1. **Check the licence before copying, per file.** A repository's `LICENSE` does not
+   necessarily cover every file in it.
+2. **Copyleft code does not enter the core.** If a capability needs a GPL/LGPL component, it
+   is either invoked as an external process or not used, and the reason is recorded.
+3. **Every adaptation is attributed with its commit.** An adaptation whose provenance cannot
+   be established is not landed.
+4. **`THIRD_PARTY_NOTICES.md` is updated in the same commit as the adaptation**, not later.
+5. **No claim that "it is only a tool" settles the question.** The mechanism is described,
+   and the obligation it creates is stated.

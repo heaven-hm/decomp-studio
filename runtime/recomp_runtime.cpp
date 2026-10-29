@@ -3604,12 +3604,15 @@ std::string msvcrt_format_arguments_with_reader(GuestContext* context, const std
       case 'e':
       case 'E':
       case 'g':
-      case 'G':
+      case 'G': {
         // A float argument arrives in the guest's list as an 8-byte double: the Windows
         // ABI promotes it exactly as the C rules require.
-        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(),
-                                static_cast<double>(next(8)));
+        const auto bits = next(8);
+        double value;
+        std::memcpy(&value, &bits, sizeof(value));
+        written = std::snprintf(buffer, sizeof(buffer), host_format.c_str(), value);
         break;
+      }
       case 's': {
         const auto address = next(pointer_width);
         const auto text = address == 0 ? std::string("(null)") : read_guest_string(address);
@@ -3638,14 +3641,14 @@ std::string msvcrt_format_arguments_with_reader(GuestContext* context, const std
 }
 
 // A v* CRT entry receives a guest va_list pointer. The list advances by one guest
-// pointer-width slot for every conversion, regardless of the value's native width.
+// pointer-width slots for each argument, with 64-bit PE32 values occupying two.
 std::string msvcrt_format_arguments(GuestContext* context, const std::string& format,
                                     std::uint64_t arguments) {
   const int pointer_width = static_cast<int>(guest_pointer_width);
   return msvcrt_format_arguments_with_reader(
       context, format, [context, arguments, pointer_width](int slot) mutable {
         const auto value = load_guest_memory(context, arguments, slot);
-        arguments += static_cast<std::uint64_t>(pointer_width);
+        arguments += static_cast<std::uint64_t>(pointer_width >= 8 || slot <= 4 ? pointer_width : 8);
         return value;
       });
 }

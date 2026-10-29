@@ -109,6 +109,15 @@ int main() {
     invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
     check(context.registers[0] == 8, "PE32 __stdio_common_vsprintf returns the formatted length");
     check(get_string(0x240000) == "value=42", "PE32 __stdio_common_vsprintf reads its va_list after locale");
+    const auto float_format = put_string(0x220000, "%.1f %d");
+    const double floating = 1.5;
+    std::uint64_t bits;
+    std::memcpy(&bits, &floating, sizeof(bits));
+    store_guest_memory(&context, 0x230000, bits, 8);
+    store_guest_memory(&context, 0x230008, 42, 4);
+    store_guest_memory(&context, context.registers[4] + 20, float_format, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(get_string(0x240000) == "1.5 42", "PE32 va_list preserves double bits and advances eight bytes");
     guest_pointer_width = 8;
   }
 

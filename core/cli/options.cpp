@@ -50,6 +50,10 @@ const std::vector<OptionSpec>& specs() {
       {"--timeout", "<seconds>", "Execution timeout", ValueKind::Integer, {}, "", "Verification Options", false},
 
       // --- Source Generation ----------------------------------------------
+      {"--source-mode", "<mode>", "Source reconstruction mode", ValueKind::Enum,
+       {"low-level", "hybrid"}, "low-level", "Source Generation", true},
+      {"--source-quality", "<level>", "Minimum acceptable source quality", ValueKind::Enum,
+       {"any", "human-readable"}, "any", "Source Generation", true},
       {"--source-style", "<style>", "Source style", ValueKind::Enum,
        {"faithful", "readable"}, "faithful", "Source Generation", true},
       {"--recover-types", "", "Enable type recovery", ValueKind::Flag, {}, "", "Source Generation", true},

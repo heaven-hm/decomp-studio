@@ -14,6 +14,7 @@ anything else and leaves the tree dirty if it crashes.
 
 Usage: heap_corruption_test.py <cli> <fixtures-dir> <scratch-dir>
 """
+import hashlib
 import json
 import pathlib
 import re
@@ -55,6 +56,24 @@ def verify(project):
         return None
 
 
+def record_manifest_hash(project, filename):
+    """Re-record a deliberate test mutation in the delivered-source manifest.
+
+    `build` refuses source that no longer matches recomp-source-manifest.json, which is
+    the correct fail-closed behavior and is tested separately. A mutation that is meant
+    to reach the verifier must therefore update the manifest entry, exactly as a
+    re-translate of the mutated source would.
+    """
+    manifest = project / "recomp-source-manifest.json"
+    digest = hashlib.sha256((project / filename).read_bytes()).hexdigest()
+    lines = []
+    for line in manifest.read_text().splitlines():
+        if f'"path": "{filename}"' in line:
+            line = re.sub(r'"sha256": "[0-9a-f]{64}"', f'"sha256": "{digest}"', line)
+        lines.append(line)
+    manifest.write_text("\n".join(lines) + "\n")
+
+
 def main():
     fixture = FIXTURES / "bin" / "heap.exe"
     if not fixture.exists():
@@ -88,6 +107,7 @@ def main():
         if text.count(anchor) != 1:
             return 1
         runtime.write_text(text.replace(anchor, MUTATION + anchor, 1))
+        record_manifest_hash(project, "recomp_runtime.hpp")
 
         rebuilt = subprocess.run([CLI, "build", str(project)], text=True, capture_output=True)
         check("mutation/builds", rebuilt.returncode == 0, rebuilt.stderr[:300])

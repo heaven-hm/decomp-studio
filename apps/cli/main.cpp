@@ -1,4 +1,5 @@
 #include "core/binary/pe.hpp"
+#include "core/codegen/project_generator.hpp"
 #include "core/common/configuration.hpp"
 #include "core/common/diagnostic.hpp"
 #include "core/common/sha256.hpp"
@@ -523,23 +524,38 @@ recomp::common::Configuration make_configuration(const std::filesystem::path& co
 
 int command_translate(const std::filesystem::path& input, const std::filesystem::path& output,
                       const std::filesystem::path& config_path, const std::string& target,
-                      const std::string& source_style, bool json) {
+                      const std::string& source_mode, const std::string& source_quality, bool json) {
   auto configuration = make_configuration(config_path, target, output);
-  configuration.source_style = source_style;
+  configuration.source_mode = source_mode;
+  configuration.source_quality = source_quality;
   const auto report = recomp::pipeline::translate(input, output, configuration);
   recomp::pipeline::write_manifest(report, output);
   if (json) {
     std::cout << "{\"status\":\"ok\",\"target\":\"" << configuration.target << "\",\"output\":"
               << recomp::common::quote_json(output.string()) << ",\"function_count\":" << report.function_count
               << ",\"import_count\":" << report.import_count
+              << ",\"source_mode\":" << recomp::common::quote_json(report.source_mode)
+              << ",\"source_quality\":" << recomp::common::quote_json(report.source_quality)
               << ",\"high_level_functions\":" << report.high_level_function_count
+              << ",\"low_level_fallback_functions\":" << report.low_level_fallback_count
+              << ",\"unresolved_functions\":" << report.unresolved_function_count
+              << ",\"policy_override_functions\":" << report.policy_override_count
+              << ",\"high_level_percent\":" << report.high_level_percent
+              << ",\"source_map\":" << recomp::common::quote_json((output / "recomp-source-map.json").string())
+              << ",\"source_manifest\":" << recomp::common::quote_json((output / "recomp-source-manifest.json").string())
               << ",\"unsupported_mnemonics\":"
               << report.unsupported_mnemonics.size() << "}\n";
   } else {
     std::cout << "translated " << report.function_count << " functions, " << report.import_count << " imports\n"
-              << "high-level candidates: " << report.high_level_function_count << "\n"
+              << "source mode:     " << report.source_mode << " (quality gate: " << report.source_quality << ")\n"
+              << "high-level verified:   " << report.high_level_function_count << "\n"
+              << "low-level fallback:    " << report.low_level_fallback_count << "\n"
+              << "unresolved:            " << report.unresolved_function_count << "\n"
+              << "policy override:       " << report.policy_override_count << "\n"
+              << "verified fraction:     " << report.high_level_percent << "%\n"
               << "project:  " << output.string() << "\n"
-              << "source:   sha256=" << report.sha256.substr(0, 16) << "...\n";
+              << "source:   sha256=" << report.sha256.substr(0, 16) << "...\n"
+              << "provenance: " << (output / "recomp-source-map.json").string() << "\n";
     if (!report.unsupported_mnemonics.empty()) {
       std::cout << "unsupported mnemonics:\n";
       for (const auto& [mnemonic, count] : report.unsupported_mnemonics)
@@ -875,7 +891,8 @@ HostTarget detect_host_target() {
 }
 
 int command_autorecomp(const std::filesystem::path& input, const std::filesystem::path& output,
-                       const std::string& requested_target, bool repair, bool build_and_run, bool json,
+                       const std::string& requested_target, const std::string& source_mode,
+                       const std::string& source_quality, bool repair, bool build_and_run, bool json,
                        std::size_t repair_budget) {
   const bool animate = stdout_is_a_terminal() && !json;
   const bool colour = colour_is_enabled(animate);
@@ -991,6 +1008,11 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
 
   bool translated = false;
   std::size_t missing_imports = 0;
+  std::size_t high_level_verified = 0;
+  std::size_t low_level_fallback = 0;
+  std::size_t unresolved_functions = 0;
+  std::size_t policy_overrides = 0;
+  double high_level_percent = 0.0;
   if (failure.empty()) {
     display.begin("check import compatibility");
     try {
@@ -1018,13 +1040,37 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
   if (failure.empty()) {
     display.begin("translate to host source");
     try {
-      const auto configuration = make_configuration({}, target, output);
+      auto configuration = make_configuration({}, target, output);
+      configuration.source_mode = source_mode;
+      configuration.source_quality = source_quality;
       const auto report = recomp::pipeline::translate(input, output, configuration);
       recomp::pipeline::write_manifest(report, output);
       translated = true;
+      high_level_verified = report.high_level_function_count;
+      low_level_fallback = report.low_level_fallback_count;
+      unresolved_functions = report.unresolved_function_count;
+      policy_overrides = report.policy_override_count;
+      high_level_percent = report.high_level_percent;
+      display.note("source mode " + report.source_mode + ", quality gate " + report.source_quality);
+      display.note(std::to_string(report.high_level_function_count) + " high-level verified, " +
+                   std::to_string(report.low_level_fallback_count) + " low-level fallback, " +
+                   std::to_string(report.unresolved_function_count) + " unresolved, " +
+                   std::to_string(report.policy_override_count) + " policy override");
+      display.note("provenance: " + (output / "recomp-source-map.json").string());
       display.note("project written to " + std::filesystem::absolute(output).string());
       display.finish(true, std::to_string(report.function_count) + " functions, " +
                                std::to_string(report.import_count) + " imports");
+    } catch (const recomp::codegen::SourceQualityError& error) {
+      // Report the census the gate measured, not zeros: a refusal is itself
+      // measured evidence about the binary.
+      const auto& census = error.census();
+      high_level_verified = census.high_level_verified;
+      low_level_fallback = census.low_level_fallback;
+      unresolved_functions = census.unresolved;
+      policy_overrides = census.policy_override;
+      high_level_percent = census.high_level_percent();
+      display.finish(false, error.what());
+      fail_step(error.what());
     } catch (const std::exception& error) {
       display.finish(false, error.what());
       fail_step(error.what());
@@ -1162,6 +1208,13 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << ",\"unsupported_instructions\":" << unsupported
               << ",\"unsupported_class_count\":" << unsupported_classes
               << ",\"missing_imports\":" << missing_imports
+              << ",\"source_mode\":" << recomp::common::quote_json(source_mode)
+              << ",\"source_quality\":" << recomp::common::quote_json(source_quality)
+              << ",\"high_level_verified\":" << high_level_verified
+              << ",\"low_level_fallback\":" << low_level_fallback
+              << ",\"unresolved_functions\":" << unresolved_functions
+              << ",\"policy_override\":" << policy_overrides
+              << ",\"high_level_percent\":" << high_level_percent
               << ",\"built\":" << (built_executable.empty() ? "false" : "true")
               << ",\"run_exit_code\":" << (run_completed ? std::to_string(run_exit_code) : "null")
               << ",\"verified\":" << (verified ? "true" : "false")
@@ -1180,7 +1233,11 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
                                                              : 100.0 * static_cast<double>(instruction_count - unsupported) /
                                                                    static_cast<double>(instruction_count))
               << "%  (" << unsupported << " unsupported in " << unsupported_classes << " classes)\n"
-              << "  imports     " << missing_imports << " without shims\n";
+              << "  imports     " << missing_imports << " without shims\n"
+              << "  source      " << source_mode << " mode, " << source_quality << " quality gate\n"
+              << "  classes     " << high_level_verified << " high-level verified, " << low_level_fallback
+              << " low-level fallback, " << unresolved_functions << " unresolved, " << policy_overrides
+              << " policy override (" << high_level_percent << "% verified)\n";
     if (!built_executable.empty()) std::cout << "  executable  " << built_executable.string() << "\n";
     if (build_and_run) {
       if (run_completed) std::cout << "  run         exit code " << run_exit_code << "\n";
@@ -1456,6 +1513,8 @@ int main(int argc, char** argv) {
     if (command == "autorecomp") {
       std::filesystem::path image, output;
       std::string target;
+      std::string source_mode = "low-level";
+      std::string source_quality = "any";
       bool repair = false, build_and_run = false;
       std::size_t budget = 4;
       for (int index = 2; index < argc; ++index) {
@@ -1466,13 +1525,20 @@ int main(int argc, char** argv) {
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
         if (option == "--budget" && index + 1 < argc) { budget = std::stoul(argv[++index]); continue; }
+        if (option == "--source-mode" && index + 1 < argc) { source_mode = argv[++index]; continue; }
+        if (option == "--source-quality" && index + 1 < argc) { source_quality = argv[++index]; continue; }
+        if (option == "--source-style" && index + 1 < argc) {
+          source_mode = std::string{argv[++index]} == "readable" ? "hybrid" : "low-level";
+          continue;
+        }
         if (option == "--timeout" && index + 1 < argc) { ::setenv("RECOMP_RUN_TIMEOUT", argv[++index], 1); continue; }
         if (option.rfind("--timeout=", 0) == 0) { ::setenv("RECOMP_RUN_TIMEOUT", option.substr(10).c_str(), 1); continue; }
         if (image.empty()) image = argv[index];
       }
       if (image.empty()) return fail("autorecomp requires an image path", json);
       if (output.empty()) output = std::filesystem::path("out") / image.stem();
-      return command_autorecomp(image, output, target, repair, build_and_run, json, budget);
+      return command_autorecomp(image, output, target, source_mode, source_quality, repair, build_and_run, json,
+                                budget);
     }
     if (command == "functions") {
       if (argc < 3) return fail("functions requires an image path", json);
@@ -1493,18 +1559,24 @@ int main(int argc, char** argv) {
     if (command == "translate") {
       std::filesystem::path image, output, config;
       std::string target = "native";
-      std::string source_style = "faithful";
+      std::string source_mode = "low-level";
+      std::string source_quality = "any";
       for (int index = 2; index < argc; ++index) {
         const std::string option{argv[index]};
         if (option == "--json") continue;
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
         if (option == "--config" && index + 1 < argc) { config = argv[++index]; continue; }
-        if (option == "--source-style" && index + 1 < argc) { source_style = argv[++index]; continue; }
+        if (option == "--source-mode" && index + 1 < argc) { source_mode = argv[++index]; continue; }
+        if (option == "--source-quality" && index + 1 < argc) { source_quality = argv[++index]; continue; }
+        if (option == "--source-style" && index + 1 < argc) {
+          source_mode = std::string{argv[++index]} == "readable" ? "hybrid" : "low-level";
+          continue;
+        }
         if (image.empty()) image = argv[index];
       }
       if (image.empty() || output.empty()) return fail("translate requires <image> --output <dir>", json);
-      return command_translate(image, output, config, target, source_style, json);
+      return command_translate(image, output, config, target, source_mode, source_quality, json);
     }
     if (command == "build") {
       std::filesystem::path project, config;

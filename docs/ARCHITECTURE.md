@@ -55,18 +55,75 @@ dispatch loop over an instruction table: each recovered function becomes a C++ f
 `core/ir/cpp_backend.cpp` renders it. A reader can open `guest.cpp` and read the translation
 of a specific function at a specific address.
 
-### Bounded high-level reconstruction
+### Hybrid source: three classes, one delivered tree
 
-`core/semantics/high_level_reconstruction.cpp` contains the first deliberately
-narrow readable-source recognizer. It accepts only a complete function body
-containing `mov eax/rax, immediate` followed by `ret`,
-ignoring alignment `nop`/`endbr` instructions. The generated helper is emitted
-only for that exact evidence-backed shape and records the guest address as
-provenance. `translate --source-style readable` selects this path; the default
-`faithful` style is unchanged. All other functions continue through the
-machine-level IR backend, so a readable-source count is never a claim that the
-whole binary has been decompiled. The `coverage` and translation manifest report
-the candidate count separately.
+Every recovered function is classified and the classification travels with
+the emitted source, from the shared `LiftedProgram` through
+`GeneratedProject`, `TranslateReport`, `recomp-source-map.json`, and the
+translation manifest. There are three classes plus an explicit override:
+
+| class | meaning | in `guest.cpp` |
+|---|---|---|
+| `high-level verified` | whole-body recognizer matched; readable helper with provenance header | emitted typed helper + guest-context wrapper |
+| `low-level fallback` | function exists but no recognizer matched | machine-level IR translation |
+| `unresolved` | function body could not be lifted at all | diagnostic, never silently dropped |
+| `policy override` | explicitly configured, recorded as such | config-driven |
+
+`core/semantics/high_level_reconstruction.cpp` contains the recognizers. Each
+one accepts a COMPLETE function body -- no extra instructions, no flags effects
+outside the recognized shape -- and emits evidence backed by the decoded
+instructions:
+
+- `constant-return`: `mov eax/rax, imm` + `ret` (width 4/8 from the register).
+- `stack-argument-return`: `mov eax, dword ptr [esp + 4]` + `ret`.
+- `register-argument-return`: `mov eax, ecx` / `mov rax, rcx` + `ret`.
+
+Alignment `nop`/`endbr` instructions are ignorable; anything else makes the
+body ineligible. Names and types in the rendered helper are deliberately
+generic (`reconstructed_0x401000`), never invented symbol names presented as
+recovered facts. The provenance header states the class, recognizer, machine
+evidence, and confidence.
+
+`translate --source-mode hybrid` enables the recognizers; the default
+`--source-mode low-level` keeps the previous faithful output and reports zero
+high-level functions. `--source-mode hybrid --source-quality human-readable`
+is a fail-closed gate: translation refuses to write any file unless the census
+shows `unresolved == 0` and `high_level_verified > 0`, and the refusal reports
+the measured census. A readable percentage is therefore always a measured
+claim about the delivered tree, never an aspiration.
+
+Provenance files written next to `guest.cpp`:
+
+- `recomp-source-map.json` -- per function: address, classification,
+  recognizer or blocker, evidence, instruction and byte counts, plus the
+  census (`total_functions`, `high_level_verified`, `low_level_fallback`,
+  `unresolved`, `policy_override`, `high_level_percent`; the percentage is
+  capped at 99.99 until every function is verified).
+- `recomp-source-manifest.json` -- every generated file with SHA-256 and
+  size. Both translate and build use the same `LiftedProgram`: the delivered
+  source IS the compiled source.
+- `recomp-build-manifest.json` (written by `build`) -- executable path,
+  SHA-256, size, compiler, target, command, and the source hashes that were
+  verified before compilation. `build` fails closed if any manifest hash is
+  missing or does not match the file on disk.
+- `recomp-manifest.json` -- image identity: input SHA-256, architecture,
+  function and import counts, entry point, unsupported mnemonics.
+
+### Target matrix, stated honestly
+
+| guest | host | status |
+|---|---|---|
+| Windows x86 (PE32) | macOS ARM64 (native process) | proven: the default `native` target; this is the path the end-to-end tests execute |
+| Windows x86 (PE32) | Windows x86 process | unsupported: no Windows host or Wine provider in this tree |
+| Windows x86 (PE32) | Windows x64 process | unsupported: same blocker |
+| Windows x64 (PE32+) | macOS ARM64 | lifting and verification exist; the Windows-native target rows stay unsupported |
+| Windows x64 (PE32+) | Windows x64 process | unsupported: no Windows host provider |
+
+The runtime is POSIX-only and no Wine integration ships in this tree, so a
+request for a Windows native target is refused with the exact blocker rather
+than approximated. macOS ARM64 execution of translated x86/x64 guest code is
+the proven path because the generated C++ is ordinary host code and the
+verifier runs it as a native process.
 
 ## What the verifier actually compares
 

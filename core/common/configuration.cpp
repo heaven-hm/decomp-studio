@@ -69,6 +69,8 @@ Configuration Configuration::load(const std::filesystem::path& path) {
     else if (key == "strict") configuration.strict_lifting = value == "true" || value == "1";
     else if (key == "compiler") configuration.compiler = unquote(value);
     else if (key == "source_style") configuration.source_style = unquote(value);
+    else if (key == "source_mode") configuration.source_mode = unquote(value);
+    else if (key == "source_quality") configuration.source_quality = unquote(value);
     else if (key == "stack_top") configuration.stack_top = parse_integer(value);
     else if (key == "heap_base") configuration.heap_base = parse_integer(value);
     else if (key == "entry_point_rva") configuration.entry_point_rva = static_cast<std::uint32_t>(parse_integer(value));

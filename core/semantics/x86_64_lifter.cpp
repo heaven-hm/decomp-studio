@@ -2755,11 +2755,7 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
   return lifted;
 }
 
-std::string X86_64Lifter::lift_function(const RecoveredFunction& function, bool readable) const {
-  if (readable) {
-    if (const auto high_level = recognize_constant_return(function))
-      return render_constant_return(*high_level, guest_function_name(function.entry));
-  }
+std::string X86_64Lifter::lift_function(const RecoveredFunction& function) const {
   const auto lifted = lift_function_to_ir(function);
   std::string output;
   output += "static void " + lifted.name + "(GuestContext* context) {\n";
@@ -2785,7 +2781,8 @@ ir::StatementCensus X86_64Lifter::statement_census() const {
   return ir::census(module);
 }
 
-std::string X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
+LiftedProgram X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
+  LiftedProgram program;
   std::string declarations;
   std::string definitions;
   for (const auto& [address, symbol] : native_overrides_) {
@@ -2793,35 +2790,102 @@ std::string X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
     declarations += "extern \"C\" void " + symbol + "(GuestContext* context);\n";
   }
   if (!native_overrides_.empty()) declarations += "\n";
+
+  const auto record = [&program](FunctionSourceRecord entry) {
+    ++program.census.total_functions;
+    switch (entry.classification) {
+      case SourceClass::HighLevelVerified: ++program.census.high_level_verified; break;
+      case SourceClass::LowLevelFallback: ++program.census.low_level_fallback; break;
+      case SourceClass::Unresolved: ++program.census.unresolved; break;
+      case SourceClass::PolicyOverride: ++program.census.policy_override; break;
+    }
+    program.functions.push_back(std::move(entry));
+  };
+
   for (const auto& [address, function] : discovery_.functions()) {
     declarations += "static void " + guest_function_name(address) + "(GuestContext* context);\n";
+    FunctionSourceRecord entry;
+    entry.address = address;
+    entry.instruction_count = function.instructions.size();
+    for (const auto& [instruction_address, instruction] : function.instructions) {
+      (void)instruction_address;
+      entry.byte_count += instruction.size;
+    }
+
     if (native_overrides_.count(address) != 0) {
+      entry.classification = SourceClass::PolicyOverride;
+      entry.evidence = "native override -> " + native_overrides_.at(address);
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Evidence: " << entry.evidence << "\n";
+      definitions += header.str();
       definitions += "static void " + guest_function_name(address) + "(GuestContext* context) { " +
                      native_overrides_.at(address) + "(context); }\n\n";
+      record(std::move(entry));
       continue;
     }
     if (stubbed_functions_.count(address) != 0) {
+      entry.classification = SourceClass::PolicyOverride;
+      entry.evidence = "configured stub; behavior replaced and not verified";
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Evidence: " << entry.evidence << "\n";
+      definitions += header.str();
       definitions += "static void " + guest_function_name(address) +
                      "(GuestContext* context) { context->registers[4] += 8; context->registers[0] = 0; return; }\n\n";
+      record(std::move(entry));
       continue;
     }
+    if (readable) {
+      if (const auto high_level = recognize_high_level(function)) {
+        entry.classification = SourceClass::HighLevelVerified;
+        entry.recognizer = high_level->recognizer;
+        entry.evidence = high_level->evidence;
+        definitions += render_high_level(*high_level, guest_function_name(address));
+        definitions += "\n";
+        record(std::move(entry));
+        continue;
+      }
+    }
     try {
-      definitions += lift_function(function, readable);
+      const auto definition = lift_function(function);
+      entry.classification = SourceClass::LowLevelFallback;
+      std::ostringstream evidence;
+      evidence << "machine-level lift of " << entry.instruction_count << " instructions ("
+               << entry.byte_count << " bytes)";
+      entry.evidence = evidence.str();
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Evidence: " << entry.evidence << "\n";
+      definitions += header.str();
+      definitions += definition;
       definitions += "\n";
-    } catch (const LiftError&) {
+    } catch (const LiftError& error) {
       if (strict) throw;
+      entry.classification = SourceClass::Unresolved;
+      entry.evidence = error.what();
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Blocker: " << entry.evidence << "\n";
+      definitions += header.str();
       definitions += "static void " + guest_function_name(address) +
                      "(GuestContext* context) { recomp_unsupported(context, \"function failed to lift\"); }\n\n";
     }
+    record(std::move(entry));
   }
-  return declarations + "\n" + definitions;
+  program.source = declarations + "\n" + definitions;
+  return program;
 }
 
 std::size_t X86_64Lifter::high_level_function_count() const {
   std::size_t count = 0;
   for (const auto& [address, function] : discovery_.functions()) {
     if (native_overrides_.count(address) == 0 && stubbed_functions_.count(address) == 0 &&
-        recognize_constant_return(function))
+        recognize_high_level(function))
       ++count;
   }
   return count;

@@ -18,13 +18,19 @@ runtimes, graphics, audio, and input require further implementation and testing.
 
 The existing pipeline can inspect PE files, recover candidate functions, lift a
 subset of x86 instructions, emit low-level C++, compile it, and compare selected
-behavior using Unicorn. A bounded readable-source path recognizes exact
-constant-return leaf functions when requested with `translate --source-style
-readable`; every function outside that proven pattern remains explicit
-machine-level fallback code. Ghidra analysis and rev.ng artifacts have
-external-tool adapters. The PCRecomp runtime has experimental integration
-tests. This is not yet broad type recovery or a complete high-level
-reconstruction pipeline.
+behavior using Unicorn. `translate --source-mode hybrid` classifies every
+function as `high-level verified`, `low-level fallback`, or `unresolved` and
+delivers the classification with the source (`recomp-source-map.json`,
+`recomp-source-manifest.json`, and a build manifest that hashes the exact
+compiled tree). The current recognizers cover whole-body constant-return,
+stack-argument-return, and register-argument-return leaves; every function
+outside a proven pattern remains explicit machine-level fallback code.
+`--source-quality human-readable` is a fail-closed gate that refuses to emit a
+tree unless the measured census supports the claim. Ghidra analysis and rev.ng
+artifacts have external-tool adapters. The PCRecomp runtime has experimental
+integration tests. This is not yet broad type recovery or a complete
+high-level reconstruction pipeline, and the Windows-native target rows of the
+matrix are explicitly unsupported.
 
 A [15-game test](reports/real-games-2026-10-29.md) produced **zero verified
 playable games**. An independent Windows oracle, a complete GUI/game runtime,

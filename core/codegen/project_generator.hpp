@@ -6,10 +6,24 @@
 #include "core/semantics/x86_64_lifter.hpp"
 
 #include <filesystem>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace recomp::codegen {
+
+// Carries the census the gate measured so callers can report the refusal with
+// the real classification instead of zeros.
+class SourceQualityError : public std::runtime_error {
+ public:
+  SourceQualityError(std::string message, semantics::SourceCensus census)
+      : std::runtime_error(std::move(message)), census_(census) {}
+  const semantics::SourceCensus& census() const { return census_; }
+
+ private:
+  semantics::SourceCensus census_;
+};
 
 struct GeneratedProject {
   std::filesystem::path guest_source;
@@ -20,6 +34,10 @@ struct GeneratedProject {
   std::size_t function_count{};
   std::size_t import_count{};
   std::size_t high_level_function_count{};
+  // The classification that produced the bytes in guest_source, copied from the
+  // same LiftedProgram that was written, so a report cannot describe other source.
+  std::vector<semantics::FunctionSourceRecord> source_records;
+  semantics::SourceCensus source_census;
 };
 
 class ProjectGenerator {
@@ -35,7 +53,7 @@ class ProjectGenerator {
   GeneratedProject generate(const std::filesystem::path& output_directory) const;
 
  private:
-  std::string build_guest_source() const;
+  std::string build_guest_source(semantics::LiftedProgram& lifted) const;
 
   const binary::PortableExecutable& executable_;
   const discovery::FunctionDiscovery& discovery_;

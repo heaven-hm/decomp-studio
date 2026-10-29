@@ -87,6 +87,29 @@ the rev.ng adapter; that work was merged, not overwritten.
    in `tools.lock.json` as a licensing decision.
 5. **The verification's limits are written down** where they cannot be missed, including the
    one that bounds everything: the reference and the candidate share a shim table.
+6. **Source-first hybrid translation is delivered (Issue #67).** Every function is classified
+   (`high-level verified` / `low-level fallback` / `unresolved` / `policy override`) and the
+   classification travels with the exact emitted source: `recomp-source-map.json` per function
+   with recognizer and machine evidence, `recomp-source-manifest.json` with a SHA-256 per file,
+   and `recomp-build-manifest.json` tying the build command and executable hash to the verified
+   source hashes. `build` fails closed on any hash mismatch.
+   `translate --source-mode hybrid --source-quality human-readable` refuses to emit a tree
+   unless the measured census has `unresolved == 0` and at least one verified function. The
+   end-to-end test compiles a PE32 fixture with mingw-w64, translates it hybrid, checks the
+   manifest/map/gate semantics including a fail-closed negative run, builds the project, and
+   differentially verifies the candidate against Unicorn execution (`VERIFIED`). The honest
+   target matrix lives in `docs/ARCHITECTURE.md`: macOS ARM64 native is proven; Windows-native
+   host rows are unsupported with the exact blockers (POSIX-only runtime, no Wine/Windows host).
+
+   **Measured on a real game binary, not a fixture** (`rrootage/rr.exe`, 2523 functions):
+   hybrid translate classifies 2523 low-level fallback, 0 unresolved, 0 high-level — no
+   whole-body leaf recognizer matches production code, and the census says so instead of
+   inflating the percentage. `--source-quality human-readable` exits 1 with the measured
+   census and writes zero files. `build` re-verifies all 10 delivered-source hashes and
+   produces `recomp-guest` (11,180,672 bytes, sha256 `56b0cbd5…`); the executable runs guest
+   code and stops with `indirect jump to unmapped guest address 0x410c61 (ip=0x415bbb)` — an
+   explicit fail-closed diagnostic for an unrecovered jump-table target, which is the
+   remaining work between "runs" and "plays", not a claim of either.
 
 ## Next, in order
 

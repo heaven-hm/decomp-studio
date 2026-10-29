@@ -2,6 +2,7 @@
 
 #include "core/discovery/function_discovery.hpp"
 #include "core/ir/ir.hpp"
+#include "core/semantics/high_level_reconstruction.hpp"
 
 #include <cstdint>
 #include <map>
@@ -51,6 +52,15 @@ struct CoverageCensus {
   }
 };
 
+// Generated source plus the per-function classification that produced it. The
+// two travel together so a census can never describe source other than the one
+// being delivered.
+struct LiftedProgram {
+  std::string source;
+  std::vector<FunctionSourceRecord> functions;
+  SourceCensus census;
+};
+
 class X86_64Lifter {
  public:
   explicit X86_64Lifter(const discovery::FunctionDiscovery& discovery) : discovery_(discovery) {}
@@ -63,7 +73,7 @@ class X86_64Lifter {
     native_overrides_ = native_overrides;
   }
 
-  std::string lift_all_functions(bool strict, bool readable = false) const;
+  LiftedProgram lift_all_functions(bool strict, bool readable = false) const;
   const std::map<std::string, int>& unsupported_mnemonics() const { return unsupported_mnemonics_; }
 
   // Classify every recovered instruction without aborting, so that a program the
@@ -77,7 +87,7 @@ class X86_64Lifter {
 
  private:
   ir::Function lift_function_to_ir(const discovery::RecoveredFunction& function) const;
-  std::string lift_function(const discovery::RecoveredFunction& function, bool readable) const;
+  std::string lift_function(const discovery::RecoveredFunction& function) const;
   void emit_instruction(const discovery::DecodedInstruction& instruction,
                         const discovery::RecoveredFunction& function, ir::Function& output) const;
   void record_unsupported(const std::string& mnemonic, const discovery::DecodedInstruction& instruction) const;

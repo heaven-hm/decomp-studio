@@ -27,6 +27,14 @@ struct Configuration {
   std::vector<std::string> compile_flags;
   std::string compiler = "clang++";
   std::string source_style = "faithful";
+  // "hybrid" runs the verified high-level recognizers; "low-level" emits the
+  // machine-level lift for every function. Neither mode ever presents fallback
+  // code as a high-level reconstruction. "low-level" is the default so the
+  // existing faithful contract is unchanged unless hybrid is asked for.
+  std::string source_mode = "low-level";
+  // "any" accepts whatever the mode produces; "human-readable" refuses to write a
+  // project whose census contains unresolved functions or no verified function.
+  std::string source_quality = "any";
   std::filesystem::path runtime_directory;
 
   // Advanced, config-driven recompilation controls (N64Recomp/igi-recomp parity).

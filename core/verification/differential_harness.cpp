@@ -62,6 +62,7 @@ struct ReferenceState {
   std::uint64_t guest_instruction_count{};
   std::uint64_t current_instruction{};
   bool requested_exit{};
+  int exit_status{};
   std::uint64_t last_counted_address{~0ull};
   std::FILE* mxcsr_log{};
   std::uint32_t mxcsr_last{0xffffffffu};
@@ -423,9 +424,12 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   guest_output_capture = &state.output;
   // The guest calling ExitProcess must end the reference run, not the studio.
   guest_exit_handler = [](int code) {
-    (void)code;
     if (reference_state != nullptr) {
       reference_state->finished = true;
+      // The status is KEPT, not discarded. It is the reference's answer to the same
+      // question the candidate answers, and comparing them is the only way to tell a
+      // program that chose to exit non-zero from a translation that diverged.
+      reference_state->exit_status = code;
       uc_emu_stop(reference_state->engine);
     }
   };
@@ -513,6 +517,8 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);
   run.output = state.output;
   run.instruction_count = state.instruction_count;
+  run.reference_exit_code = state.exit_status;
+  run.reference_reached_exit = state.finished;
   run.note = state.note;
   // Handlers the guest registered with atexit are NOT run here. The candidate can run
   // them because they are compiled functions; the reference has no compiled code and
@@ -735,7 +741,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.candidate_error = candidate.standard_error;
   result.candidate_ran = true;
   result.candidate_exit_code = candidate.exit_code;
-  result.candidate_completed = candidate.exit_code == 0;
+  // A port is not wrong because the PROGRAM chose a non-zero status. It is wrong when the
+  // two sides DISAGREE about the status. The old rule -- `exit_code == 0` -- marked every
+  // program that legitimately exits non-zero as a failed port, which is how `dominosasolver`
+  // came to be reported as a failure while its output matched the reference byte for byte.
+  result.candidate_completed = candidate.exit_code == result.reference_exit_code;
+  result.exit_codes_match = candidate.exit_code == result.reference_exit_code;
   {
     std::filesystem::create_directories(project_directory / "reports");
     std::ofstream(project_directory / "reports" / "reference.txt") << result.reference_output;

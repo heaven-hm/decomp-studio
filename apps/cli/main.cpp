@@ -574,6 +574,8 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"candidate_ran\":" << (result.candidate_ran ? "true" : "false")
               << ",\"diagnosis\":" << recomp::common::quote_json(result.diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
+              << ",\"reference_exit_code\":" << result.reference_exit_code
+              << ",\"exit_codes_match\":" << (result.exit_codes_match ? "true" : "false")
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
               << ",\"candidate_bytes\":" << result.candidate_output.size()

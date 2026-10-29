@@ -47,6 +47,12 @@ int main(int argc, char** argv) {
         fields[2].find_first_not_of("0123456789") != std::string::npos || fields[2].empty()) {
       std::cerr << "invalid Ghidra export row: " << line << '\n'; return 1;
     }
+    try {
+      fields[1] = std::to_string(std::stoull(fields[1]));
+      fields[2] = std::to_string(std::stoull(fields[2]));
+    } catch (const std::exception&) {
+      std::cerr << "Ghidra export count out of range: " << line << '\n'; return 1;
+    }
     rows.push_back(fields);
   }
   if (rows.empty()) { std::cerr << "Ghidra export contains no functions\n"; return 1; }

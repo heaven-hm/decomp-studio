@@ -5,8 +5,9 @@
 // record whose association is unverified cannot be used to change what the translator does,
 // because a wrong association would attribute one program's functions to another.
 //
-// Reconciling it against an INDEPENDENT source resolves that -- not by trusting either side,
-// but by comparing them. This project's own discovery is that independent source: it is
+// Comparing it with an INDEPENDENT source checks address agreement, but cannot establish
+// binary identity: unrelated binaries can share the same function addresses. This project's
+// own discovery is that independent source: it is
 // derived from the binary by a different method (Capstone decoding, entry-point and
 // relocation seeding) and shares no code with Ghidra.
 //
@@ -101,17 +102,16 @@ int main(int argc, char** argv) {
     std::set_difference(local.begin(), local.end(), provider.begin(), provider.end(),
                         std::back_inserter(local_only));
 
-    // The association is VERIFIED when the independent source confirms the provider's
-    // functions at the same addresses. It is not verified by the provider saying so.
-    const bool association_verified = !provider.empty() && provider_only.empty();
-    const char* association = association_verified ? "verified"
-                              : agreed.empty()      ? "contradicted"
-                                                    : "partially-verified";
+    const bool all_provider_addresses_agree = !provider.empty() && provider_only.empty();
+    const char* agreement = all_provider_addresses_agree ? "complete"
+                            : agreed.empty()             ? "none"
+                                                         : "partial";
 
     std::cout << "{\"schema_version\":1"
               << ",\"provider\":\"Ghidra\""
               << ",\"reconciled_against\":\"recomp-studio function discovery\""
-              << ",\"binary_export_association\":" << '"' << association << '"'
+              << ",\"binary_export_association\":\"unverified\""
+              << ",\"address_agreement\":" << '"' << agreement << '"'
               << ",\"provider_functions\":" << provider.size()
               << ",\"local_functions\":" << local.size()
               << ",\"agreed\":" << agreed.size()
@@ -127,9 +127,9 @@ int main(int argc, char** argv) {
         hex << std::hex << address;
         std::cout << "{\"address\":\"" << hex.str() << "\",\"state\":\"" << state
                   << "\",\"confidence\":\""
-                  << (std::string(state) == "agreed" ? "confirmed-by-two-providers" : "single-provider")
+                  << (std::string(state) == "agreed" ? "matching-address-only" : "single-provider")
                   << "\",\"verification\":\""
-                  << (std::string(state) == "agreed" ? "corroborated" : "unresolved") << "\"}";
+                  << "unresolved" << "\"}";
       }
     };
     emit(agreed, "agreed");
@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
     // agreed on ANYTHING -- so a record that agreed on 36 functions and invented a 37th
     // was reported as fine. Partial agreement is still disagreement about the rest, and
     // the exit status is what a caller acts on, so it must reflect that.
-    return association_verified ? 0 : 1;
+    return all_provider_addresses_agree ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << "reconcile failed: " << error.what() << '\n';
     return 2;

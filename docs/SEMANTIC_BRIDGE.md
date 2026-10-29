@@ -12,16 +12,15 @@ it.** A record whose association is unverified cannot be allowed to change what 
 translator does, because a wrong association would attribute one program's function
 boundaries to another and every downstream fact would inherit the error.
 
-The directive's rule is to resolve that by comparison rather than by trust, and to preserve
-conflicts rather than average them.
+Comparison can expose conflicts, but matching addresses do not establish which binary an
+export came from. Preserve conflicts and require separate provenance for binary identity.
 
 ## What is reconciled
 
 This project's **own** function discovery is the independent source. It is derived from the
 binary by a different method -- Capstone decoding, seeded from the entry point, relocations,
 exception data and jump tables -- and shares no code with Ghidra. Two independent derivations
-of the same binary that agree are corroboration; where they disagree, the disagreement is the
-finding.
+of the same binary that agree would be corroboration; this tool cannot establish that premise.
 
 ```
 binary ──┬─> recomp-studio discovery ──> local addresses     ─┐
@@ -33,7 +32,7 @@ binary ──┬─> recomp-studio discovery ──> local addresses     ─┐
 
 | state | meaning | confidence |
 |---|---|---|
-| `agreed` | **both** sources recovered a function at this address | `confirmed-by-two-providers` |
+| `agreed` | both records report this address | `matching-address-only` |
 | `provider-only` | only the provider reports it | `single-provider` |
 | `local-only` | only this project reports it | `single-provider` |
 
@@ -47,12 +46,11 @@ corroborated.
 
 | verdict | when |
 |---|---|
-| `verified` | every provider address is corroborated by local discovery |
-| `partially-verified` | some are corroborated, some are not |
-| `contradicted` | none are |
+| `unverified` | every record: address overlap alone cannot prove binary identity |
 
-The process **exits non-zero unless the association is `verified`**, so a caller cannot
-mistake partial agreement for success.
+The separate `address_agreement` field reports `complete`, `partial`, or `none`.
+Exit zero means every reported provider address appeared in local discovery; it does not
+verify identity, completeness, function boundaries or behavior.
 
 ## Two bugs the test found in the implementation
 

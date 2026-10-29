@@ -47,8 +47,8 @@ def run(record_text):
 local = json.loads(subprocess.run([CLI, FIXTURE, "/dev/null"], capture_output=True, text=True).stdout)
 local_addresses = [f["address"] for f in local["functions"]]
 check("reconcile/has-local-functions", len(local_addresses) > 0, "no functions discovered")
-check("reconcile/empty-record-contradicts", local["binary_export_association"] == "contradicted",
-      f"a record with no functions reported {local['binary_export_association']!r}")
+check("reconcile/empty-record-has-no-agreement", local["address_agreement"] == "none",
+      f"a record with no functions reported {local['address_agreement']!r}")
 
 # A record that AGREES: every local address, and nothing else.
 agreed_record = json.dumps({"schema_version": 1, "functions":
@@ -56,17 +56,19 @@ agreed_record = json.dumps({"schema_version": 1, "functions":
 agreed, code = run(agreed_record)
 check("reconcile/agreement-json", agreed is not None, "no JSON for an agreeing record")
 if agreed:
-    check("reconcile/agreement-is-verified", agreed["binary_export_association"] == "verified",
-          f"full agreement reported {agreed['binary_export_association']!r}")
+    check("reconcile/agreement-does-not-prove-identity", agreed["binary_export_association"] == "unverified",
+          f"fabricated matching addresses reported {agreed['binary_export_association']!r}")
+    check("reconcile/agreement-complete", agreed["address_agreement"] == "complete",
+          f"full address agreement reported {agreed['address_agreement']!r}")
     check("reconcile/agreement-counts", agreed["agreed"] == len(local_addresses),
           f"{agreed['agreed']} agreed of {len(local_addresses)}")
     check("reconcile/agreement-has-no-dissent",
           agreed["provider_only"] == 0 and agreed["local_only"] == 0,
           f"provider_only={agreed['provider_only']} local_only={agreed['local_only']}")
     check("reconcile/agreement-exit-zero", code == 0, f"exit {code}")
-    check("reconcile/agreement-is-corroborated",
-          all(f["verification"] == "corroborated" for f in agreed["functions"]),
-          "an agreed function was not marked corroborated")
+    check("reconcile/agreement-remains-unverified",
+          all(f["verification"] == "unresolved" for f in agreed["functions"]),
+          "address agreement was treated as behavioral verification")
 
 # A record with ONE FALSE address: the association must NOT be called verified, the false
 # address must be reported as the provider's alone, and the exit status must say so.

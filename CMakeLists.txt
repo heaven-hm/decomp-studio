@@ -75,6 +75,16 @@ target_compile_features(ghidra-import PRIVATE cxx_std_20)
 target_include_directories(ghidra-import PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME ghidra_import COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_import_test.py $<TARGET_FILE:ghidra-import>)
+# The reconciler needs the project's own discovery, so it links the same sources the studio
+# does rather than reimplementing any of them.
+add_executable(ghidra-reconcile apps/cli/ghidra_reconcile.cpp core/binary/pe.cpp
+  core/discovery/function_discovery.cpp)
+target_compile_features(ghidra-reconcile PRIVATE cxx_std_20)
+target_include_directories(ghidra-reconcile PRIVATE ${RECOMP_INCLUDE_DIRS})
+target_link_libraries(ghidra-reconcile PRIVATE ${RECOMP_LIBRARIES})
+add_test(NAME ghidra_reconcile COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_reconcile_test.py $<TARGET_FILE:ghidra-reconcile>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/bin/arith.exe)
 target_compile_features(recomp-studio PRIVATE cxx_std_20)
 target_include_directories(recomp-studio PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(recomp-studio PRIVATE ${RECOMP_LIBRARIES})

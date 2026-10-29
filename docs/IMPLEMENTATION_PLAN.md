@@ -188,6 +188,40 @@ the Windows runtime surface -- not on the translation. That is a different probl
 different shape: a lifter gap is a few instructions, and a GUI runtime surface is hundreds of
 functions. Recording which one is binding matters more than the count of games that fail.
 
+## Issue #67: the Windows target, measured to its actual blocker
+
+§4 asks for Windows targets and says to distinguish **host native ISA** from **retained guest
+state emulation**. Both are done here by attempting the build rather than by declaring support.
+
+**Two real blockers were removed, and the third is recorded with its exact error.**
+
+1. **The driver.** `clang++ -target i686-w64-mingw32` fails with
+   `fatal error: 'cmath' file not found` -- clang does not know where that toolchain's headers
+   are. The generated build now uses the mingw **driver** (`i686-w64-mingw32-g++`), which
+   selects the same triple and knows its own sysroot. *Declaring a target and being able to
+   build one are different things.*
+
+2. **The platform layer.** The runtime included `sys/mman.h` and `unistd.h` unconditionally.
+   The host-specific surface turned out to be **two includes and ONE call site**: the guest
+   address space is a single anonymous mapping, `mmap` on POSIX and `VirtualAlloc(MEM_RESERVE)`
+   on Windows. That is now `#ifdef _WIN32`, so the runtime compiles further than before on a
+   Windows target.
+
+3. **`__int128`, which is the actual blocker.** 32-bit mingw does not support it, and the
+   runtime uses it in **10 places** -- every 64x64 multiply, divide and carry/overflow
+   computation in the instruction semantics. That is the honest reason the Windows target does
+   not build today, and it is a property of the SEMANTICS layer rather than of the runtime.
+
+**The target is therefore DECLARED and the driver REACHES it, and the build stops in the
+semantics layer.** Reporting "Windows supported" on the strength of a triple in a table would be
+exactly the confusion the issue names.
+
+**AND THE HONEST READING OF THE TARGET ITSELF**: even once it builds, compiling x86-32 guest
+semantics with a 64-bit compiler is NOT a native x64 port. The guest state is emulated in a
+`GuestContext` either way; what changes is the host pointer width. That distinction is recorded
+rather than glossed, because the issue explicitly forbids relabelling guest-state C++ as native
+source.
+
 ## Known gaps, recorded rather than implied
 
 - **No type recovery.** No struct layout, no field offsets, no `static_assert` on layout.

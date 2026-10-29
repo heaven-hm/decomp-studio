@@ -1402,7 +1402,12 @@ int command_backends(bool json) {
       {"target", "macos-x86_64", recomp::cli::Support::Implemented, "x86_64-apple-macos"},
       {"target", "linux-arm64", recomp::cli::Support::Planned, "triple declared; the project does not build"},
       {"target", "linux-x86_64", recomp::cli::Support::Planned, "triple declared; the project does not build"},
-      {"target", "windows-*", recomp::cli::Support::Planned, "no Windows host runtime"},
+      // DECLARED, and the reason is measured rather than assumed: the mingw driver reaches the
+      // triple, the platform layer is portable, and the build stops in the SEMANTICS layer on
+      // `__int128`, which 32-bit mingw does not support. "Planned" would understate how far it
+      // gets; "Implemented" would overstate it.
+      {"target", "windows-x86", recomp::cli::Support::Planned, "declared; blocks on __int128 in the semantics layer"},
+      {"target", "windows-x64", recomp::cli::Support::Planned, "declared; same blocker, and guest state is emulated either way"},
       {"source-language", "cpp", recomp::cli::Support::Implemented, "C++20, the primary editable output"},
       {"source-language", "c", recomp::cli::Support::Planned, "not implemented"},
       {"source-language", "rust", recomp::cli::Support::Planned, "not implemented"},

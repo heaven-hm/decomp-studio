@@ -56,10 +56,20 @@ FIXTURES_PE32 = [
     ("teb32", "32-bit TEB access through fs:"),
     ("pe32_remill_movhalf", "32-bit Remill half-register move semantics"),
     ("pe32_remill_aas", "32-bit Remill ASCII adjust after subtraction"),
-    ("pe32_legacy32", "32-bit CBW sign extension"),
+    ("pe32_legacy32", "32-bit legacy sign extension, decimal-adjust and flag instructions"),
     ("pe32_file_streams", "32-bit CRT and Win32 file access"),
     ("pe32_shufpd", "32-bit SSE2 packed double shuffle forms"),
     ("pe32_popal", "32-bit POPAL register and stack restoration"),
+    ("pe32_popaw", "32-bit POPAW register and stack restoration"),
+]
+
+# Fixtures that are translated, built and run with their output checked, but
+# cannot be run under the Unicorn reference. IRETD faults there by construction:
+# the emulator runs at CPL0 without a GDT, so loading the return CS raises #GP.
+# These are reported as candidate-only so nobody mistakes the check for a
+# differential verdict.
+FIXTURES_CANDIDATE_ONLY = [
+    ("pe32_iretd32", "32-bit IRETD handler-stub exit, ESP balance and flag restore"),
 ]
 
 EXPECTED_OUTPUT = {
@@ -68,7 +78,11 @@ EXPECTED_OUTPUT = {
     "backward_entry": ["entry_zero=42", "entry_nonzero=7"],
     "remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
     "movhps": ["movhps_low=1234605616436508552", "movhps_high=-7373874951294615808"],
-    "pe32_legacy32": ["cbw=-128", "daa=1", "daa_cf=1", "daa_af=1", "into_clear_continues=1"],
+    "pe32_legacy32": ["cbw=-128", "daa=1", "daa_cf=1", "daa_af=1", "das=53", "das_cf=1", "das_af=1",
+                      "salc_set=255", "salc_clear=0", "aad=75", "aad_pf=1", "arpl_changed=3",
+                      "arpl_changed_zf=1", "arpl_unchanged=7", "arpl_unchanged_zf=0", "jcxz_taken=1",
+                      "jcxz_not_taken=1", "into_clear_continues=1"],
+    "pe32_iretd32": ["iretd_cf=0", "iretd_esp_ok=1"],
     "file_streams": ["fopen_write=1", "matches_source=1", "handle_matches=1",
                      "fopen_escape_null=1", "module_name_last_is_exe=1", "file_streams:done"],
     "pe32_file_streams": ["fopen_write=1", "matches_source=1", "handle_matches=1",
@@ -78,6 +92,7 @@ EXPECTED_OUTPUT = {
     "pextrw": ["pextrw_modulo_ok=1", "pextrw_lane_ok=1"],
     "pe32_shufpd": ["shufpd_reg_ok=1", "shufpd_mem_ok=1"],
     "pe32_popal": ["popal_registers=1", "popal_stack=1"],
+    "pe32_popaw": ["popaw_registers=1", "popaw_stack=1"],
     "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
     "pe32_remill_aas": ["remill_aas=1"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],
@@ -214,6 +229,29 @@ def verify_fixture(name: str, executable: Path, project: Path) -> str:
     return f"{name}: {len(execution.stdout)} bytes, {report['executed_instructions']} reference instructions, VERIFIED"
 
 
+def verify_candidate_only(name: str, executable: Path, project: Path) -> str:
+    translated = run_cli(["translate", str(executable), "--target", "macos-arm64",
+                          "--output", str(project), "--json"])
+    if translated.returncode != 0:
+        fail(f"{name}: translate failed: {translated.stderr.strip()}")
+    if json.loads(translated.stdout).get("status") != "ok":
+        fail(f"{name}: translate did not report ok: {translated.stdout}")
+
+    built = run_cli(["build", str(project), "--json"])
+    if built.returncode != 0:
+        fail(f"{name}: build failed: {built.stderr.strip()}")
+
+    execution = run_cli(["run", str(project)])
+    if execution.returncode != 0:
+        fail(f"{name}: the translated binary failed to run: {execution.stderr.strip()}")
+    for fragment in EXPECTED_OUTPUT[name]:
+        if fragment not in execution.stdout:
+            fail(f"{name}: expected output fragment {fragment!r} was not produced")
+
+    return (f"{name}: {len(execution.stdout)} bytes, candidate only "
+            f"(the reference cannot execute IRETD)")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -230,9 +268,21 @@ def main() -> int:
                 fail(f"{name}: fixture was not built ({description})")
             print("PASS " + verify_fixture(name, executable, root / f"project-{name}"))
 
+        candidate_only = 0
+        for name, description in FIXTURES_CANDIDATE_ONLY:
+            executable = fixture_binaries / f"{name}.exe"
+            if not executable.exists():
+                if OPTIONAL_MODE:
+                    print(f"SKIP (RECOMP_OPTIONAL=1): {name} needs the i686 toolchain")
+                    continue
+                fail(f"{name}: fixture was not built ({description})")
+            candidate_only += 1
+            print("PASS " + verify_candidate_only(name, executable, root / f"project-{name}"))
+
         executed = sum(1 for name, _ in required if (fixture_binaries / f"{name}.exe").exists())
         print(f"PASS: {executed} fixtures recompiled, executed and verified "
-              f"({len(FIXTURES)} PE32+, {len(FIXTURES_PE32)} PE32)")
+              f"({len(FIXTURES)} PE32+, {len(FIXTURES_PE32)} PE32), "
+              f"plus {candidate_only} candidate-only fixture(s)")
     return 0
 
 

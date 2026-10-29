@@ -70,6 +70,19 @@ oracle**: execution of the original on real Windows, or Frida instrumentation of
 is implemented. Until one is, this section is the honest scope of every verification claim
 the project makes.
 
+## Instructions the reference itself cannot execute
+
+The Unicorn reference runs with a null CS at CPL0 and no GDT. A protected-mode `IRETD`
+reloads CS through the GDT, so **every** IRET faults in the reference whatever selector the
+frame carries; a GDT can be installed through GDTR, but writing a CS selector is rejected by
+the engine as an exception. The `pe32_iretd32` fixture is therefore reported **candidate
+only**: its output (restored flags,
+unchanged ESP across the handler call) is checked against hand-computed expectations, and
+the test prints that the reference was not involved instead of calling the fixture
+`VERIFIED`. IRETD in real binaries is still exercised for translation and build by the
+instruction census and the corpus runs. The same applies to any future instruction that
+depends on privilege state the reference does not model.
+
 ## Gates, and the test that tries to defeat each
 
 Each gate has a mutation test that injects a specific defect and asserts the gate NOTICES.

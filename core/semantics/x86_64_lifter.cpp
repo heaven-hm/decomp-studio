@@ -1157,6 +1157,15 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "prefetchnta" || mnemonic == "prefetcht0" || mnemonic == "prefetcht1" ||
       mnemonic == "prefetcht2" || mnemonic == "prefetchw")
     return;
+  // ARPL adjusts the RPL of a 16-bit selector. It only exists in 32-bit code,
+  // where a selector's other bits are never consulted by this flat model.
+  if (mnemonic == "arpl" && operands.size() == 2) {
+    emit("{ const std::uint64_t original = " + operand_read_expression(instruction, operands[0], 2) +
+         "; const std::uint64_t requested = " + operand_read_expression(instruction, operands[1], 2) +
+         "; const std::uint64_t adjusted = adjust_requested_privilege_level(context, original, requested); " +
+         operand_write_statement(instruction, operands[0], "adjusted", 2) + " }");
+    return;
+  }
   if ((mnemonic == "bt" || mnemonic == "bts" || mnemonic == "btr" || mnemonic == "btc") &&
       operands.size() == 2 && is_vector_register(operands[0]) == false &&
       operands[0].kind == discovery::Operand::Kind::Register) {
@@ -1182,7 +1191,10 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
 
   if (mnemonic == "nop" || mnemonic.rfind("nop", 0) == 0 || mnemonic == "endbr64" || mnemonic == "endbr32" ||
-      mnemonic == "pause" || mnemonic == "cli" || mnemonic == "sti")
+      mnemonic == "pause" || mnemonic == "cli" || mnemonic == "sti" ||
+      // FDISI is an 8087 instruction that the 387 and later treat as a no-op;
+      // Capstone spells the encoding that way so it can be distinguished.
+      mnemonic == "fdisi8087_nop")
     return;
 
   if (mnemonic == "mov" || mnemonic == "movabs") {
@@ -1430,6 +1442,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         emit("context->registers[4] = mask_guest_address(context->registers[4] + 4);");
       } else {
         emit(register_write_statement(name, "static_cast<std::uint32_t>(pop_guest_stack(context))"));
+      }
+    }
+    return;
+  }
+  if (mnemonic == "popaw") {
+    // The 16-bit sibling of POPAD: every slot is two bytes, including the ESP
+    // slot, which is consumed but not restored.
+    const char* registers[] = {"di", "si", "bp", nullptr, "bx", "dx", "cx", "ax"};
+    for (const auto* name : registers) {
+      if (name == nullptr) {
+        emit("context->registers[4] = mask_guest_address(context->registers[4] + 2);");
+      } else {
+        emit(register_write_statement(name, "static_cast<std::uint16_t>(pop_guest_stack16(context))"));
       }
     }
     return;
@@ -1948,6 +1973,19 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     emit_return();
     return;
   }
+  // IRETD pops the return address, the saved CS and EFLAGS. Recovered functions
+  // are native calls, so returning from the handler is the same control transfer
+  // that `ret` performs; the popped address is the caller it returns to, and the
+  // selector has no meaning in the flat model. Like every other function exit,
+  // the return address the caller pushed for the native call has to be consumed,
+  // or ESP is left one slot short after the handler returns.
+  if (mnemonic == "iretd") {
+    emit("{ (void)pop_guest_stack(context); (void)pop_guest_stack(context); "
+         "set_eflags(context, static_cast<std::uint32_t>(pop_guest_stack(context))); }");
+    emit("return_from_guest_function(context, 0);");
+    emit_return();
+    return;
+  }
 
   if (mnemonic == "cbw") {
     emit(register_write_statement("ax", "static_cast<std::int8_t>(" + register_read_expression("al") + ")"));
@@ -1963,6 +2001,11 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   }
   if (mnemonic == "daa") {
     emit(register_write_statement("al", "decimal_adjust_after_addition(context, " +
+                                      register_read_expression("al") + ")"));
+    return;
+  }
+  if (mnemonic == "das") {
+    emit(register_write_statement("al", "decimal_adjust_after_subtraction(context, " +
                                       register_read_expression("al") + ")"));
     return;
   }
@@ -2374,6 +2417,13 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "clc") { emit("context->carry_flag = 0;"); return; }
   if (mnemonic == "stc") { emit("context->carry_flag = 1;"); return; }
   if (mnemonic == "cmc") { emit("context->carry_flag = context->carry_flag != 0 ? 0 : 1;"); return; }
+  // SALC is the undocumented spelling of "SBB AL, AL": AL is all ones when CF is
+  // set and zero otherwise. No flags are affected.
+  if (mnemonic == "salc") {
+    emit("context->registers[0] = (context->registers[0] & ~0xffull) | "
+         "(context->carry_flag != 0 ? 0xffull : 0ull);");
+    return;
+  }
   if (mnemonic == "emms") { return; }  // no MMX tag state is modelled
   // AAM: AL = AH-adjusted BCD digit pair. The immediate form is the general one.
   if (mnemonic == "aam") {
@@ -2383,7 +2433,22 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          "context->registers[0] = (context->registers[0] & ~0xffffull) | "
          "(static_cast<std::uint64_t>((value / " + std::to_string(base) + ") << 8) | (value % " +
          std::to_string(base) + ")); "
-         "context->zero_flag = (context->registers[0] & 0xffull) == 0 ? 1 : 0; }");
+         "update_zero_sign_parity(context, context->registers[0] & 0xffull, 1); "
+         // AF, CF and OF are undefined; clear them as the reference does.
+         "context->auxiliary_flag = 0; context->carry_flag = 0; context->overflow_flag = 0; }");
+    return;
+  }
+  // AAD: AL = AH * base + AL, then AH = 0. The pair this reverses is the one AAM
+  // builds, so both bases come from the same immediate encoding. AF, CF and OF are
+  // undefined; a stale value would turn an undefined bit into a divergence.
+  if (mnemonic == "aad") {
+    const auto base = operands.empty() ? 10 : (operands[0].immediate_value & 0xff);
+    if (base == 0) throw LiftError("AAD with a zero base at " + format_hex(instruction.address));
+    emit("{ const std::uint32_t value = static_cast<std::uint32_t>(((context->registers[0] >> 8) & 0xffu) * " +
+         std::to_string(base) + " + (context->registers[0] & 0xffu)); "
+         "context->registers[0] = (context->registers[0] & ~0xffffull) | (value & 0xffu); "
+         "update_zero_sign_parity(context, value, 1); "
+         "context->auxiliary_flag = 0; context->carry_flag = 0; context->overflow_flag = 0; }");
     return;
   }
   // Port I/O and BOUND cannot work in a user-mode recompilation; they fail
@@ -2551,6 +2616,13 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "jecxz" || mnemonic == "jrcxz") {
     const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
     emit("if (context->registers[1] == 0) " + branch_body(target));
+    return;
+  }
+  // JCXZ tests only the low 16 bits of ECX; that is the whole difference from
+  // JECXZ, and using the full register would branch when only the high half is 0.
+  if (mnemonic == "jcxz") {
+    const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
+    emit("if ((context->registers[1] & 0xffffull) == 0) " + branch_body(target));
     return;
   }
   if (mnemonic == "loop" || mnemonic == "loope" || mnemonic == "loopne") {

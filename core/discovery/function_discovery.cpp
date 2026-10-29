@@ -12,7 +12,7 @@ namespace {
 
 const std::set<std::string> kConditionalBranches = {
     "jo", "jno", "jb", "jae", "je", "jne", "jbe", "ja", "js", "jns",
-    "jp", "jnp", "jl", "jge", "jle", "jg", "jrcxz", "jecxz", "loop", "loope", "loopne"};
+    "jp", "jnp", "jl", "jge", "jle", "jg", "jrcxz", "jecxz", "jcxz", "loop", "loope", "loopne"};
 
 const std::set<std::string> kTerminators = {"ret", "retf", "iret", "iretd", "iretq", "hlt", "ud2", "int3"};
 

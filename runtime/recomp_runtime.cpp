@@ -4491,14 +4491,19 @@ void msvcrt_vscprintf(GuestContext* context) {
 
 // The UCRT spellings of the same two, which take the options word first.
 void msvcrt_stdio_common_vsprintf(GuestContext* context) {
-  const auto options = import_argument(context, 0);
-  const auto buffer = import_argument(context, 1);
-  const auto limit = static_cast<std::size_t>(import_argument(context, 2));
-  const auto format = read_guest_string(import_argument(context, 3));
-  const auto arguments = import_argument(context, 4);
+  // The first argument is 64 bits even for a PE32 guest, where it occupies
+  // two stack slots. Locale precedes the va_list in both Windows ABIs.
+  const auto options = import_argument(context, 0) |
+      (guest_pointer_width == 4 ? import_argument(context, 1) << 32 : 0);
+  const int shift = guest_pointer_width == 4 ? 1 : 0;
+  const auto buffer = import_argument(context, 1 + shift);
+  const auto limit = static_cast<std::size_t>(import_argument(context, 2 + shift));
+  const auto format = read_guest_string(import_argument(context, 3 + shift));
+  const auto locale = import_argument(context, 4 + shift);
+  const auto arguments = import_argument(context, 5 + shift);
   // UCRT uses bit 0 for its internal locale/formatting mode and bit 1 for
   // legacy compatibility; both are representable by the shared formatter.
-  if ((options & ~std::uint64_t{3}) != 0)
+  if ((options & ~std::uint64_t{3}) != 0 || locale != 0)
     terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
                            static_cast<unsigned long long>(options));
   const auto output = msvcrt_format_arguments(context, format, arguments);

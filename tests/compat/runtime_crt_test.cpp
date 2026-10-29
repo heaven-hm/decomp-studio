@@ -95,6 +95,23 @@ int main() {
   guest_pointer_width = 8;
   initialize_guest_state(0x100000, 0x70000000, 0x7fff0000);
 
+  // PE32 UCRT passes a 64-bit options word followed by five 32-bit arguments.
+  // Distinct slots ensure a missing locale or high options word cannot pass.
+  {
+    GuestContext context{};
+    guest_pointer_width = 4;
+    context.registers[4] = 0x700000;
+    const auto format = put_string(0x220000, "value=%d");
+    store_guest_memory(&context, 0x230000, 42, 4);
+    const std::uint32_t args[] = {2, 0, 0x240000, 32, static_cast<std::uint32_t>(format), 0, 0x230000};
+    for (std::size_t i = 0; i < 7; ++i)
+      store_guest_memory(&context, context.registers[4] + 4 + i * 4, args[i], 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(context.registers[0] == 8, "PE32 __stdio_common_vsprintf returns the formatted length");
+    check(get_string(0x240000) == "value=42", "PE32 __stdio_common_vsprintf reads its va_list after locale");
+    guest_pointer_width = 8;
+  }
+
   // The console/heap adapter is derived from project-igi-browser's MIT
   // kernel32 provider.  Verify the guest ABI, not merely its table presence.
   {

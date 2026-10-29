@@ -337,3 +337,6 @@ set_tests_properties(real_application_corpus PROPERTIES TIMEOUT 5400)
 
 add_test(NAME real_application_required_policy
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/apps/required_corpus_policy_test.py)
+
+add_test(NAME native_oracle
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/native_oracle_test.py)

@@ -6,6 +6,30 @@ gate nobody knows works.
 
 ## The claim a verdict makes
 
+## Independent native-process oracle
+
+`scripts/native_oracle.py` provides an independent process-level comparison for
+deterministic native runs. It launches the original executable and the candidate
+as separate processes, with the same working directory, input bytes and timeout,
+then compares exit status, stdout and stderr. It does not load the Recomp Studio
+runtime and therefore does not share the candidate's Win32 shim table.
+
+Use it on a host that can execute the original image:
+
+```sh
+python3 scripts/native_oracle.py \
+  --reference /path/to/original.exe \
+  --candidate /path/to/recomp-guest \
+  --cwd /path/to/game-directory \
+  --stdin /path/to/deterministic-input \
+  --timeout 30 --json
+```
+
+`VERIFIED_PROCESS_OUTPUT` proves only the three compared observables. It does
+not prove register, memory, rendering, audio, input, or gameplay equivalence.
+Timeouts and launch failures are `INCOMPLETE`; mismatched process output or exit
+status is `DIVERGED`. Keep this result separate from the Unicorn verdict.
+
 `Verdict` (`core/verification/differential_harness.hpp`) is a single decision function with
 six outcomes: `VERIFIED`, `DIVERGED`, `REFERENCE_UNSUPPORTED`, `CANDIDATE_UNSUPPORTED`,
 `INCOMPLETE`, `NOT_RUN`. `verified()` is `verdict() == VERIFIED` -- there is no second path

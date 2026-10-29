@@ -34,7 +34,7 @@ the rev.ng adapter; that work was merged, not overwritten.
 | Ghidra analysis | **done**, external process | `apps/cli/ghidra_run.cpp`, `ghidra_import.cpp` |
 | semantic reconciliation | **done** for addresses and conventions | `apps/cli/ghidra_reconcile.cpp` |
 | rev.ng artifacts | **adapter only** | `apps/cli/revng_run.cpp` |
-| PCRecomp | **scripts driven; runtime self-tests** | pinned sources |
+| PCRecomp | **scripts driven; 6 upstream HLE tests PINNED but BLOCKED** | see below |
 | type recovery | **NOT STARTED** | -- |
 | independent oracle | **NOT STARTED** | -- |
 
@@ -78,6 +78,33 @@ Each item is small enough to land and verify on its own.
 
    So the oracle needs one of: a Windows host, Wine, or a machine that can execute PE32. None
    is present, and no amount of work inside this repository substitutes for one of them.
+
+## PCRecomp: pinned correctly, and blocked by the HOST
+
+STEP 8 asks for the upstream projects to be cloned and PINNED. PCRecomp is MIT, so it was
+cloned and pinned to the exact revision the build already required:
+
+    a85ea970f9e0640ab6546d2ca7a01fccb132973d
+
+That pin is not a convention, it is ENFORCED: `CMakeLists.txt` refuses a different revision
+and refuses a dirty checkout of the paths that matter, so the tests cannot silently run
+against a different upstream.
+
+Configuring with `-DRECOMP_PCRECOMP_SOURCE=<checkout>` activates **6 upstream HLE tests**,
+taking the suite from 31 to 37. **All 6 fail on this host, and the cause is not the code:**
+
+    dyld: Symbol not found: _HVF_clear_part_cache
+      Referenced from: /opt/homebrew/Cellar/freetype/2.15.0/lib/libfreetype.6.dylib
+      Expected in:     /System/Library/PrivateFrameworks/FontServices.framework/libhvf.dylib
+
+The tests link SDL through `PkgConfig::PCRECOMP_SDL`, which pulls Homebrew's `freetype`, whose
+build references a private symbol the system framework does not export. That is a Homebrew
+toolchain conflict on this machine, not a defect in the pinned code or in this repository.
+
+**So the pin is done and the tests cannot be run here.** They are left DISABLED by default
+rather than enabled-and-failing: a default configuration that fails six tests is worse than one
+that states why it cannot run them. The command to enable them is recorded above so that a host
+without the conflict can run them in one step.
 
 ## Known gaps, recorded rather than implied
 

@@ -279,6 +279,7 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   // How much of the recovered program the architecture-neutral IR describes as
   // statements rather than passing through as text.
   const auto statements = lifter.statement_census();
+  const auto high_level_functions = lifter.high_level_function_count();
 
   std::ostringstream statement_percent;
   statement_percent << std::fixed << std::setprecision(2) << statements.structured_percent();
@@ -306,13 +307,12 @@ int command_coverage(const std::filesystem::path& input, bool json) {
               // THE HYBRID-SOURCE BREAKDOWN the directive requires, reported separately
               // rather than folded into one success figure.
               //
-              // "high-level reconstructed" means a function with a RECOVERED SIGNATURE or
-              // TYPE that a reader could follow as source. Nothing here qualifies: there is
-              // no type recovery, so every recovered function is machine-level translation.
-              // Saying so is the point -- classifying all of it as semantic reconstruction
-              // would be exactly the confusion the directive names.
-              << ",\"high_level_functions\":0"
-              << ",\"low_level_fallback_functions\":" << discovery.functions().size()
+              // This is the bounded recognizer's count. It is not a claim that every
+              // recovered function is readable; all other functions remain fallback code.
+              << ",\"high_level_functions\":" << high_level_functions
+              << ",\"low_level_fallback_functions\":"
+              << (discovery.functions().size() - std::min(discovery.functions().size(),
+                                                          high_level_functions + unresolved_functions))
               << ",\"unresolved_functions\":" << unresolved_functions
               << ",\"unsupported\":[";
     for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
@@ -340,8 +340,12 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
             << statement_percent.str() << "%)\n"
             // §13 requires the delivered source to be reported as TWO categories, never one.
-            << "high-level:     0 functions (no recovered signatures or types exist)\n"
-            << "low-level:      " << discovery.functions().size() << " functions (machine-level translation)\n"
+            << "high-level:     " << high_level_functions
+            << " functions (bounded constant-return leaf candidates)\n"
+            << "low-level:      "
+            << (discovery.functions().size() - std::min(discovery.functions().size(),
+                                                        high_level_functions + unresolved_functions))
+            << " functions (machine-level fallback translation)\n"
             << "unresolved:     " << unresolved_functions << " functions\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
@@ -518,17 +522,22 @@ recomp::common::Configuration make_configuration(const std::filesystem::path& co
 }
 
 int command_translate(const std::filesystem::path& input, const std::filesystem::path& output,
-                      const std::filesystem::path& config_path, const std::string& target, bool json) {
-  const auto configuration = make_configuration(config_path, target, output);
+                      const std::filesystem::path& config_path, const std::string& target,
+                      const std::string& source_style, bool json) {
+  auto configuration = make_configuration(config_path, target, output);
+  configuration.source_style = source_style;
   const auto report = recomp::pipeline::translate(input, output, configuration);
   recomp::pipeline::write_manifest(report, output);
   if (json) {
     std::cout << "{\"status\":\"ok\",\"target\":\"" << configuration.target << "\",\"output\":"
               << recomp::common::quote_json(output.string()) << ",\"function_count\":" << report.function_count
-              << ",\"import_count\":" << report.import_count << ",\"unsupported_mnemonics\":"
+              << ",\"import_count\":" << report.import_count
+              << ",\"high_level_functions\":" << report.high_level_function_count
+              << ",\"unsupported_mnemonics\":"
               << report.unsupported_mnemonics.size() << "}\n";
   } else {
     std::cout << "translated " << report.function_count << " functions, " << report.import_count << " imports\n"
+              << "high-level candidates: " << report.high_level_function_count << "\n"
               << "project:  " << output.string() << "\n"
               << "source:   sha256=" << report.sha256.substr(0, 16) << "...\n";
     if (!report.unsupported_mnemonics.empty()) {
@@ -1484,16 +1493,18 @@ int main(int argc, char** argv) {
     if (command == "translate") {
       std::filesystem::path image, output, config;
       std::string target = "native";
+      std::string source_style = "faithful";
       for (int index = 2; index < argc; ++index) {
         const std::string option{argv[index]};
         if (option == "--json") continue;
         if (option == "--target" && index + 1 < argc) { target = argv[++index]; continue; }
         if (option == "--output" && index + 1 < argc) { output = argv[++index]; continue; }
         if (option == "--config" && index + 1 < argc) { config = argv[++index]; continue; }
+        if (option == "--source-style" && index + 1 < argc) { source_style = argv[++index]; continue; }
         if (image.empty()) image = argv[index];
       }
       if (image.empty() || output.empty()) return fail("translate requires <image> --output <dir>", json);
-      return command_translate(image, output, config, target, json);
+      return command_translate(image, output, config, target, source_style, json);
     }
     if (command == "build") {
       std::filesystem::path project, config;

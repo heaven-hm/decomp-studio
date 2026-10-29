@@ -26,6 +26,7 @@ struct Configuration {
   std::vector<std::filesystem::path> extra_source_files;
   std::vector<std::string> compile_flags;
   std::string compiler = "clang++";
+  std::string source_style = "faithful";
   std::filesystem::path runtime_directory;
 
   // Advanced, config-driven recompilation controls (N64Recomp/igi-recomp parity).

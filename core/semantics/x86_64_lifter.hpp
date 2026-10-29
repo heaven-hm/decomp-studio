@@ -63,7 +63,7 @@ class X86_64Lifter {
     native_overrides_ = native_overrides;
   }
 
-  std::string lift_all_functions(bool strict) const;
+  std::string lift_all_functions(bool strict, bool readable = false) const;
   const std::map<std::string, int>& unsupported_mnemonics() const { return unsupported_mnemonics_; }
 
   // Classify every recovered instruction without aborting, so that a program the
@@ -73,10 +73,11 @@ class X86_64Lifter {
   // The share of recovered statements that the IR describes structurally rather
   // than passing through as text.
   ir::StatementCensus statement_census() const;
+  std::size_t high_level_function_count() const;
 
  private:
   ir::Function lift_function_to_ir(const discovery::RecoveredFunction& function) const;
-  std::string lift_function(const discovery::RecoveredFunction& function) const;
+  std::string lift_function(const discovery::RecoveredFunction& function, bool readable) const;
   void emit_instruction(const discovery::DecodedInstruction& instruction,
                         const discovery::RecoveredFunction& function, ir::Function& output) const;
   void record_unsupported(const std::string& mnemonic, const discovery::DecodedInstruction& instruction) const;

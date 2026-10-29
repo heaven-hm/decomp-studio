@@ -19,6 +19,7 @@ struct GeneratedProject {
   std::uint64_t heap_base{};
   std::size_t function_count{};
   std::size_t import_count{};
+  std::size_t high_level_function_count{};
 };
 
 class ProjectGenerator {

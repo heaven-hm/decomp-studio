@@ -18,10 +18,13 @@ runtimes, graphics, audio, and input require further implementation and testing.
 
 The existing pipeline can inspect PE files, recover candidate functions, lift a
 subset of x86 instructions, emit low-level C++, compile it, and compare selected
-behavior using Unicorn. Ghidra analysis and rev.ng artifacts have external-tool
-adapters. The PCRecomp runtime has experimental integration tests. These pieces
-are not yet a complete high-level reconstruction pipeline, and generated source
-is not necessarily human-readable recovered game logic.
+behavior using Unicorn. A bounded readable-source path recognizes exact
+constant-return leaf functions when requested with `translate --source-style
+readable`; every function outside that proven pattern remains explicit
+machine-level fallback code. Ghidra analysis and rev.ng artifacts have
+external-tool adapters. The PCRecomp runtime has experimental integration
+tests. This is not yet broad type recovery or a complete high-level
+reconstruction pipeline.
 
 A [15-game test](reports/real-games-2026-10-29.md) produced **zero verified
 playable games**. An independent Windows oracle, a complete GUI/game runtime,

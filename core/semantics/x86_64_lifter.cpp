@@ -1,6 +1,7 @@
 #include "core/semantics/x86_64_lifter.hpp"
 
 #include "core/ir/cpp_backend.hpp"
+#include "core/semantics/high_level_reconstruction.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -2631,7 +2632,11 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
   return lifted;
 }
 
-std::string X86_64Lifter::lift_function(const RecoveredFunction& function) const {
+std::string X86_64Lifter::lift_function(const RecoveredFunction& function, bool readable) const {
+  if (readable) {
+    if (const auto high_level = recognize_constant_return(function))
+      return render_constant_return(*high_level, guest_function_name(function.entry));
+  }
   const auto lifted = lift_function_to_ir(function);
   std::string output;
   output += "static void " + lifted.name + "(GuestContext* context) {\n";
@@ -2657,7 +2662,7 @@ ir::StatementCensus X86_64Lifter::statement_census() const {
   return ir::census(module);
 }
 
-std::string X86_64Lifter::lift_all_functions(bool strict) const {
+std::string X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
   std::string declarations;
   std::string definitions;
   for (const auto& [address, symbol] : native_overrides_) {
@@ -2678,7 +2683,7 @@ std::string X86_64Lifter::lift_all_functions(bool strict) const {
       continue;
     }
     try {
-      definitions += lift_function(function);
+      definitions += lift_function(function, readable);
       definitions += "\n";
     } catch (const LiftError&) {
       if (strict) throw;
@@ -2687,6 +2692,16 @@ std::string X86_64Lifter::lift_all_functions(bool strict) const {
     }
   }
   return declarations + "\n" + definitions;
+}
+
+std::size_t X86_64Lifter::high_level_function_count() const {
+  std::size_t count = 0;
+  for (const auto& [address, function] : discovery_.functions()) {
+    if (native_overrides_.count(address) == 0 && stubbed_functions_.count(address) == 0 &&
+        recognize_constant_return(function))
+      ++count;
+  }
+  return count;
 }
 
 CoverageCensus X86_64Lifter::census() const {

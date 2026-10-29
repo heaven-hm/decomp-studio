@@ -55,6 +55,19 @@ dispatch loop over an instruction table: each recovered function becomes a C++ f
 `core/ir/cpp_backend.cpp` renders it. A reader can open `guest.cpp` and read the translation
 of a specific function at a specific address.
 
+### Bounded high-level reconstruction
+
+`core/semantics/high_level_reconstruction.cpp` contains the first deliberately
+narrow readable-source recognizer. It accepts only a complete function body
+containing `mov eax/rax, immediate` followed by `ret`,
+ignoring alignment `nop`/`endbr` instructions. The generated helper is emitted
+only for that exact evidence-backed shape and records the guest address as
+provenance. `translate --source-style readable` selects this path; the default
+`faithful` style is unchanged. All other functions continue through the
+machine-level IR backend, so a readable-source count is never a claim that the
+whole binary has been decompiled. The `coverage` and translation manifest report
+the candidate count separately.
+
 ## What the verifier actually compares
 
 This matters more than any other section, because it bounds every claim the project makes.

@@ -112,8 +112,8 @@ const std::vector<Capability>& capabilities() {
 
       // --- source generation ----------------------------------------------
       {"source-style:faithful", "--source-style", "faithful", "machine-faithful source", Support::Implemented, ""},
-      {"source-style:readable", "--source-style", "readable", "restructured, readable source", Support::Planned,
-       "no control-flow restructuring or type recovery"},
+      {"source-style:readable", "--source-style", "readable", "readable source for verified constant-return leaf functions", Support::Implemented,
+       "other functions remain machine-level fallback code"},
       {"recover-types:", "--recover-types", "", "recover types", Support::Planned, "no type recovery"},
       {"recover-symbols:", "--recover-symbols", "", "recover symbols", Support::Planned, "no symbol recovery"},
       {"preserve-metadata:", "--preserve-metadata", "", "preserve original metadata", Support::Planned,

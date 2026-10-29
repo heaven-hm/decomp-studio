@@ -22,6 +22,7 @@ struct TranslateReport {
   std::uint64_t stack_top{};
   std::uint64_t heap_base{};
   std::uint32_t entry_point_rva{};
+  std::size_t high_level_function_count{};
   std::filesystem::path input_path;
 };
 

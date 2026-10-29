@@ -94,6 +94,7 @@ set(RECOMP_SOURCES
   core/discovery/function_discovery.cpp
   core/pipeline.cpp
   core/semantics/x86_64_lifter.cpp
+  core/semantics/high_level_reconstruction.cpp
   core/cli/capabilities.cpp
   core/cli/options.cpp
   core/detection/detection.cpp
@@ -343,3 +344,13 @@ add_test(NAME real_application_required_policy
 
 add_test(NAME native_oracle
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/native_oracle_test.py)
+
+add_executable(high_level_reconstruction_test
+  tests/compat/high_level_reconstruction_test.cpp
+  core/semantics/high_level_reconstruction.cpp)
+target_compile_features(high_level_reconstruction_test PRIVATE cxx_std_20)
+target_include_directories(high_level_reconstruction_test PRIVATE ${RECOMP_INCLUDE_DIRS})
+add_test(NAME high_level_reconstruction COMMAND high_level_reconstruction_test)
+add_test(NAME readable_leaf_end_to_end COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/readable_leaf_test.py
+  $<TARGET_FILE:recomp-studio> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/readable_leaf.c)

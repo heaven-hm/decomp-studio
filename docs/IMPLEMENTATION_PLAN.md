@@ -210,14 +210,15 @@ Per the directive, never merged into one percentage:
 §13 requires the delivered source to be reported as TWO categories, never one, and `coverage`
 now reports all three counts in both its text and JSON output:
 
-    high-level:     0 functions (no recovered signatures or types exist)
+    high-level:     bounded constant-return leaf candidates only (no general recovered signatures or types)
     low-level:      36 functions (machine-level translation)
     unresolved:     0 functions
 
-The middle line is the honest answer and the first line is the important one: **every
-recovered function is machine-level translation and NONE is semantic reconstruction**, because
-there is no type recovery. Classifying all of it as readable source would be exactly the
-confusion the directive names.
+The high-level count is now computed by a deliberately narrow recognizer. It is
+not general semantic reconstruction: no recovered signatures, structures, or
+types are inferred. Every function outside the exact constant-return leaf shape
+remains machine-level translation. Classifying the whole binary as readable
+source would be exactly the confusion the directive names.
 
 The counts are computed, not asserted. On `clipjar.exe`: **0 high-level, 15,426 low-level,
 11 unresolved** across 28 unsupported instruction classes -- so the unresolved counter fires
@@ -229,7 +230,7 @@ measurement rather than a constant.
 | decoding coverage | `coverage` |
 | function discovery coverage | `coverage` -- recovered function count |
 | lifting coverage | `coverage` -- unsupported classes by mnemonic |
-| high-level reconstruction coverage | `coverage` -- `high_level_functions`, currently **0** |
+| high-level reconstruction coverage | `coverage` -- `high_level_functions` (currently only exact constant-return leaf candidates) |
 | low-level fallback coverage | `coverage` -- `low_level_fallback_functions` |
 | unresolved functions | `coverage` -- `unresolved_functions` |
 | compilation success | the build stage's exit status |

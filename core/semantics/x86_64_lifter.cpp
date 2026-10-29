@@ -180,6 +180,8 @@ const std::map<std::string, std::string>& vex_equivalents() {
       {"vminss", "minss"},   {"vmaxss", "maxss"},   {"vminsd", "minsd"},   {"vmaxsd", "maxsd"},
       {"vcmpeqss", "cmpeqss"}, {"vcmpltss", "cmpltss"}, {"vcmpless", "cmpless"},
       {"vcmpeqsd", "cmpeqsd"}, {"vcmpltsd", "cmpltsd"}, {"vcmplesd", "cmplesd"},
+      {"vcmpltpd", "cmpltpd"}, {"vcmplepd", "cmplepd"}, {"vcmpneqpd", "cmpneqpd"},
+      {"vcmpltps", "cmpltps"}, {"vcmpleps", "cmpleps"}, {"vcmpneqps", "cmpneqps"},
       // The ordered/unordered compares, which set EFLAGS rather than a mask.
       {"vcomiss", "comiss"}, {"vucomiss", "ucomiss"}, {"vcomisd", "comisd"}, {"vucomisd", "ucomisd"},
   };
@@ -209,6 +211,7 @@ const std::map<std::string, std::string>& packed_integer_helpers() {
       {"pcmpgtb", "vector_compare_greater_signed_bytes"},
       {"pcmpgtw", "vector_compare_greater_signed_words"},
       {"pcmpgtd", "vector_compare_greater_signed_dwords"},
+      {"pmaxsw", "vector_max_signed_words"},
       {"pmullw", "vector_multiply_low_words"},
       {"pmulhw", "vector_multiply_high_words"},
       {"pmulhuw", "vector_multiply_high_unsigned_words"},
@@ -2122,13 +2125,38 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         {"minss", "vector_min_floats"}, {"maxss", "vector_max_floats"},
         {"minsd", "vector_min_doubles"}, {"maxsd", "vector_max_doubles"},
         // The compare family. Each writes an all-ones or all-zeros MASK per lane, which
-        // is why they map to their own helpers rather than to a boolean.
+        // is why they map to their own helpers rather than to a boolean. The `ss`/`sd`
+        // helpers touch the low lane; the `ps`/`pd` helpers compare every lane.
         {"cmpeqss", "vector_compare_equal_floats"}, {"cmpltss", "vector_compare_less_floats"},
         {"cmpless", "vector_compare_less_equal_floats"},
         {"cmpneqss", "vector_compare_not_equal_floats"},
+        {"cmpunordss", "vector_compare_unordered_floats"},
+        {"cmpnltss", "vector_compare_not_less_than_floats"},
+        {"cmpnless", "vector_compare_not_less_equal_floats"},
+        {"cmpordss", "vector_compare_ordered_floats"},
         {"cmpeqsd", "vector_compare_equal_doubles"}, {"cmpltsd", "vector_compare_less_doubles"},
         {"cmplesd", "vector_compare_less_equal_doubles"},
-        {"cmpneqsd", "vector_compare_not_equal_doubles"}};
+        {"cmpneqsd", "vector_compare_not_equal_doubles"},
+        {"cmpunordsd", "vector_compare_unordered_doubles"},
+        {"cmpnltsd", "vector_compare_not_less_than_doubles"},
+        {"cmpnlesd", "vector_compare_not_less_equal_doubles"},
+        {"cmpordsd", "vector_compare_ordered_doubles"},
+        {"cmpeqps", "vector_compare_packed_equal_floats"},
+        {"cmpltps", "vector_compare_packed_less_floats"},
+        {"cmpleps", "vector_compare_packed_less_equal_floats"},
+        {"cmpneqps", "vector_compare_packed_not_equal_floats"},
+        {"cmpunordps", "vector_compare_packed_unordered_floats"},
+        {"cmpnltps", "vector_compare_packed_not_less_than_floats"},
+        {"cmpnleps", "vector_compare_packed_not_less_equal_floats"},
+        {"cmpordps", "vector_compare_packed_ordered_floats"},
+        {"cmpeqpd", "vector_compare_packed_equal_doubles"},
+        {"cmpltpd", "vector_compare_packed_less_doubles"},
+        {"cmplepd", "vector_compare_packed_less_equal_doubles"},
+        {"cmpneqpd", "vector_compare_packed_not_equal_doubles"},
+        {"cmpunordpd", "vector_compare_packed_unordered_doubles"},
+        {"cmpnltpd", "vector_compare_packed_not_less_than_doubles"},
+        {"cmpnlepd", "vector_compare_packed_not_less_equal_doubles"},
+        {"cmpordpd", "vector_compare_packed_ordered_doubles"}};
     const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
                          : float_helpers.count(mnemonic) != 0 ? &float_helpers
                                                              : nullptr;
@@ -2187,6 +2215,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "cvtss2sd" && operands.size() == 2 && is_vector_register(operands[0])) {
     emit("vector_set_double(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<double>(vector_get_float(context, " +
          std::to_string(vector_index(operands[1])) + ")));");
+    return;
+  }
+  if (mnemonic == "cvtsd2si" && operands.size() == 2) {
+    // The ROUNDING form, unlike cvttsd2si. `nearbyint` follows the current floating-point
+    // environment, whose default is round-to-nearest-even -- the same default MXCSR uses.
+    const auto width = operand_width(operands[0], 4);
+    const auto source = operands[1].kind == discovery::Operand::Kind::Memory
+        ? "load_guest_double(context, " + effective_address_expression(instruction, operands[1]) + ")"
+        : "vector_get_double(context, " + std::to_string(vector_index(operands[1])) + ")";
+    operand_write(output, instruction, operands[0],
+         "static_cast<std::uint64_t>(static_cast<std::int64_t>(std::nearbyint(" + source + ")))", width);
     return;
   }
   if ((mnemonic == "bsr" || mnemonic == "bsf") && operands.size() == 2) {

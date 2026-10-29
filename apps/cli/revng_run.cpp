@@ -20,6 +20,20 @@ static std::string hash_file(const fs::path& path) {
   return recomp::common::sha256(bytes);
 }
 
+static void run(std::vector<std::string> args) {
+  std::vector<char*> raw;
+  for (auto& arg : args) raw.push_back(arg.data());
+  raw.push_back(nullptr);
+  pid_t child{};
+  if (posix_spawn(&child, raw[0], nullptr, nullptr, raw.data(), environ) != 0)
+    throw std::runtime_error("could not launch rev.ng");
+  int status{};
+  pid_t waited;
+  do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    throw std::runtime_error("rev.ng failed");
+}
+
 int main(int argc, char** argv) {
   if (argc != 4) {
     std::cerr << "usage: revng-run <revng executable> <binary> <new output directory>\n";
@@ -32,28 +46,23 @@ int main(int argc, char** argv) {
     const auto output = fs::absolute(argv[3]);
     if (!fs::create_directory(output)) throw std::runtime_error("output directory must not exist");
     const auto artifact = output / "decompiled.c.yml";
-    std::vector<std::string> args = {executable.string(), "quick", "artifact", "emit-c-as-single-file",
-                                     binary.string(), "-o", artifact.string(), "--format", "yaml"};
-    std::vector<char*> raw;
-    for (auto& arg : args) raw.push_back(arg.data());
-    raw.push_back(nullptr);
-    pid_t child{};
-    if (posix_spawn(&child, raw[0], nullptr, nullptr, raw.data(), environ) != 0)
-      throw std::runtime_error("could not launch rev.ng");
-    int status{};
-    pid_t waited;
-    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
-    if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-      throw std::runtime_error("rev.ng failed");
+    run({executable.string(), "quick", "artifact", "emit-c-as-single-file",
+         binary.string(), "-o", artifact.string(), "--format", "yaml"});
     if (!fs::is_regular_file(artifact) || fs::file_size(artifact) == 0)
       throw std::runtime_error("rev.ng produced no artifact");
+    const auto plain = output / "decompiled.c";
+    run({executable.string(), "ptml", "--plain", artifact.string(), "-o", plain.string()});
+    if (!fs::is_regular_file(plain) || fs::file_size(plain) == 0)
+      throw std::runtime_error("rev.ng produced no plain output");
     if (hash_file(binary) != binary_hash) throw std::runtime_error("input binary changed during rev.ng analysis");
     const nlohmann::json manifest = {{"schema_version", 1}, {"provider_claim", "rev.ng"},
       {"binary_sha256", binary_hash}, {"artifact_sha256", hash_file(artifact)}, {"artifact_format_claim", "yaml"},
+      {"plain_output_sha256", hash_file(plain)},
       {"binary_artifact_association", "unverified"}, {"verification", "unverified"}};
     std::ofstream report(output / "analysis-provenance.json", std::ios::binary);
     if (!(report << manifest.dump(2) << '\n')) throw std::runtime_error("cannot write analysis provenance");
     std::cout << artifact.string() << '\n';
+    std::cout << plain.string() << '\n';
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "revng-run: " << error.what() << '\n';

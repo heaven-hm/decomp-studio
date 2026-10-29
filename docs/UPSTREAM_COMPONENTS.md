@@ -98,7 +98,8 @@ but narrow, and it is recorded here rather than relied on silently.
 
 - **rev.ng** -- assigned high-level source reconstruction by the directive. `revng-run`
   invokes the documented `quick artifact emit-c-as-single-file` command as an external
-  process and records input and artifact hashes. It preserves the raw YAML artifact and
+  process, renders it using `revng ptml --plain`, and records input and output hashes.
+  It preserves both the raw YAML artifact and rendered analysis text, and
   marks its association and behavior unverified. The adapter has been tested against a
   controlled stand-in; no rev.ng executable is installed here, so actual PE support and
   output remain untested. No rev.ng code is linked into the core. Its license informs

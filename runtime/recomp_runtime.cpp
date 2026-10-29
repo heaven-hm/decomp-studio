@@ -4523,7 +4523,7 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
                            static_cast<unsigned long long>(options),
                            static_cast<unsigned long long>(locale), format.c_str());
   const auto output = msvcrt_format_arguments(context, format, arguments);
-  const auto written = limit == 0 ? output.size() : std::min(limit - 1, output.size());
+  const auto written = limit == 0 ? std::size_t{0} : std::min(limit - 1, output.size());
   for (std::size_t index = 0; index < written; ++index)
     store_guest_memory(context, buffer + index, static_cast<std::uint8_t>(output[index]), 1);
   if (limit != 0) store_guest_memory(context, buffer + written, 0, 1);

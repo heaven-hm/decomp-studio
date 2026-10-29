@@ -130,6 +130,11 @@ int main() {
     store_guest_memory(&context, context.registers[4] + 20, integer_format, 4);
     invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
     check(get_string(0x240000) == ",42", "UCRT 0x26 integer format");
+    store_guest_memory(&context, 0x240000, 0x55, 1);
+    store_guest_memory(&context, context.registers[4] + 16, 0, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(context.registers[0] == 3, "UCRT zero-capacity sizing returns required length");
+    check(load_guest_memory(&context, 0x240000, 1) == 0x55, "UCRT zero-capacity sizing does not write");
     guest_pointer_width = 8;
   }
 

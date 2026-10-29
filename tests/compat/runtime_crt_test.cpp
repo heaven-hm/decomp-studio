@@ -118,6 +118,13 @@ int main() {
     store_guest_memory(&context, context.registers[4] + 20, float_format, 4);
     invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
     check(get_string(0x240000) == "1.5 42", "PE32 va_list preserves double bits and advances eight bytes");
+    const auto text_format = put_string(0x220000, "%s_DEFAULT");
+    const auto text_arg = put_string(0x250000, "CUBE");
+    store_guest_memory(&context, 0x230000, text_arg, 4);
+    store_guest_memory(&context, context.registers[4] + 4, 0x26, 4);
+    store_guest_memory(&context, context.registers[4] + 20, text_format, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(get_string(0x240000) == "CUBE_DEFAULT", "UCRT 0x26 narrow string format");
     guest_pointer_width = 8;
   }
 

@@ -4506,7 +4506,19 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
   const auto arguments = import_argument(context, 5 + shift);
   // Unsupported option and locale combinations must be diagnosed with their
   // format string: their effect depends on the conversions actually used.
-  if ((options & ~std::uint64_t{3}) != 0 || locale != 0)
+  // mingw-w64 corecrt_stdio_config.h: 0x04 changes wide specifiers and
+  // 0x20 changes floating-point rounding. They do not affect a format with
+  // no conversions, or the narrow %s conversions accepted here.
+  bool narrow_strings_only = true;
+  for (std::size_t i = 0; i < format.size(); ++i) {
+    if (format[i] != '%') continue;
+    if (++i >= format.size() || (format[i] != '%' && format[i] != 's')) {
+      narrow_strings_only = false;
+      break;
+    }
+  }
+  const auto harmless_options = narrow_strings_only ? std::uint64_t{0x27} : std::uint64_t{3};
+  if ((options & ~harmless_options) != 0 || locale != 0)
     terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx locale=0x%llx format='%s'",
                            static_cast<unsigned long long>(options),
                            static_cast<unsigned long long>(locale), format.c_str());

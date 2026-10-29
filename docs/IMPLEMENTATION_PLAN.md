@@ -124,5 +124,37 @@ which is what a GUI game that waits for a window and input does here: there is n
 manager and no input. And **33 of its 128 imports are unimplemented**, so even reaching its
 first frame is blocked on the runtime surface, not on the translation.
 
+### The verification stage, which did NOT pass, and why
+
+The run above was left at stage 9 and its result is now in. It **failed**, after **2088
+seconds** (35 minutes):
+
+    reference executed 200000001 instructions
+    exact guest-state checkpoints matched 0/0 (0%)
+    the candidate was NOT run: the reference execution did not complete
+      (instruction budget reached)
+    FAILED: reference_completed=no candidate_completed=no outputs_match=no
+
+Three things are true at once here, and they are worth separating:
+
+1. **The reference hit the instruction ceiling.** I.G.I. is a GUI game that never exits on its
+   own; with no window and no input it waits forever, so the Unicorn reference runs until the
+   budget stops it. The reference therefore produced **no terminal state to compare against**,
+   and the harness correctly **did not run the candidate** rather than compare it with
+   nothing. `candidate_completed=no` is not a translation failure -- it is the absence of an
+   oracle.
+2. **The verdict for this input is `INCOMPLETE`, not `VERIFIED` and not `DIVERGED`.** A
+   truncated reference cannot verify anything, and the harness refuses to pretend otherwise.
+   This is the correct behaviour and it is the reason truncation is checked FIRST.
+3. **The reference reports its own limitation**: "the reference cannot set FS_BASE in 32-bit
+   mode (unicorn 2.1.4 ignores the write); the TEB was placed at address 0 so fs: accesses
+   resolve". That is a known emulator limitation carried in the result rather than hidden.
+
+**So: I.G.I. lifts completely, builds natively, and CANNOT BE VERIFIED BY THIS HARNESS** --
+not because the translation is wrong, but because a program that never terminates gives the
+differential comparison nothing to compare. Verifying it needs a different oracle: a
+deterministic input replay that drives it to a terminal state, or instrumentation of the real
+executable. Neither exists.
+
 **No game has been verified**, and the rows above are the evidence for that sentence rather
 than a hedge around it.

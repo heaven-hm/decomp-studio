@@ -4074,6 +4074,64 @@ void store_guest_bytes(GuestContext* context, std::uint64_t address, const char*
     store_guest_memory(context, address + index, static_cast<std::uint8_t>(bytes[index]), 1);
 }
 
+// THE SYSTEM GROUP of Project I.G.I.'s 33 unimplemented imports. These are the ones that can
+// be answered HONESTLY. The other 28 are DirectX, AVI video and audio, which the directive
+// says not to fake, and this file does not fake them.
+
+void win32_create_ica(GuestContext* context) {
+  // CreateICA is CreateDC for an information context: the same device-context model this
+  // runtime already uses for GetDC, asked for a display or printer rather than a window.
+  // There is no device to query, so the handle is the fixed one this runtime uses elsewhere.
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  (void)import_argument(context, 2);
+  (void)import_argument(context, 3);
+  set_import_result(context, 0x00040001ull);
+}
+
+// SEH, REPORTED RATHER THAN FAKED.
+//
+// `RaiseException` begins a structured-exception walk and `RtlUnwind` unwinds to a handler.
+// The directive is explicit: do not convert Windows SEH into ordinary C++ exceptions unless
+// behavioural equivalence has been established, and do not fake unsupported behaviour. This
+// runtime has no FS:[0] chain walk, so it CANNOT run the guest's handler -- and returning
+// success would tell the guest an exception was handled when nothing handled it.
+//
+// So it terminates with the exception code and the faulting address. That is the accurate
+// diagnostic, and a program that reaches it has told us exactly where it needs SEH.
+void win32_raise_exception(GuestContext* context) {
+  const auto code = import_argument(context, 0);
+  terminate_with_message("RaiseException(0x%llx) at ip=0x%llx: this runtime does not implement "
+                         "structured exception handling, so the guest's handler did not run",
+                         static_cast<unsigned long long>(code),
+                         static_cast<unsigned long long>(context->instruction_pointer));
+}
+
+void win32_rtl_unwind(GuestContext* context) {
+  terminate_with_message("RtlUnwind at ip=0x%llx: this runtime does not implement structured "
+                         "exception handling",
+                         static_cast<unsigned long long>(context->instruction_pointer));
+}
+
+void win32_co_create_instance(GuestContext* context) {
+  // COM object creation needs a class-object registry and a vtable model this runtime does not
+  // have. Reporting the CLSID is the honest answer: it names exactly which component the
+  // program asked for, which is what a reader needs in order to know what is missing.
+  const auto clsid = import_argument(context, 0);
+  std::uint32_t first = 0;
+  std::uint16_t second = 0;
+  std::uint16_t third = 0;
+  if (clsid != 0) {
+    first = static_cast<std::uint32_t>(load_guest_memory(context, clsid, 4));
+    second = static_cast<std::uint16_t>(load_guest_memory(context, clsid + 4, 2));
+    third = static_cast<std::uint16_t>(load_guest_memory(context, clsid + 6, 2));
+  }
+  terminate_with_message("CoCreateInstance({%08x-%04x-%04x-...}) at ip=0x%llx: this runtime has "
+                         "no COM object model, so the component was not created",
+                         first, second, third,
+                         static_cast<unsigned long long>(context->instruction_pointer));
+}
+
 // FormatMessageA. Needed by 103 of the 127 import-blocked applications -- nearly every GUI
 // binary and every CRT error path -- because it is how a program turns a GetLastError code
 // into text a user can read. A program that cannot format its own error message usually
@@ -5253,6 +5311,10 @@ const ShimDescriptor kShims[] = {
     {"gdiplus.dll", "GdipFree", win32_zero},
     {"gdiplus.dll", "GdipAlloc", win32_zero},
     {"comctl32.dll", "InitCommonControlsEx", win32_one},
+    {"gdi32.dll", "CreateICA", win32_create_ica},
+    {"kernel32.dll", "RaiseException", win32_raise_exception},
+    {"kernel32.dll", "RtlUnwind", win32_rtl_unwind},
+    {"ole32.dll", "CoCreateInstance", win32_co_create_instance},
     {"shlwapi.dll", "PathFindFileNameW", win32_path_find_filename_w},
     {"comdlg32.dll", "PrintDlgW", win32_zero},
     {"comdlg32.dll", "ChooseFontW", win32_zero},

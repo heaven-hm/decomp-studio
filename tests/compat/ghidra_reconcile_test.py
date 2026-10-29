@@ -15,9 +15,16 @@ import subprocess
 import sys
 import tempfile
 import pathlib
+import os
 
 CLI = sys.argv[1]
-FIXTURE = sys.argv[2]
+fixture_dir = tempfile.TemporaryDirectory(prefix="recomp-reconcile-")
+FIXTURE = str(pathlib.Path(fixture_dir.name) / "arith.exe")
+compiler = os.environ.get("CC", "x86_64-w64-mingw32-gcc")
+subprocess.run([compiler, "-O2", "-nostdlib", "-ffreestanding", "-fno-asynchronous-unwind-tables",
+                "-fno-stack-protector", "-fno-tree-vectorize", "-fno-tree-slp-vectorize",
+                "-Wl,--no-insert-timestamp", "-Wl,-e,recomp_entry", "-Wl,--subsystem,console",
+                "-o", FIXTURE, sys.argv[2], "-lkernel32", "-lgcc"], check=True)
 PASSES, FAILURES = [], []
 
 

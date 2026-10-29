@@ -84,7 +84,7 @@ target_include_directories(ghidra-reconcile PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(ghidra-reconcile PRIVATE ${RECOMP_LIBRARIES})
 add_test(NAME ghidra_reconcile COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_reconcile_test.py $<TARGET_FILE:ghidra-reconcile>
-  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/bin/arith.exe)
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c)
 target_compile_features(recomp-studio PRIVATE cxx_std_20)
 target_include_directories(recomp-studio PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(recomp-studio PRIVATE ${RECOMP_LIBRARIES})

@@ -92,6 +92,22 @@ verification system lies:
   a recorded byte count is ONE SAMPLE.
 - **2 of 36 verification runs of the same byte-identical `hangman` binaries DIVERGED** with
   identical output. The other four apps diverged 0 times in 24 runs.
+
+  **REPRODUCED AND NARROWED.** Twelve further runs of the same binary against the same
+  generated project gave **11 VERIFIED and 1 DIVERGED** -- about 8%, consistent with the
+  2-in-36 first observed. The one divergence carried a specific diagnosis:
+
+      checkpoint 1: the guest instruction stream differs at 0x4010...
+
+  So the divergence is in the **INSTRUCTION STREAM** and not in memory or output: the two
+  sides execute a different sequence from some point, which is a control-flow difference
+  rather than a stored-value difference. Fifteen further runs did not reproduce it, which
+  fixes the rate as low and makes it expensive to chase by repetition.
+
+  **This matters more than its rarity suggests.** It means a single `VERIFIED` result is not
+  proof that a re-run would agree, and the honest way to state any verification result from
+  this harness is "verified on this run". A defect that appears once in twelve runs will
+  survive any check that runs once.
 - `testtmp`-based fixtures are affected by machine load: a corpus sweep under memory pressure
   (load average 73) produced 13 spurious SIGKILL results that all produced real verdicts when
   re-run, and three applications that PASSED were first recorded as failures.

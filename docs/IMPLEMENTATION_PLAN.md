@@ -69,6 +69,16 @@ Each item is small enough to land and verify on its own.
 5. **An independent oracle.** Until a real Windows execution or a Frida trace is available,
    `VERIFIED` bounds the translation and not the Windows API semantics.
 
+   **THE BLOCKER IS NOW PRECISE, and it is not the tooling.** Frida IS installed on this host
+   (17.24.3, Python bindings included) -- but Frida instruments a RUNNING PROCESS, and the
+   input here is a **Windows PE32**. There is no `wine` and no Windows machine, so the original
+   executable **cannot be executed on this host at all**. The only thing that runs it is
+   Unicorn, and Unicorn driving the shared shim table is exactly the oracle whose limits this
+   section is about.
+
+   So the oracle needs one of: a Windows host, Wine, or a machine that can execute PE32. None
+   is present, and no amount of work inside this repository substitutes for one of them.
+
 ## Known gaps, recorded rather than implied
 
 - **No type recovery.** No struct layout, no field offsets, no `static_assert` on layout.

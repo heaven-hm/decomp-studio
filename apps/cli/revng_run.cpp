@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
     if (!fs::create_directory(output)) throw std::runtime_error("output directory must not exist");
     const auto artifact = output / "decompiled.c.yml";
     std::vector<std::string> args = {executable.string(), "quick", "artifact", "emit-c-as-single-file",
-                                     binary.string(), "-o", artifact.string()};
+                                     binary.string(), "-o", artifact.string(), "--format", "yaml"};
     std::vector<char*> raw;
     for (auto& arg : args) raw.push_back(arg.data());
     raw.push_back(nullptr);
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
       throw std::runtime_error("rev.ng produced no artifact");
     if (hash_file(binary) != binary_hash) throw std::runtime_error("input binary changed during rev.ng analysis");
     const nlohmann::json manifest = {{"schema_version", 1}, {"provider_claim", "rev.ng"},
-      {"binary_sha256", binary_hash}, {"artifact_sha256", hash_file(artifact)},
+      {"binary_sha256", binary_hash}, {"artifact_sha256", hash_file(artifact)}, {"artifact_format_claim", "yaml"},
       {"binary_artifact_association", "unverified"}, {"verification", "unverified"}};
     std::ofstream report(output / "analysis-provenance.json", std::ios::binary);
     if (!(report << manifest.dump(2) << '\n')) throw std::runtime_error("cannot write analysis provenance");

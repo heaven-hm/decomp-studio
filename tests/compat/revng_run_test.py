@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix="revng test ") as directory:
     binary.write_bytes(b"fixture")
     fake = root / "fake revng"
     fake.write_text("#!/bin/sh\n[ \"$1 $2 $3\" = 'quick artifact emit-c-as-single-file' ] || exit 9\n"
-                    "[ \"$5\" = '-o' ] || exit 10\nprintf 'artifact' > \"$6\"\n")
+                    "[ \"$5\" = '-o' ] && [ \"$7 $8\" = '--format yaml' ] || exit 10\nprintf 'artifact' > \"$6\"\n")
     fake.chmod(0o755)
     output = root / "analysis output"
     result = subprocess.run([sys.argv[1], str(fake), str(binary), str(output)], capture_output=True, text=True)
@@ -19,6 +19,7 @@ with tempfile.TemporaryDirectory(prefix="revng test ") as directory:
     manifest = json.loads((output / "analysis-provenance.json").read_text())
     assert manifest["binary_sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
     assert manifest["artifact_sha256"] == hashlib.sha256(b"artifact").hexdigest()
+    assert manifest["artifact_format_claim"] == "yaml"
     assert manifest["binary_artifact_association"] == "unverified"
     result = subprocess.run([sys.argv[1], str(fake), str(binary), str(output)], capture_output=True, text=True)
     assert result.returncode != 0

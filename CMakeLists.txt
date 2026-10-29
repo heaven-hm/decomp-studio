@@ -4,6 +4,42 @@ project(recomp_studio VERSION 0.4.0 LANGUAGES CXX)
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# Build the actual upstream Win32 provider tests when a pinned checkout is supplied.
+# This does not yet connect the provider to generated Recomp Studio guests.
+set(RECOMP_PCRECOMP_SOURCE "" CACHE PATH "PCRecomp checkout for upstream Win32 HLE tests")
+if(RECOMP_PCRECOMP_SOURCE)
+  enable_language(C)
+  find_package(Git REQUIRED)
+  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} rev-parse HEAD
+    OUTPUT_VARIABLE PCRECOMP_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PCRECOMP_GIT_RESULT)
+  if(NOT PCRECOMP_GIT_RESULT EQUAL 0 OR NOT PCRECOMP_REVISION STREQUAL "a85ea970f9e0640ab6546d2ca7a01fccb132973d")
+    message(FATAL_ERROR "PCRecomp checkout must be at a85ea970f9e0640ab6546d2ca7a01fccb132973d")
+  endif()
+  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} status --porcelain --untracked-files=all -- runtime/win32hle runtime/recomp32
+    OUTPUT_VARIABLE PCRECOMP_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PCRECOMP_STATUS_RESULT)
+  if(NOT PCRECOMP_STATUS_RESULT EQUAL 0 OR PCRECOMP_DIRTY)
+    message(FATAL_ERROR "PCRecomp runtime sources must be clean for a reproducible provider build")
+  endif()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(PCRECOMP_SDL REQUIRED IMPORTED_TARGET sdl2 SDL2_ttf)
+  find_package(Threads REQUIRED)
+  set(PCRECOMP_HLE_DIR "${RECOMP_PCRECOMP_SOURCE}/runtime/win32hle")
+  file(GLOB PCRECOMP_HLE_SOURCES CONFIGURE_DEPENDS "${PCRECOMP_HLE_DIR}/*.c")
+  list(FILTER PCRECOMP_HLE_SOURCES EXCLUDE REGEX "_selftest\\.c$")
+  foreach(test_name IN ITEMS win32hle gdi)
+    add_executable(pcrecomp_${test_name}_selftest ${PCRECOMP_HLE_SOURCES}
+      "${PCRECOMP_HLE_DIR}/${test_name}_selftest.c")
+    target_include_directories(pcrecomp_${test_name}_selftest PRIVATE
+      "${PCRECOMP_HLE_DIR}" "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+    target_link_libraries(pcrecomp_${test_name}_selftest PRIVATE PkgConfig::PCRECOMP_SDL Threads::Threads m)
+    add_test(NAME pcrecomp_${test_name} COMMAND pcrecomp_${test_name}_selftest)
+    set_tests_properties(pcrecomp_${test_name} PROPERTIES
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+  endforeach()
+endif()
+
 # Unicorn (GPL-2.0) powers the differential verification backend. It is optional
 # so the core recompiler and CLI can be built without it.
 option(RECOMP_ENABLE_UNICORN "Build the Unicorn-based verification backend (GPL-2.0)" ON)

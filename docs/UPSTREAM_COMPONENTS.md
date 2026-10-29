@@ -55,6 +55,18 @@ recompilation projects... make it run again -- on Windows 11, or natively on Lin
 emulator and no Wine" ([README](https://github.com/sp00nznet/pcrecomp)). It is the directive's
 primary foundation and its licence permits integration.
 
+The optional CMake setting `RECOMP_PCRECOMP_SOURCE` builds PCRecomp's actual
+`win32hle_selftest.c` and `gdi_selftest.c` against its runtime sources at revision
+`a85ea970f9e0640ab6546d2ca7a01fccb132973d`. It requires a clean checkout,
+SDL2 and SDL2_ttf. Configure with `-DRECOMP_PCRECOMP_SOURCE=/path/to/pcrecomp`,
+build the `pcrecomp_win32hle_selftest` and `pcrecomp_gdi_selftest` targets, then
+run `ctest -R '^pcrecomp_' --output-on-failure` from that build directory.
+These upstream tests exercise its guest calls, callbacks and GDI rendering;
+they do not run Recomp Studio generated code. PCRecomp owns a separate guest
+address space and global register file, whereas Recomp Studio uses `GuestContext`.
+The memory, callback and thread contracts must be bridged before that runtime can
+serve Recomp Studio guests.
+
 **Its own NOTICE demonstrates the file-level rule this document insists on.** The repository
 carries a `LICENSES/` directory and a `NOTICE` that lists each exception by PATH:
 `tools/assets/is3extract.py` (the PKWARE DCL explode section) is a Python port of zlib's

@@ -71,9 +71,12 @@ With `i686-w64-mingw32-gcc` and Python Capstone installed, the optional
 `pcrecomp_pe32_fixture` test also compiles the project's arithmetic fixture to
 PE32, runs PCRecomp's generator, builds its generated C with `win32hle`, and
 checks the native output. It uses the original PE as the upstream host's image
-input. The expected output is a fixture oracle, not an independent execution
-of the original Windows binary; this test does not establish game support or
-high-level source reconstruction.
+input. When Unicorn is enabled, `pcrecomp_pe32_unicorn_reference` also executes
+the original PE under Recomp Studio's Unicorn reference and compares its output
+with PCRecomp's native program, normalizing line endings. The two paths use
+different runtime implementations, but the reference is emulated rather than
+native Windows. Neither test establishes game support or high-level source
+reconstruction.
 
 **Its own NOTICE demonstrates the file-level rule this document insists on.** The repository
 carries a `LICENSES/` directory and a `NOTICE` that lists each exception by PATH:

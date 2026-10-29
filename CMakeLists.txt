@@ -110,6 +110,15 @@ endif()
 set_source_files_properties(runtime/recomp_runtime.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
 add_executable(recomp-studio ${RECOMP_SOURCES})
+if(RECOMP_PCRECOMP_SOURCE AND PCRECOMP_MINGW_CC AND RECOMP_ENABLE_UNICORN AND UNICORN_INCLUDE_DIR AND UNICORN_LIBRARY)
+  add_test(NAME pcrecomp_pe32_unicorn_reference COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_fixture_test.py
+    ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c
+    ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${PKG_CONFIG_EXECUTABLE} ${CMAKE_OSX_SYSROOT}
+    --reference-cli $<TARGET_FILE:recomp-studio>)
+  set_tests_properties(pcrecomp_pe32_unicorn_reference PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
+endif()
 add_executable(ghidra-import apps/cli/ghidra_import.cpp core/common/sha256.cpp)
 add_executable(ghidra-run apps/cli/ghidra_run.cpp core/common/sha256.cpp)
 target_compile_features(ghidra-run PRIVATE cxx_std_20)

@@ -17,6 +17,11 @@ def run(args, *, cwd=None):
 
 def main():
     upstream, fixture, mingw, cc, pkg_config, *sdk = sys.argv[1:]
+    reference_cli = None
+    if "--reference-cli" in sdk:
+        position = sdk.index("--reference-cli")
+        reference_cli = sdk[position + 1]
+        del sdk[position:position + 2]
     upstream = pathlib.Path(upstream).resolve()
     fixture = pathlib.Path(fixture).resolve()
     hle = upstream / "runtime/win32hle"
@@ -44,12 +49,20 @@ def main():
         run([cc, *sysroot, "-O1", f"-I{hle}", f"-I{recomp}", f"-I{generated}",
              "-include", str(generated / "recomp_funcs.h"), *core,
              str(driver), *(str(path) for path in sources), *flags, "-lpthread", "-lm", "-o", str(executable)])
-        output = run([str(executable), str(image)]).stdout.replace("\r\n", "\n")
+        candidate = run([str(executable), str(image)]).stdout
+        output = candidate.replace("\r\n", "\n")
         expected = ("arith:start\nprimes<200=46\nfib(20)=6765\ngcd(1071,462)=21\n"
                     "popcount(0xF0F0F0F0)=16\nrotl(0x12345678,8)=878082066\n"
                     "poly=12512\nmul=-8369910\ndiv=-18\nmod=-141\narith:done\n")
         if output != expected:
             raise AssertionError(f"fixture output differs:\n{output}")
+        if reference_cli:
+            reference_project = root / "reference"
+            run([reference_cli, "autorecomp", str(image), "--output", str(reference_project),
+                 "--buildrun", "--timeout", "10"])
+            reference = (reference_project / "reports/reference.txt").read_text().replace("\r\n", "\n")
+            if output != reference:
+                raise AssertionError("PCRecomp output differs from Unicorn's original-PE execution")
     print("PCRecomp PE32 fixture compiled and ran with expected output")
 
 

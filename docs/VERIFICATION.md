@@ -109,6 +109,19 @@ copy. The fixture whose whole purpose is a missing import had to be re-pointed w
 `MessageBoxA` was implemented: **a negative fixture's symbol moves**, and a fixture that
 passes for the right reason has stopped being a test.
 
+### Source-to-binary provenance
+
+The delivered source must be the compiled source; that claim has its own gates.
+
+| gate | how it is tested |
+|---|---|
+| source manifest completeness | `tests/verification/readable_leaf_test.py` recomputes SHA-256 for every `recomp-source-manifest.json` entry with `hashlib` and asserts equality |
+| build fails closed on source drift | `build` verifies every manifest hash before compiling, and the same test asserts a recorded hash matches the on-disk tree it was built from |
+| source map agrees with source | the test parses `recomp-source-map.json` and asserts census counts equal the translation report and that every `high-level verified` record carries a recognizer and machine evidence |
+| quality gate fails closed | the test runs `translate --source-mode low-level --source-quality human-readable`, asserts non-zero exit, the measured census in the message, and that NO `guest.cpp` was written |
+| compiled binary matches manifest | the test re-hashes the built executable and compares it to `recomp-build-manifest.json` |
+| hybrid output is differential | the same fixture is translated `low-level` (zero high-level functions) and `hybrid` (recognized leaf rendered as a provenance-labelled helper), both built, and the hybrid project's candidate is compared against Unicorn reference execution (`VERIFIED`) |
+
 ## The bugs these gates found in THEMSELVES
 
 Recorded because they are the evidence that the gates work, and because each one is a way a

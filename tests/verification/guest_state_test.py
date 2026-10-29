@@ -14,6 +14,7 @@ is provably unchanged and only the state differs. If verification still passed, 
 state comparison would be decoration.
 """
 
+import hashlib
 import json
 import pathlib
 import re
@@ -49,6 +50,24 @@ def verify_json(project):
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def record_manifest_hash(project, filename):
+    """Re-record a deliberate test mutation in the delivered-source manifest.
+
+    `build` refuses source that no longer matches recomp-source-manifest.json, which is
+    the correct fail-closed behavior and is tested separately. A mutation that is meant
+    to reach the verifier must therefore update the manifest entry, exactly as a
+    re-translate of the mutated source would.
+    """
+    manifest = project / "recomp-source-manifest.json"
+    digest = hashlib.sha256((project / filename).read_bytes()).hexdigest()
+    lines = []
+    for line in manifest.read_text().splitlines():
+        if f'"path": "{filename}"' in line:
+            line = re.sub(r'"sha256": "[0-9a-f]{64}"', f'"sha256": "{digest}"', line)
+        lines.append(line)
+    manifest.write_text("\n".join(lines) + "\n")
 
 
 def main():

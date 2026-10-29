@@ -1670,6 +1670,87 @@ RECOMP_COMPARE_OP(less_equal, <=)
 RECOMP_COMPARE_OP(not_equal, !=)
 #undef RECOMP_COMPARE_OP
 
+// The remaining predicates cannot be written as a single binary operator. "unordered" is
+// true when either operand is NaN; "not less than" and "not less or equal" are the
+// negations of `<` and `<=`, which are true for an unordered pair. These are the scalar
+// (ss/sd) forms and only touch the low lane.
+#define RECOMP_COMPARE_CONDITION(NAME, CONDITION)                                                   \
+  inline void vector_compare_##NAME##_floats(GuestContext* context, int destination, int source) {   \
+    const float a = vector_get_float(context, destination);                                         \
+    const float b = vector_get_float(context, source);                                              \
+    vector_set_float(context, destination, (CONDITION) ? mask_float() : 0.0f);                       \
+  }                                                                                                 \
+  inline void vector_compare_##NAME##_floats_memory(GuestContext* context, int destination,           \
+                                                   std::uint64_t address) {                          \
+    const float a = vector_get_float(context, destination);                                         \
+    const float b = load_guest_float(context, address);                                              \
+    vector_set_float(context, destination, (CONDITION) ? mask_float() : 0.0f);                       \
+  }                                                                                                 \
+  inline void vector_compare_##NAME##_doubles(GuestContext* context, int destination, int source) {  \
+    const double a = vector_get_double(context, destination);                                        \
+    const double b = vector_get_double(context, source);                                             \
+    vector_set_double(context, destination, (CONDITION) ? mask_double() : 0.0);                      \
+  }                                                                                                 \
+  inline void vector_compare_##NAME##_doubles_memory(GuestContext* context, int destination,          \
+                                                    std::uint64_t address) {                         \
+    const double a = vector_get_double(context, destination);                                        \
+    const double b = load_guest_double(context, address);                                            \
+    vector_set_double(context, destination, (CONDITION) ? mask_double() : 0.0);                      \
+  }
+
+RECOMP_COMPARE_CONDITION(unordered, std::isnan(a) || std::isnan(b))
+RECOMP_COMPARE_CONDITION(not_less_than, !(a < b))
+RECOMP_COMPARE_CONDITION(not_less_equal, !(a <= b))
+RECOMP_COMPARE_CONDITION(ordered, !(std::isnan(a) || std::isnan(b)))
+#undef RECOMP_COMPARE_CONDITION
+
+// The PACKED compare forms. CMPPS/CMPPD compare every lane independently; reusing the
+// scalar helper would leave all but the low lane untouched, which is exactly the bug the
+// register-only guard had hidden. Both widths are generated from one condition.
+#define RECOMP_PACKED_COMPARE(NAME, CONDITION)                                                      \
+  inline void vector_compare_packed_##NAME##_floats(GuestContext* context, int destination,          \
+                                                    int source) {                                    \
+    for (int lane = 0; lane < 4; ++lane) {                                                          \
+      const float a = vector_get_float_lane(context, destination, lane);                            \
+      const float b = vector_get_float_lane(context, source, lane);                                 \
+      vector_set_float_lane(context, destination, lane, (CONDITION) ? mask_float() : 0.0f);          \
+    }                                                                                               \
+  }                                                                                                 \
+  inline void vector_compare_packed_##NAME##_floats_memory(GuestContext* context, int destination,   \
+                                                          std::uint64_t address) {                   \
+    for (int lane = 0; lane < 4; ++lane) {                                                          \
+      const float a = vector_get_float_lane(context, destination, lane);                            \
+      const float b = load_guest_float(context, address + lane * 4);                                \
+      vector_set_float_lane(context, destination, lane, (CONDITION) ? mask_float() : 0.0f);          \
+    }                                                                                               \
+  }                                                                                                 \
+  inline void vector_compare_packed_##NAME##_doubles(GuestContext* context, int destination,         \
+                                                     int source) {                                   \
+    for (int lane = 0; lane < 2; ++lane) {                                                          \
+      const double a = vector_get_double_lane(context, destination, lane);                          \
+      const double b = vector_get_double_lane(context, source, lane);                               \
+      vector_set_double_lane(context, destination, lane, (CONDITION) ? mask_double() : 0.0);         \
+    }                                                                                               \
+  }                                                                                                 \
+  inline void vector_compare_packed_##NAME##_doubles_memory(GuestContext* context, int destination,  \
+                                                           std::uint64_t address) {                  \
+    for (int lane = 0; lane < 2; ++lane) {                                                          \
+      const double a = vector_get_double_lane(context, destination, lane);                          \
+      const double b = load_guest_double(context, address + lane * 8);                              \
+      vector_set_double_lane(context, destination, lane, (CONDITION) ? mask_double() : 0.0);         \
+    }                                                                                               \
+  }
+
+RECOMP_PACKED_COMPARE(equal, a == b)
+RECOMP_PACKED_COMPARE(less, a < b)
+RECOMP_PACKED_COMPARE(less_equal, a <= b)
+RECOMP_PACKED_COMPARE(unordered, std::isnan(a) || std::isnan(b))
+RECOMP_PACKED_COMPARE(not_equal, a != b)
+RECOMP_PACKED_COMPARE(not_less_than, !(a < b))
+RECOMP_PACKED_COMPARE(not_less_equal, !(a <= b))
+RECOMP_PACKED_COMPARE(ordered, !(std::isnan(a) || std::isnan(b)))
+#undef RECOMP_PACKED_COMPARE
+
 // The PACKED arithmetic forms. The scalar forms (`addss` and friends) operate on one
 // lane; these operate on all four singles or both doubles at once, and the two are not
 // interchangeable -- a program that adds two vectors of pixels uses these, and refusing
@@ -2326,6 +2407,8 @@ RECOMP_PACKED_SHIFT_BY_SOURCE(vector_shift_right_arithmetic_dwords_by_source,
 RECOMP_PACKED_BINARY(vector_add_dwords, std::uint32_t, a + b)
 RECOMP_PACKED_BINARY(vector_subtract_dwords, std::uint32_t, a - b)
 RECOMP_PACKED_BINARY(vector_compare_equal_dwords, std::uint32_t, a == b ? 0xffffffffu : 0u)
+// PMAXSW is SIGNED: 0xffff is -1 and must lose to 0x0001, not win.
+RECOMP_PACKED_BINARY(vector_max_signed_words, std::int16_t, a > b ? a : b)
 
 #undef RECOMP_PACKED_BINARY
 

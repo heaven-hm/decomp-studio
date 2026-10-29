@@ -48,8 +48,24 @@ binaries of that name were ported, and the architecture column is what distingui
 
 | 7 | `g64_game2048.exe` | x86_64 | windows | C | macos (macos-arm64) | 353 bytes | not yet captured |
 
-**Count: 7 ported binaries, from 5 distinct programs** (arith-calc, tetris, base64, hangman,
-g64_game2048).
+| 8 | `fillingsolver.exe` | x86 | windows | C | macos (macos-arm64) | see note | not yet captured |
+| 9 | `game2048.exe` | x86 | windows | C | macos (macos-arm64) | see note | not yet captured |
+| 10 | `snake.exe` | x86 | windows | C | macos (macos-arm64) | see note | not yet captured |
+| 11 | `tictactoe.exe` | x86 | windows | C | macos (macos-arm64) | see note | not yet captured |
+
+**Count: 11 ported binaries, from 9 distinct programs** (arith-calc, tetris, base64, hangman,
+g64_game2048, fillingsolver, game2048, snake, tictactoe).
+
+Rows 8-11 come from the x86 corpus sweep, each with `AUTORECOMP COMPLETE` in its own log.
+They are listed without byte counts because the sweep recorded the verdict rather than the
+output size, and a number nobody measured is worse than no number.
+
+**A NOTE ON THE FIRST PASS OF THAT SWEEP, which is why it is worth re-running rather than
+trusting:** it found only FIVE passes. `fillingsolver`, `hangman_x86` and `snake` had been
+killed by memory pressure (load average peaked at 73) and passed only on a clean sequential
+re-run. Believing the first pass would have understated the corpus by three ports, and the
+same pressure produced 13 spurious SIGKILL/SIGTERM results that all produced real verdicts
+when re-run.
 
 Row 7 is the first port from OUTSIDE the shipped corpus: it comes from the
 `cricket07-browser` project's own Windows builds. It is listed with `AUTORECOMP COMPLETE`,

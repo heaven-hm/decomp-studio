@@ -111,9 +111,16 @@ const std::vector<Capability>& capabilities() {
        "an instruction budget exists; a wall-clock timeout does not"},
 
       // --- source generation ----------------------------------------------
+      {"source-mode:low-level", "--source-mode", "low-level", "machine-level lift for every function", Support::Implemented,
+       "the default; no function is presented as high-level reconstruction"},
+      {"source-mode:hybrid", "--source-mode", "hybrid", "verified high-level bodies where a recognizer proves the whole body, machine-level fallback elsewhere", Support::Implemented,
+       "recognizers are whole-body and flag-neutral (constant return, stack-argument return, register-argument return); everything else is emitted as an explicitly classified machine-level fallback, never as readable reconstruction"},
+      {"source-quality:any", "--source-quality", "any", "accept whatever source the mode produces", Support::Implemented, ""},
+      {"source-quality:human-readable", "--source-quality", "human-readable", "refuse to emit a project unless every function is resolved and at least one is verified", Support::Implemented,
+       "fail-closed gate: fails before writing any file when the measured census has unresolved functions or no high-level verified function, and reports the census"},
       {"source-style:faithful", "--source-style", "faithful", "machine-faithful source", Support::Implemented, ""},
       {"source-style:readable", "--source-style", "readable", "readable source for verified constant-return leaf functions", Support::Implemented,
-       "other functions remain machine-level fallback code"},
+       "equivalent to --source-mode hybrid for recognition; other functions remain machine-level fallback code"},
       {"recover-types:", "--recover-types", "", "recover types", Support::Planned, "no type recovery"},
       {"recover-symbols:", "--recover-symbols", "", "recover symbols", Support::Planned, "no symbol recovery"},
       {"preserve-metadata:", "--preserve-metadata", "", "preserve original metadata", Support::Planned,

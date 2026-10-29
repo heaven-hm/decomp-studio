@@ -180,6 +180,8 @@ const std::map<std::string, std::string>& vex_equivalents() {
       {"vminss", "minss"},   {"vmaxss", "maxss"},   {"vminsd", "minsd"},   {"vmaxsd", "maxsd"},
       {"vcmpeqss", "cmpeqss"}, {"vcmpltss", "cmpltss"}, {"vcmpless", "cmpless"},
       {"vcmpeqsd", "cmpeqsd"}, {"vcmpltsd", "cmpltsd"}, {"vcmplesd", "cmplesd"},
+      {"vcmpltpd", "cmpltpd"}, {"vcmplepd", "cmplepd"}, {"vcmpneqpd", "cmpneqpd"},
+      {"vcmpltps", "cmpltps"}, {"vcmpleps", "cmpleps"}, {"vcmpneqps", "cmpneqps"},
       // The ordered/unordered compares, which set EFLAGS rather than a mask.
       {"vcomiss", "comiss"}, {"vucomiss", "ucomiss"}, {"vcomisd", "comisd"}, {"vucomisd", "ucomisd"},
   };
@@ -209,6 +211,7 @@ const std::map<std::string, std::string>& packed_integer_helpers() {
       {"pcmpgtb", "vector_compare_greater_signed_bytes"},
       {"pcmpgtw", "vector_compare_greater_signed_words"},
       {"pcmpgtd", "vector_compare_greater_signed_dwords"},
+      {"pmaxsw", "vector_max_signed_words"},
       {"pmullw", "vector_multiply_low_words"},
       {"pmulhw", "vector_multiply_high_words"},
       {"pmulhuw", "vector_multiply_high_unsigned_words"},
@@ -317,8 +320,11 @@ ParsedMnemonic parse_mnemonic(const std::string& raw) {
     parsed.has_repeat_prefix = true;
   }
   if (parsed.mnemonic.compare(0, 5, "lock ") == 0) parsed.mnemonic = parsed.mnemonic.substr(5);
-  // MPX `bnd` is a non-semantic bounds hint when MPX is disabled; ordinary
-  // branches prefixed with it execute exactly like their unprefixed form.
+  // `bnd` is the MPX bounds prefix. It is a HINT: on a processor without MPX, or with it
+  // disabled, the instruction it prefixes executes exactly as if the prefix were absent.
+  // A program compiled with MPX emits it on ordinary branches (`bnd jae`), so refusing it
+  // refuses the program over a prefix that does nothing -- and the report names it as one
+  // of the reasons real applications fail. Dropping it is what the hardware does.
   if (parsed.mnemonic.compare(0, 4, "bnd ") == 0) parsed.mnemonic = parsed.mnemonic.substr(4);
   return parsed;
 }
@@ -2184,13 +2190,38 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
         {"minss", "vector_min_floats"}, {"maxss", "vector_max_floats"},
         {"minsd", "vector_min_doubles"}, {"maxsd", "vector_max_doubles"},
         // The compare family. Each writes an all-ones or all-zeros MASK per lane, which
-        // is why they map to their own helpers rather than to a boolean.
+        // is why they map to their own helpers rather than to a boolean. The `ss`/`sd`
+        // helpers touch the low lane; the `ps`/`pd` helpers compare every lane.
         {"cmpeqss", "vector_compare_equal_floats"}, {"cmpltss", "vector_compare_less_floats"},
         {"cmpless", "vector_compare_less_equal_floats"},
         {"cmpneqss", "vector_compare_not_equal_floats"},
+        {"cmpunordss", "vector_compare_unordered_floats"},
+        {"cmpnltss", "vector_compare_not_less_than_floats"},
+        {"cmpnless", "vector_compare_not_less_equal_floats"},
+        {"cmpordss", "vector_compare_ordered_floats"},
         {"cmpeqsd", "vector_compare_equal_doubles"}, {"cmpltsd", "vector_compare_less_doubles"},
         {"cmplesd", "vector_compare_less_equal_doubles"},
-        {"cmpneqsd", "vector_compare_not_equal_doubles"}};
+        {"cmpneqsd", "vector_compare_not_equal_doubles"},
+        {"cmpunordsd", "vector_compare_unordered_doubles"},
+        {"cmpnltsd", "vector_compare_not_less_than_doubles"},
+        {"cmpnlesd", "vector_compare_not_less_equal_doubles"},
+        {"cmpordsd", "vector_compare_ordered_doubles"},
+        {"cmpeqps", "vector_compare_packed_equal_floats"},
+        {"cmpltps", "vector_compare_packed_less_floats"},
+        {"cmpleps", "vector_compare_packed_less_equal_floats"},
+        {"cmpneqps", "vector_compare_packed_not_equal_floats"},
+        {"cmpunordps", "vector_compare_packed_unordered_floats"},
+        {"cmpnltps", "vector_compare_packed_not_less_than_floats"},
+        {"cmpnleps", "vector_compare_packed_not_less_equal_floats"},
+        {"cmpordps", "vector_compare_packed_ordered_floats"},
+        {"cmpeqpd", "vector_compare_packed_equal_doubles"},
+        {"cmpltpd", "vector_compare_packed_less_doubles"},
+        {"cmplepd", "vector_compare_packed_less_equal_doubles"},
+        {"cmpneqpd", "vector_compare_packed_not_equal_doubles"},
+        {"cmpunordpd", "vector_compare_packed_unordered_doubles"},
+        {"cmpnltpd", "vector_compare_packed_not_less_than_doubles"},
+        {"cmpnlepd", "vector_compare_packed_not_less_equal_doubles"},
+        {"cmpordpd", "vector_compare_packed_ordered_doubles"}};
     const auto* helpers = double_helpers.count(mnemonic) != 0 ? &double_helpers
                          : float_helpers.count(mnemonic) != 0 ? &float_helpers
                                                              : nullptr;
@@ -2249,6 +2280,17 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   if (mnemonic == "cvtss2sd" && operands.size() == 2 && is_vector_register(operands[0])) {
     emit("vector_set_double(context, " + std::to_string(vector_index(operands[0])) + ", static_cast<double>(vector_get_float(context, " +
          std::to_string(vector_index(operands[1])) + ")));");
+    return;
+  }
+  if (mnemonic == "cvtsd2si" && operands.size() == 2) {
+    // The ROUNDING form, unlike cvttsd2si. `nearbyint` follows the current floating-point
+    // environment, whose default is round-to-nearest-even -- the same default MXCSR uses.
+    const auto width = operand_width(operands[0], 4);
+    const auto source = operands[1].kind == discovery::Operand::Kind::Memory
+        ? "load_guest_double(context, " + effective_address_expression(instruction, operands[1]) + ")"
+        : "vector_get_double(context, " + std::to_string(vector_index(operands[1])) + ")";
+    operand_write(output, instruction, operands[0],
+         "static_cast<std::uint64_t>(static_cast<std::int64_t>(std::nearbyint(" + source + ")))", width);
     return;
   }
   if ((mnemonic == "bsr" || mnemonic == "bsf") && operands.size() == 2) {
@@ -2785,13 +2827,7 @@ ir::Function X86_64Lifter::lift_function_to_ir(const RecoveredFunction& function
   return lifted;
 }
 
-std::string X86_64Lifter::lift_function(const RecoveredFunction& function, bool readable) const {
-  if (readable) {
-    if (const auto high_level = recognize_constant_return(function))
-      return render_constant_return(*high_level, guest_function_name(function.entry));
-    if (const auto accessor = recognize_argument_return(function))
-      return render_argument_return(*accessor, guest_function_name(function.entry));
-  }
+std::string X86_64Lifter::lift_function(const RecoveredFunction& function) const {
   const auto lifted = lift_function_to_ir(function);
   std::string output;
   output += "static void " + lifted.name + "(GuestContext* context) {\n";
@@ -2817,7 +2853,8 @@ ir::StatementCensus X86_64Lifter::statement_census() const {
   return ir::census(module);
 }
 
-std::string X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
+LiftedProgram X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
+  LiftedProgram program;
   std::string declarations;
   std::string definitions;
   for (const auto& [address, symbol] : native_overrides_) {
@@ -2825,35 +2862,114 @@ std::string X86_64Lifter::lift_all_functions(bool strict, bool readable) const {
     declarations += "extern \"C\" void " + symbol + "(GuestContext* context);\n";
   }
   if (!native_overrides_.empty()) declarations += "\n";
+
+  const auto record = [&program](FunctionSourceRecord entry) {
+    ++program.census.total_functions;
+    switch (entry.classification) {
+      case SourceClass::HighLevelVerified: ++program.census.high_level_verified; break;
+      case SourceClass::LowLevelFallback: ++program.census.low_level_fallback; break;
+      case SourceClass::Unresolved: ++program.census.unresolved; break;
+      case SourceClass::PolicyOverride: ++program.census.policy_override; break;
+    }
+    program.functions.push_back(std::move(entry));
+  };
+
   for (const auto& [address, function] : discovery_.functions()) {
     declarations += "static void " + guest_function_name(address) + "(GuestContext* context);\n";
+    FunctionSourceRecord entry;
+    entry.address = address;
+    entry.instruction_count = function.instructions.size();
+    for (const auto& [instruction_address, instruction] : function.instructions) {
+      (void)instruction_address;
+      entry.byte_count += instruction.size;
+    }
+
     if (native_overrides_.count(address) != 0) {
+      entry.classification = SourceClass::PolicyOverride;
+      entry.evidence = "native override -> " + native_overrides_.at(address);
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Evidence: " << entry.evidence << "\n";
+      definitions += header.str();
       definitions += "static void " + guest_function_name(address) + "(GuestContext* context) { " +
                      native_overrides_.at(address) + "(context); }\n\n";
+      record(std::move(entry));
       continue;
     }
     if (stubbed_functions_.count(address) != 0) {
+      entry.classification = SourceClass::PolicyOverride;
+      entry.evidence = "configured stub; behavior replaced and not verified";
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Evidence: " << entry.evidence << "\n";
+      definitions += header.str();
       definitions += "static void " + guest_function_name(address) +
                      "(GuestContext* context) { context->registers[4] += 8; context->registers[0] = 0; return; }\n\n";
+      record(std::move(entry));
       continue;
     }
+    if (readable) {
+      if (const auto high_level = recognize_high_level(function)) {
+        entry.classification = SourceClass::HighLevelVerified;
+        entry.recognizer = high_level->recognizer;
+        entry.evidence = high_level->evidence;
+        definitions += render_high_level(*high_level, guest_function_name(address));
+        definitions += "\n";
+        record(std::move(entry));
+        continue;
+      }
+      if (const auto accessor = recognize_argument_return(function)) {
+        entry.classification = SourceClass::HighLevelVerified;
+        entry.recognizer = "stack-argument-return";
+        std::ostringstream evidence;
+        evidence << "whole body returns stack argument " << accessor->argument_index << " of "
+                 << entry.instruction_count << " instructions (" << entry.byte_count << " bytes)";
+        entry.evidence = evidence.str();
+        definitions += render_argument_return(*accessor, guest_function_name(address));
+        definitions += "\n";
+        record(std::move(entry));
+        continue;
+      }
+    }
     try {
-      definitions += lift_function(function, readable);
+      const auto definition = lift_function(function);
+      entry.classification = SourceClass::LowLevelFallback;
+      std::ostringstream evidence;
+      evidence << "machine-level lift of " << entry.instruction_count << " instructions ("
+               << entry.byte_count << " bytes)";
+      entry.evidence = evidence.str();
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Evidence: " << entry.evidence << "\n";
+      definitions += header.str();
+      definitions += definition;
       definitions += "\n";
-    } catch (const LiftError&) {
+    } catch (const LiftError& error) {
       if (strict) throw;
+      entry.classification = SourceClass::Unresolved;
+      entry.evidence = error.what();
+      std::ostringstream header;
+      header << "// Function 0x" << std::hex << address << std::dec << "\n"
+             << "// Source classification: " << source_class_name(entry.classification) << "\n"
+             << "// Blocker: " << entry.evidence << "\n";
+      definitions += header.str();
       definitions += "static void " + guest_function_name(address) +
                      "(GuestContext* context) { recomp_unsupported(context, \"function failed to lift\"); }\n\n";
     }
+    record(std::move(entry));
   }
-  return declarations + "\n" + definitions;
+  program.source = declarations + "\n" + definitions;
+  return program;
 }
 
 std::size_t X86_64Lifter::high_level_function_count() const {
   std::size_t count = 0;
   for (const auto& [address, function] : discovery_.functions()) {
     if (native_overrides_.count(address) == 0 && stubbed_functions_.count(address) == 0 &&
-        (recognize_constant_return(function) || recognize_argument_return(function)))
+        (recognize_high_level(function) || recognize_argument_return(function)))
       ++count;
   }
   return count;

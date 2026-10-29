@@ -4284,6 +4284,26 @@ void win32_co_create_instance(GuestContext* context) {
                          static_cast<unsigned long long>(context->instruction_pointer));
 }
 
+// InitCommonControls / InitCommonControlsEx. These are the FIRST import 44 of the 88
+// distinct x86 binaries reach -- half the corpus -- and they do nothing a translated
+// program can observe: the real function loads a control library into the process so that
+// later CreateWindowEx calls can name a common control class. There is no window manager
+// here, so the load has no effect and returning success is not a fabrication -- it is what
+// the call means in a process that has no control library to load.
+//
+// SAID PLAINLY: this clears the FIRST stated blocker for those 44 applications. It does not
+// make them pass. Their next call is into the same 516-symbol GUI surface, so it moves them
+// from "fails at the first import" to "fails at the second", and the corpus count will not
+// move until that surface exists.
+void win32_init_common_controls(GuestContext* context) { (void)context; set_import_result(context, 1); }
+void win32_init_common_controls_ex(GuestContext* context) {
+  // The extended form takes a size and a bitmask of classes to register. Both are ignored
+  // for the same reason as above, and it returns TRUE on success.
+  (void)import_argument(context, 0);
+  (void)import_argument(context, 1);
+  set_import_result(context, 1);
+}
+
 // FormatMessageA. Needed by 103 of the 127 import-blocked applications -- nearly every GUI
 // binary and every CRT error path -- because it is how a program turns a GetLastError code
 // into text a user can read. A program that cannot format its own error message usually
@@ -5746,6 +5766,8 @@ const ShimDescriptor kShims[] = {
     {"msvcrt.dll", "_isatty", msvcrt_isatty},
     {"msvcrt.dll", "_getpid", msvcrt_getpid},
     {"kernel32.dll", "FormatMessageA", win32_format_message_a},
+    {"comctl32.dll", "InitCommonControls", win32_init_common_controls},
+    {"comctl32.dll", "InitCommonControlsEx", win32_init_common_controls_ex},
     {"user32.dll", "RegisterClassA", msvcrt_register_class_a},
     {"user32.dll", "CreateWindowExA", msvcrt_create_window_ex_a},
     {"user32.dll", "DestroyWindow", msvcrt_destroy_window},

@@ -147,6 +147,124 @@ std::string manifest_string_field(const std::filesystem::path& project, const st
   return text.substr(from, end - from);
 }
 
+std::string sha256_of_file(const std::filesystem::path& path) {
+  const auto bytes = read_whole_file(path);
+  return common::sha256(std::span<const unsigned char>(
+      reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()));
+}
+
+std::string hex_address(std::uint64_t value) {
+  std::ostringstream text;
+  text << "0x" << std::hex << value;
+  return text.str();
+}
+
+struct SourceHash {
+  std::string path;
+  std::string sha256;
+};
+
+// The source manifest is written by write_source_manifest() with one entry per
+// line, so verifying it does not need a JSON library. Every entry must carry both
+// a path and a hash; an entry missing either is a malformed manifest and fails
+// closed rather than being skipped.
+std::vector<SourceHash> read_source_manifest(const std::filesystem::path& output_directory) {
+  const auto manifest_path = output_directory / "recomp-source-manifest.json";
+  if (!std::filesystem::exists(manifest_path))
+    throw std::runtime_error("project is missing recomp-source-manifest.json; run translate first");
+  std::istringstream input(read_whole_file(manifest_path));
+  std::vector<SourceHash> entries;
+  SourceHash current;
+  std::string line;
+  const std::string path_key = "\"path\": \"";
+  const std::string hash_key = "\"sha256\": \"";
+  while (std::getline(input, line)) {
+    if (const auto start = line.find(path_key); start != std::string::npos) {
+      const auto from = start + path_key.size();
+      const auto end = line.find('"', from);
+      if (end == std::string::npos) throw std::runtime_error("malformed source manifest entry");
+      current.path = line.substr(from, end - from);
+    }
+    if (const auto start = line.find(hash_key); start != std::string::npos) {
+      const auto from = start + hash_key.size();
+      const auto end = line.find('"', from);
+      if (end == std::string::npos || current.path.empty())
+        throw std::runtime_error("malformed source manifest entry");
+      current.sha256 = line.substr(from, end - from);
+      entries.push_back(current);
+      current = {};
+    }
+  }
+  if (entries.empty()) throw std::runtime_error("source manifest lists no files; run translate first");
+  return entries;
+}
+
+void write_source_manifest(const TranslateReport& report, const std::filesystem::path& output_directory) {
+  std::ofstream output(output_directory / "recomp-source-manifest.json");
+  if (!output) throw std::runtime_error("cannot write recomp-source-manifest.json");
+  output << "{\n  \"schema\": 1,\n  \"files\": [\n";
+  for (std::size_t index = 0; index < report.source_files.size(); ++index) {
+    const auto& path = report.source_files[index];
+    output << "    {\"path\": " << quote_json(path.filename().string())
+           << ", \"sha256\": " << quote_json(sha256_of_file(path))
+           << ", \"bytes\": " << std::filesystem::file_size(path) << "}";
+    output << (index + 1 == report.source_files.size() ? "\n" : ",\n");
+  }
+  output << "  ]\n}\n";
+}
+
+// Per-function provenance for exactly the source that was written: the
+// classification, the recognizer or blocker, and the machine body that was
+// measured. This is the file a reviewer reads to check a claim of readability.
+void write_source_map(const TranslateReport& report, const std::filesystem::path& output_directory) {
+  std::ofstream output(output_directory / "recomp-source-map.json");
+  if (!output) throw std::runtime_error("cannot write recomp-source-map.json");
+  const auto total = report.source_records.size();
+  output << "{\n  \"schema\": 1,\n";
+  output << "  \"source_mode\": " << quote_json(report.source_mode) << ",\n";
+  output << "  \"source_quality\": " << quote_json(report.source_quality) << ",\n";
+  output << "  \"census\": {\n";
+  output << "    \"total_functions\": " << total << ",\n";
+  output << "    \"high_level_verified\": " << report.high_level_function_count << ",\n";
+  output << "    \"low_level_fallback\": " << report.low_level_fallback_count << ",\n";
+  output << "    \"unresolved\": " << report.unresolved_function_count << ",\n";
+  output << "    \"policy_override\": " << report.policy_override_count << ",\n";
+  output << "    \"high_level_percent\": " << report.high_level_percent << "\n";
+  output << "  },\n  \"functions\": [\n";
+  for (std::size_t index = 0; index < report.source_records.size(); ++index) {
+    const auto& record = report.source_records[index];
+    output << "    {\"address\": " << quote_json(hex_address(record.address))
+           << ", \"classification\": " << quote_json(semantics::source_class_name(record.classification))
+           << ", \"recognizer\": " << quote_json(record.recognizer)
+           << ", \"evidence\": " << quote_json(record.evidence)
+           << ", \"instruction_count\": " << record.instruction_count
+           << ", \"byte_count\": " << record.byte_count << "}";
+    output << (index + 1 == report.source_records.size() ? "\n" : ",\n");
+  }
+  output << "  ]\n}\n";
+}
+
+void write_build_manifest(const std::filesystem::path& output_directory,
+                          const std::filesystem::path& executable, const common::Configuration& configuration,
+                          const std::string& command, const std::vector<SourceHash>& sources) {
+  std::ofstream output(output_directory / "recomp-build-manifest.json");
+  if (!output) throw std::runtime_error("cannot write recomp-build-manifest.json");
+  output << "{\n  \"schema\": 1,\n";
+  output << "  \"executable\": {\"path\": " << quote_json(executable.filename().string())
+         << ", \"sha256\": " << quote_json(sha256_of_file(executable))
+         << ", \"bytes\": " << std::filesystem::file_size(executable) << "},\n";
+  output << "  \"compiler\": " << quote_json(configuration.compiler) << ",\n";
+  output << "  \"target\": " << quote_json(configuration.target) << ",\n";
+  output << "  \"command\": " << quote_json(command) << ",\n";
+  output << "  \"source_files\": [\n";
+  for (std::size_t index = 0; index < sources.size(); ++index) {
+    output << "    {\"path\": " << quote_json(sources[index].path)
+           << ", \"sha256\": " << quote_json(sources[index].sha256) << "}";
+    output << (index + 1 == sources.size() ? "\n" : ",\n");
+  }
+  output << "  ]\n}\n";
+}
+
 }  // namespace
 
 TranslateReport translate(const std::filesystem::path& input, const std::filesystem::path& output_directory,
@@ -199,16 +317,54 @@ TranslateReport translate(const std::filesystem::path& input, const std::filesys
   report.heap_base = project.heap_base;
   report.entry_point_rva = configuration.entry_point_rva.value_or(executable.entry_point_rva);
   report.high_level_function_count = project.high_level_function_count;
+  report.low_level_fallback_count = project.source_census.low_level_fallback;
+  report.unresolved_function_count = project.source_census.unresolved;
+  report.policy_override_count = project.source_census.policy_override;
+  report.high_level_percent = project.source_census.high_level_percent();
+  report.source_mode = configuration.source_mode;
+  report.source_quality = configuration.source_quality;
+  report.source_records = project.source_records;
   report.input_path = std::filesystem::absolute(input);
+  report.source_files.push_back(project.guest_source);
+  for (const auto& source : project.runtime_sources) report.source_files.push_back(source);
+  // The source, its per-file hashes and its per-function map are written together,
+  // from the same LiftedProgram, so the delivered source and its provenance cannot
+  // describe different files.
+  write_source_manifest(report, output_directory);
+  write_source_map(report, output_directory);
   write_project_configuration(configuration, output_directory);
   return report;
 }
 
-BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration) {
+BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration,
+                  bool enforce_source_manifest) {
   const auto guest_source = output_directory / "guest.cpp";
   const auto runtime_source = output_directory / "recomp_runtime.cpp";
   if (!std::filesystem::exists(guest_source) || !std::filesystem::exists(runtime_source))
     throw std::runtime_error("project is missing generated sources; run translate first");
+
+  // The build consumes exactly the source translate recorded. If a file no longer
+  // matches its manifest hash, compiling it would produce a binary the manifest
+  // does not describe, so the build fails closed instead. An explicit opt-out is
+  // reserved for tests that mutate a generated source on purpose; the build
+  // manifest then records the hashes actually compiled rather than the stale ones.
+  auto verified_sources = read_source_manifest(output_directory);
+  if (enforce_source_manifest) {
+    for (const auto& entry : verified_sources) {
+      const auto path = output_directory / entry.path;
+      if (!std::filesystem::exists(path))
+        throw std::runtime_error("source file listed in recomp-source-manifest.json is missing: " + entry.path);
+      const auto actual = sha256_of_file(path);
+      if (actual != entry.sha256) {
+        throw std::runtime_error("source hash mismatch for " + entry.path + ": manifest records " +
+                                 entry.sha256 + ", file is " + actual +
+                                 ". The delivered source no longer matches its manifest; run translate again "
+                                 "rather than building source the manifest does not describe.");
+      }
+    }
+  } else {
+    for (auto& entry : verified_sources) entry.sha256 = sha256_of_file(output_directory / entry.path);
+  }
 
   const auto built_executable = output_directory / "recomp-guest";
   // Clang's -O2 pass over the single generated translation unit can spend
@@ -240,7 +396,9 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
 
   const auto exit_code = spawn_and_wait(arguments);
   if (exit_code != 0) throw std::runtime_error("generated build failed:\n$ " + join_command(arguments));
-  return {built_executable, join_command(arguments)};
+  const auto command = join_command(arguments);
+  write_build_manifest(output_directory, built_executable, configuration, command, verified_sources);
+  return {built_executable, command};
 }
 
 RunReport run(const std::filesystem::path& output_directory) {
@@ -282,6 +440,8 @@ void write_project_configuration(const common::Configuration& configuration,
   output << "# Generated by recomp-studio; consumed by the build command.\n";
   output << "compiler = \"" << compiler_for(configuration) << "\"\n";
   output << "source_style = \"" << configuration.source_style << "\"\n";
+  output << "source_mode = \"" << configuration.source_mode << "\"\n";
+  output << "source_quality = \"" << configuration.source_quality << "\"\n";
   output << "target = \"" << configuration.target << "\"\n";
   output << "compile_flags = [";
   for (std::size_t index = 0; index < configuration.compile_flags.size(); ++index) {
@@ -323,6 +483,12 @@ void write_manifest(const TranslateReport& report, const std::filesystem::path& 
   output << "  \"entry_point_rva\": \"0x" << std::hex << report.entry_point_rva << std::dec << "\",\n";
   output << "  \"function_count\": " << report.function_count << ",\n";
   output << "  \"high_level_function_count\": " << report.high_level_function_count << ",\n";
+  output << "  \"low_level_fallback_count\": " << report.low_level_fallback_count << ",\n";
+  output << "  \"unresolved_function_count\": " << report.unresolved_function_count << ",\n";
+  output << "  \"policy_override_count\": " << report.policy_override_count << ",\n";
+  output << "  \"high_level_percent\": " << report.high_level_percent << ",\n";
+  output << "  \"source_mode\": " << quote_json(report.source_mode) << ",\n";
+  output << "  \"source_quality\": " << quote_json(report.source_quality) << ",\n";
   output << "  \"import_count\": " << report.import_count << ",\n";
   output << "  \"unsupported_mnemonics\": [";
   {

@@ -18,7 +18,7 @@ The authoritative inventory is `tools.lock.json`; the authoritative attribution 
 | igi-recomp | MIT | **shims adapted**, with attribution | **yes** (attributed) |
 | project-igi-browser | MIT | **shims and one lifter technique adapted** | **yes** (attributed) |
 | hisahi/scanf | MIT | vendored | **yes** (attributed) |
-| **PCRecomp** | **MIT** | Ghidra scripts driven as an external process | no |
+| **PCRecomp** | **MIT** | external scripts, optional runtime tests and adapted GDI source | experimental |
 | Ghidra | Apache-2.0 | **external process** | no |
 | Unicorn | **GPL-2.0** | linked into the test/verification tooling | **not in the shipped core** |
 | radare2 | **LGPL-3.0-only** | not integrated | no |

@@ -1,12 +1,12 @@
 # Architecture
 
-DECOMP-AGENT turns a Windows PE32/x86 executable into native source and a native
-executable, and verifies the result against the original. This document describes what the
+Recomp-Agent aims to reconstruct source and native executables from binaries, with
+2D and 3D game preservation as its initial focus. The current pipeline targets a subset
+of Windows PE32/x86 and PE32+/x64 binaries and can compare selected behavior under Unicorn. This document describes what the
 system ACTUALLY does today, with the file that does it, and separates that from what is
 planned. A reader should be able to check every claim here against the tree.
 
-The base commit is recorded in `docs/IMPLEMENTATION_PLAN.md`. Everything below is on
-`feature/decomp-agent`.
+The base commit is recorded in `docs/IMPLEMENTATION_PLAN.md`. The feature branches and develop may advance independently; inspect the current tree.
 
 ## The pipeline as implemented
 
@@ -103,10 +103,11 @@ cannot be established is marked unverified rather than trusted.
 Analysis runs as an EXTERNAL PROCESS. That is both a technical boundary (Ghidra is a JVM
 application) and a licensing one (see `docs/UPSTREAM_COMPONENTS.md`).
 
-### rev.ng -- NOT implemented
+### rev.ng -- adapter only
 
-The directive assigns rev.ng high-level source reconstruction. There is no adapter, and no
-rev.ng code is present. This is a gap, not a decision.
+`revng-run` invokes rev.ng externally and preserves artifacts and hashes. It has been
+tested with a stand-in; actual rev.ng output has not been verified on this host.
+It is not integrated into the compiled source pipeline.
 
 ### Remill -- partially implemented
 
@@ -117,8 +118,10 @@ linked as a library.
 
 ### PCRecomp -- partially implemented
 
-PCRecomp's Ghidra script directory is what `ghidra-run` drives. No PCRecomp recompiler code
-is linked.
+PCRecomp's Ghidra scripts are used by `ghidra-run`. Optional tests build its pinned
+translator and runtime, including a limited stateless CRT bridge and an adapted indexed
+bitmap implementation. The production `autorecomp` runtime does not use PCRecomp as a
+general provider; guest memory and callback contracts remain to be bridged.
 
 ## The runtime
 
@@ -129,8 +132,8 @@ kernel32 file and heap, user32 window and message handling (ANSI and wide), and
 symbol is implemented.
 
 An unimplemented import is REFUSED BY NAME, at the instruction that called it, with the
-register state. It is never a silent no-op. The `init_common_controls` shim is the one
-apparent exception and is documented at its definition: the real function loads a control
+register state. Other imports may have partial or stub behavior and must be assessed individually.
+The `init_common_controls` shim is documented at its definition: the real function loads a control
 library so later `CreateWindowEx` calls can name a control class, and in a process with no
 window manager that load has no observable effect, so returning success is what the call
 means rather than a fabrication.

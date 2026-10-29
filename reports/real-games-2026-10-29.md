@@ -40,3 +40,13 @@ SDL window and reached the game's startup dialog calls, but the window remained
 black. [Captured window](../apps-running-screenshots/ikachan-pcrecomp-black-window.png)
 is evidence of this failure, not gameplay or a successful port. No game assets
 or binaries are included in this repository.
+
+### Follow-up: indexed bitmap experiment
+
+An adapted PCRecomp GDI implementation fixed reads from packed 1-bit and 4-bit
+bitmaps; a focused test checks the guest DIB-to-BitBlt path. In a separate
+experimental SDL host, a scripted Enter dismissed the initial dialog and the
+[native window displayed Ikachan's title screen](../apps-running-screenshots/ikachan-pcrecomp-title.png).
+The process used the user's original assets, and was manually terminated. This
+is not the standard `autorecomp` pipeline, a gameplay test, or an independent
+verification. Packed bitmap writes and broader GDI coverage remain incomplete.

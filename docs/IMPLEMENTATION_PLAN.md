@@ -1,4 +1,39 @@
-# Implementation plan
+# Recomp-Agent direction and implementation plan
+
+Recomp-Agent is a general-purpose hybrid decompilation and recompilation system.
+Game preservation is the initial priority: first small 2D games, then 3D games,
+including Project I.G.I. Its intended input and output operating systems are
+Windows, macOS and Linux; intended CPU architectures are x86, x86-64, ARM32
+and ARM64. Each OS/architecture pair is a separate target requiring format,
+ABI, runtime, compiler and verification work. None is implied supported merely
+by appearing in this list.
+
+## Priorities and acceptance gates
+
+1. Preserve existing PE parsing, lifting, generated-source builds, and tests.
+2. Integrate PCRecomp, Ghidra, rev.ng, Remill and LLVM through evidenced,
+   license-compatible boundaries; distinguish installed providers from adapters.
+3. Connect readable reconstructed functions and low-level fallback through
+   explicit guest memory and ABI contracts. Build the exact delivered source.
+4. Provide reusable Windows GUI, graphics, input, audio, filesystem and CRT
+   compatibility without treating unimplemented behavior as success.
+5. Add an independent original Windows execution oracle and deterministic input
+   replay; separately report discovery, lifting, build, execution and gameplay.
+6. Test small games end to end before expanding to I.G.I. and 3D workloads.
+7. Extend executable formats, operating systems and guest/host architectures
+   only with per-target tests and explicit unsupported diagnostics.
+
+The following open work supersedes historical issue trackers: independent
+Windows oracle and memory coverage (#11); further Remill integration (#5); an
+appropriately licensed Wine-compatible runtime provider (#4); deterministic
+semantic naming (#3); and the hybrid pipeline roadmap (#60). Closing historical
+issues does not mean these tasks are complete.
+
+## Historical baseline (snapshot)
+
+The following sections describe the state measured when originally written;
+branch counts, local dependencies and coverage figures are historical, not live.
+The latest game results are in [the game report](../reports/real-games-2026-10-29.md).
 
 The state of DECOMP-AGENT on `feature/decomp-agent`, what is done, what is next, and what is
 known to be missing. Written from the tree, not from intention.
@@ -117,9 +152,9 @@ without the conflict can run them in one step.
   word explains the byte-count variation but not the divergence.
 - **The corpus is largely unmeasured.** 157 executables; the sweeps cover a minority, and the
   counts taken before the exit-status bug was fixed need re-deriving.
-- **19 commits on `feature/x86-x64-arm64-mvp` remain unintegrated**, including jump-table
-  discovery, `InitCommonControls`, `FormatMessageA` and the SSE fixes. This is the largest
-  single body of unmerged work and it is a deliberate merge decision, not an oversight.
+- The older `feature/x86-x64-arm64-mvp` branch has divergent history; several named
+  changes were separately integrated. Compare individual commits before importing any
+  remaining changes.
 
 ## Metrics, kept separate
 
@@ -170,8 +205,9 @@ The pipeline has now been run against `igi.exe` (1,384,448 bytes, PE32 x86, 128 
 | build native executable | **succeeded**, 45 s |
 | run native executable | **exit 124** -- the 20-second ceiling, 0 bytes of output |
 
-**What this does and does not mean.** The machine code is recovered and lifted completely --
-every one of 960,403 instructions -- and the result compiles to a native binary. That is a
+**What this does and does not mean.** The classifier reported all 960,403 discovered instructions as lifted, and the
+result compiled to a native binary. This does not establish complete discovery or
+correct instruction semantics. That is a
 real result and it is the first time this pipeline has been taken to I.G.I. end to end.
 
 It is **not** a working port. The program exits on the timeout having produced no output,
@@ -205,7 +241,7 @@ Three things are true at once here, and they are worth separating:
    mode (unicorn 2.1.4 ignores the write); the TEB was placed at address 0 so fs: accesses
    resolve". That is a known emulator limitation carried in the result rather than hidden.
 
-**So: I.G.I. lifts completely, builds natively, and CANNOT BE VERIFIED BY THIS HARNESS** --
+**So: the discovered I.G.I. instructions were classified as lifted, the output built natively, and the run could not be verified by this harness** --
 not because the translation is wrong, but because a program that never terminates gives the
 differential comparison nothing to compare. Verifying it needs a different oracle: a
 deterministic input replay that drives it to a terminal state, or instrumentation of the real

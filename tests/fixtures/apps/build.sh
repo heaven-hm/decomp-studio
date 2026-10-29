@@ -32,6 +32,8 @@ FIXTURES_X86="pe32_abi:pe32_abi simd_convert:pe32_simd_convert teb32:teb32 remil
 
 # Negative fixtures: these must fail explicitly, so they are not in FIXTURES_X64.
 FIXTURES_NEGATIVE="unsupported_instruction unsupported_import"
+# A fixture whose whole point is a non-zero exit status.
+FIXTURES_EXIT_NONZERO="nonzero_exit"
 COMMON_FLAGS="-O2 -nostdlib -ffreestanding -fno-asynchronous-unwind-tables -fno-stack-protector -fno-tree-vectorize -fno-tree-slp-vectorize -Wl,--no-insert-timestamp"
 
 build_one() {
@@ -98,6 +100,16 @@ if command -v "$CC" >/dev/null 2>&1; then
     "$CC" $COMMON_FLAGS -Wl,-e,recomp_entry -Wl,--subsystem,console \
         -o "$out/$name.exe" "$here/$name.c" -lkernel32 $extra -lgcc
     echo "built $out/$name.exe (negative)"
+  done
+fi
+
+# A fixture that exits NON-ZERO on purpose, built like the ordinary ones because it is a
+# well-formed program rather than a negative case.
+if command -v "$CC" >/dev/null 2>&1; then
+  for name in $FIXTURES_EXIT_NONZERO; do
+    "$CC" $COMMON_FLAGS -Wl,-e,recomp_entry -Wl,--subsystem,console \
+        -o "$out/$name.exe" "$here/$name.c" -lkernel32 -lmsvcrt -lgcc
+    echo "built $out/$name.exe (exits non-zero)"
   done
 fi
 

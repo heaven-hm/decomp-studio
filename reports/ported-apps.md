@@ -41,3 +41,13 @@ The detailed corpus history remains in [apps-running-results.md](apps-running-re
 | IGI retail/runtime variants | Need DirectDraw, DirectSound, DirectInput, WinMM/MCI, AVI and COM behavior. | Work by subsystem, beginning with the smallest reachable runtime blocker. |
 | Mono/.NET applications | Rejected as managed IL, not native PE machine code. | Requires a CLR/IL frontend; do not add Win32 shims as a substitute. |
 | Windows ARM64 PE | Unsupported guest decoder. | Requires an ARM64 instruction-lifting frontend. |
+
+The separate PCRecomp provider was tested against `win32/cube.exe` (SHA-256
+`7844757c04eea2fcee04a7029e0ed6e4893d471c44c0bef81d00d009f15e9814`)
+on macOS arm64. PCRecomp revision `a85ea970f9e0640ab6546d2ca7a01fccb132973d`
+generated split low-level C for 848 discovered candidates; that C compiled
+with the upstream `win32hle` runtime. Strict import binding resolved 108 of
+192 imports and rejected the remaining 84, so the executable exited before
+the game ran. These results describe that provider, independently of the
+existing Recomp Studio import census above. No screenshot or gameplay
+verification is available for this attempt.

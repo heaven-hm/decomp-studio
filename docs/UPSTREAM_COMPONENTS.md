@@ -57,7 +57,7 @@ primary foundation and its licence permits integration.
 
 The optional CMake setting `RECOMP_PCRECOMP_SOURCE` builds PCRecomp's actual
 `win32hle_selftest.c` and `gdi_selftest.c` against its runtime sources at revision
-`a85ea970f9e0640ab6546d2ca7a01fccb132973d`. It requires a clean checkout,
+`a85ea970f9e0640ab6546d2ca7a01fccb132973d`. It requires clean upstream tools and runtime sources,
 SDL2 and SDL2_ttf. Configure with `-DRECOMP_PCRECOMP_SOURCE=/path/to/pcrecomp`,
 build the `pcrecomp_win32hle_selftest` and `pcrecomp_gdi_selftest` targets, then
 run `ctest -R '^pcrecomp_' --output-on-failure` from that build directory.

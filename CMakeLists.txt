@@ -16,11 +16,11 @@ if(RECOMP_PCRECOMP_SOURCE)
   if(NOT PCRECOMP_GIT_RESULT EQUAL 0 OR NOT PCRECOMP_REVISION STREQUAL "a85ea970f9e0640ab6546d2ca7a01fccb132973d")
     message(FATAL_ERROR "PCRecomp checkout must be at a85ea970f9e0640ab6546d2ca7a01fccb132973d")
   endif()
-  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} status --porcelain --untracked-files=all -- runtime/win32hle runtime/recomp32
+  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} status --porcelain --untracked-files=all -- tools runtime/win32hle runtime/recomp32
     OUTPUT_VARIABLE PCRECOMP_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE PCRECOMP_STATUS_RESULT)
   if(NOT PCRECOMP_STATUS_RESULT EQUAL 0 OR PCRECOMP_DIRTY)
-    message(FATAL_ERROR "PCRecomp runtime sources must be clean for a reproducible provider build")
+    message(FATAL_ERROR "PCRecomp tools and runtime sources must be clean for a reproducible provider build")
   endif()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(PCRECOMP_SDL REQUIRED IMPORTED_TARGET sdl2 SDL2_ttf)

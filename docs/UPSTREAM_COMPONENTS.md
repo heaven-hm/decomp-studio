@@ -18,6 +18,7 @@ The authoritative inventory is `tools.lock.json`; the authoritative attribution 
 | igi-recomp | MIT | **shims adapted**, with attribution | **yes** (attributed) |
 | project-igi-browser | MIT | **shims and one lifter technique adapted** | **yes** (attributed) |
 | hisahi/scanf | MIT | vendored | **yes** (attributed) |
+| **PCRecomp** | **MIT** | Ghidra scripts driven as an external process | no |
 | Ghidra | Apache-2.0 | **external process** | no |
 | Unicorn | **GPL-2.0** | linked into the test/verification tooling | **not in the shipped core** |
 | radare2 | **LGPL-3.0-only** | not integrated | no |
@@ -46,6 +47,21 @@ Examples with their recorded commits: Remill's `lib/Arch/X86/Semantics/MMX.cpp` 
 `shim/src/kernel32.c` at `278eaf6394f7f42c7de6cffef2cf982154f59899` for `GetLocalTime`;
 project-igi-browser's `host/kernel32.c` for the console and heap adapters.
 
+### The primary foundation, verified
+
+**PCRecomp is MIT** (`LICENSE`: "MIT License, Copyright (c) 2026 sp00nz"), and its purpose is
+this project's purpose: "every tool, runtime, and hard-won trick from our PC static
+recompilation projects... make it run again -- on Windows 11, or natively on Linux with no
+emulator and no Wine" ([README](https://github.com/sp00nznet/pcrecomp)). It is the directive's
+primary foundation and its licence permits integration.
+
+**Its own NOTICE demonstrates the file-level rule this document insists on.** The repository
+carries a `LICENSES/` directory and a `NOTICE` that lists each exception by PATH:
+`tools/assets/is3extract.py` (the PKWARE DCL explode section) is a Python port of zlib's
+`contrib/blast/blast.c`, Mark Adler, under the **zlib licence**, and "everything else is MIT".
+So even in a permissively licensed repository, **the licence of the FILE is what governs a
+copy** -- which is why this project records the source file and not just the repository.
+
 ### Invocation (a program runs, its output is read)
 
 Ghidra is a JVM application, so `apps/cli/ghidra_run.cpp` spawns `analyzeHeadless` and
@@ -58,10 +74,27 @@ but narrow, and it is recorded here rather than relied on silently.
 ## What is deliberately NOT used
 
 - **rev.ng** -- assigned high-level source reconstruction by the directive. **No adapter
-  exists and no rev.ng code is present.** rev.ng's licence and the availability of the
-  specific components the directive lists have not been verified, and the directive warns
-  against assuming every advertised feature is publicly available or usable through one
-  interface. This is an open gap.
+  exists and no rev.ng code is present.** Its licence has now been established, and the
+  answer decides the integration mechanism:
+
+  **rev.ng is GPLv2, and its own README says why**: "rev.ng depends on certain on GPLv2
+  components (in particular, QEMU), so the project is GPLv2-licensed as a whole"
+  ([revng-c README](https://github.com/revng/revng-c/blob/253558ba63dee23b850461ad3110b6cfa5295906/README.md)).
+  The core repository is listed as GPL-2.0 on
+  [github.com/revng/revng](https://github.com/revng/revng). The decompiler was open-sourced
+  in March 2024 ([rev.ng blog](https://rev.ng/blog/open-sourcing-renvg-decompiler-ui-closed-beta)),
+  so it IS available -- it is the LICENCE, not availability, that decides the mechanism.
+
+  **It therefore cannot be linked into this core.** If it is used, it must be invoked as an
+  external process, exactly as Ghidra is, and with the same caveat recorded above: that
+  changes the nature of the obligation, it does not remove it.
+
+  **AND THE FILE-LEVEL WARNING THE DIRECTIVE GIVES IS CONCRETE HERE, not hypothetical:**
+  `revng-c` also ships a `LICENSE.mit`
+  ([file](https://github.com/revng/revng-c/blob/8706fd845912a7ceda9f98d1f187dc14335b6734/LICENSE.mit))
+  covering files contributed under MIT. So a file copied out of that repository could be
+  MIT while the repository as a whole is GPLv2, and the licence of the FILE is what governs
+  a copy. Any future rev.ng integration must check per file, not per repository.
 - **Wine** -- the directive suggests Wine as an API provider. Wine's `msvcrt` is
   **LGPL-2.1+**, which cannot be copied into this core. The project implements its own CRT
   surface and used MIT `hisahi/scanf` where a scanner was needed.

@@ -50,6 +50,11 @@ The other ten games were not re-run. "Native build succeeded" means translate an
 build finished, not that the game is playable or that differential verification
 passed; library imports remain the dominant blocker once translation succeeds.
 
+The lifter previously rejected every `movd` whose operands were not `xmm`/`ymm`; the
+mm-register forms are now covered by `pe32_mmx` and verify differentially. If rRootage's
+17 `movd` instructions were those forms, its count is stale -- but the game binary was
+not available locally for a re-run, so no post-fix measurement exists.
+
 ## Separate PCRecomp experiment: Ikachan
 
 PCRecomp commit `a85ea970f9e0640ab6546d2ca7a01fccb132973d` generated and

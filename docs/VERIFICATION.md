@@ -52,6 +52,12 @@ a run that finished.
 | `exit_codes_match` | the two sides returned the same status |
 | `control_registers_match` | control registers agree |
 
+The checkpoint does not include `xmm`/`ymm`/MMX register contents. The candidate models
+`mm0`-`mm7` as the low 64 bits of `vector_registers[0]`-`[7]`, with no x87 tag word, so
+`emms` is a no-op; MMX results are verified only through their copies to general
+registers and memory (`tests/fixtures/apps/mmx.c` does exactly that). MMX-only state is
+therefore outside the compared set, in the same category as vector state.
+
 Every one of these defaults to **false** and is set true only where a comparison actually
 ran. They defaulted true once, and a run with zero checkpoints printed "guest-memory digest
 agrees: yes" -- an agreement between two things that were never read.

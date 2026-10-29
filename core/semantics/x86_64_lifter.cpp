@@ -552,6 +552,10 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
   const auto vector_index = [](const discovery::Operand& operand) {
     return vector_register_index(operand.register_name);
   };
+  const auto is_mmx_register = [](const discovery::Operand& operand) {
+    return operand.kind == discovery::Operand::Kind::Register &&
+           mm_register_index(operand.register_name) >= 0;
+  };
   const auto emit_vector_move = [&](const discovery::Operand& destination, const discovery::Operand& source,
                                     int byte_count) {
     if (is_vector_register(destination) && source.kind == discovery::Operand::Kind::Memory) {
@@ -904,24 +908,32 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
   if ((mnemonic == "movd" || mnemonic == "movq") && operands.size() == 2 &&
-      (is_vector_register(operands[0]) || is_vector_register(operands[1]))) {
+      (is_vector_register(operands[0]) || is_vector_register(operands[1]) ||
+       is_mmx_register(operands[0]) || is_mmx_register(operands[1]))) {
     const int byte_count = mnemonic == "movd" ? 4 : 8;
-    if (is_vector_register(operands[0])) {
-      // A vector source is not a general register: reading it as one throws, and
-      // `movq xmm0, xmm3` moves the low 64 bits of the source, which is exactly
-      // what vector_get_low returns.
+    // MMX registers alias the low 64 bits of the vector file (mmN ->
+    // vector_registers[N]); x87 tag state is not modelled, so `emms` is a no-op.
+    // A vector or MMX source is not a general register: reading it as one throws,
+    // and `movq xmm0, xmm3` moves the low 64 bits of the source, which is exactly
+    // what vector_get_low returns. `movd mm, r32` likewise has to read only four
+    // bytes: vector_set_low zeroes the rest, matching MOVD's clearing of bits 63:32.
+    const auto register_file_index = [&](const discovery::Operand& operand) {
+      return is_vector_register(operand) ? vector_index(operand)
+                                         : mm_register_index(operand.register_name);
+    };
+    if (is_vector_register(operands[0]) || is_mmx_register(operands[0])) {
+      const auto destination = std::to_string(register_file_index(operands[0]));
       const auto value = operands[1].kind == discovery::Operand::Kind::Memory
           ? "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", " +
                 std::to_string(byte_count) + ")"
-          : is_vector_register(operands[1])
-              ? "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", " +
+          : (is_vector_register(operands[1]) || is_mmx_register(operands[1]))
+              ? "vector_get_low(context, " + std::to_string(register_file_index(operands[1])) + ", " +
                     std::to_string(byte_count) + ")"
               : operand_read_expression(instruction, operands[1], byte_count);
-      emit("vector_set_low(context, " + std::to_string(vector_index(operands[0])) + ", " + value + ", " +
-           std::to_string(byte_count) + ");");
+      emit("vector_set_low(context, " + destination + ", " + value + ", " + std::to_string(byte_count) + ");");
     } else {
       operand_write(output, instruction, operands[0],
-           "vector_get_low(context, " + std::to_string(vector_index(operands[1])) + ", " +
+           "vector_get_low(context, " + std::to_string(register_file_index(operands[1])) + ", " +
                std::to_string(byte_count) + ")", byte_count);
     }
     return;

@@ -61,6 +61,7 @@ FIXTURES_PE32 = [
     ("pe32_shufpd", "32-bit SSE2 packed double shuffle forms"),
     ("pe32_popal", "32-bit POPAL register and stack restoration"),
     ("pe32_popaw", "32-bit POPAW register and stack restoration"),
+    ("pe32_mmx", "32-bit MMX movd/movq register, memory and zero-extension forms"),
 ]
 
 # Fixtures that are translated, built and run with their output checked, but
@@ -93,6 +94,8 @@ EXPECTED_OUTPUT = {
     "pe32_shufpd": ["shufpd_reg_ok=1", "shufpd_mem_ok=1"],
     "pe32_popal": ["popal_registers=1", "popal_stack=1"],
     "pe32_popaw": ["popaw_registers=1", "popaw_stack=1"],
+    "pe32_mmx": ["mmx_movd_gpr=1", "mmx_movd_memory=1", "mmx_movd_from_memory=1",
+                 "mmx_movq_mm=1", "mmx_movd_clear=1", "mmx_movq_roundtrip=1"],
     "pe32_remill_movhalf": ["movlhps=1", "movlhps_self=1", "movhlps=1", "movhlps_self=1"],
     "pe32_remill_aas": ["remill_aas=1"],
     "tictactoe": ["tictactoe:start", "result=draw moves=9", "tictactoe:done"],

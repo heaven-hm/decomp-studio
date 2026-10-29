@@ -141,6 +141,53 @@ rather than enabled-and-failing: a default configuration that fails six tests is
 that states why it cannot run them. The command to enable them is recorded above so that a host
 without the conflict can run them in one step.
 
+## The GUI game corpus, MEASURED
+
+Fifteen graphical games -- 11 PE32 and 4 PE32+ -- run through `autorecomp --buildrun`. **None
+completes**, and the reason each one stops is worth recording because it changed while this was
+being measured:
+
+| game | first blocker | kind |
+|---|---|---|
+| `gunroar` | 82 imports without shims | **runtime surface** |
+| `parsec47` | 99 imports | **runtime surface** |
+| `tumiki_fighters` | 95 imports | **runtime surface** |
+| `snake` | 92 imports | **runtime surface** |
+| `ikachan` | 21 imports | **runtime surface** |
+| `cavestory` | `iretd` | lifter |
+| `generally` | `cvtpd2ps` | lifter |
+| `herocore` | `fbstp` | lifter |
+| `noiz2sa` | `das` | lifter |
+| `rrootage` | `movd` | lifter |
+| `torus_trooper` | `aad` | lifter |
+| `warning_forever` | `cmpltpd` | lifter |
+| `cannonball` | `cvttpd2dq` | lifter |
+| `opentyrian` | `cmpnless` | lifter |
+| `pixeltetris` | `movntps` | lifter |
+
+### What the first pass showed, and why the second pass is different
+
+The first pass had **twelve of fifteen** stopping on the LIFTER, and the two commonest causes
+were `jcxz` (four games) and `arpl` (three). Both are now implemented:
+
+- **`jcxz`** is the 16-BIT form of the counter test. It was folded into the 32-bit `jecxz`
+  path, which takes the branch whenever the upper bits are non-zero with CX itself zero -- a
+  different program. It now masks to the low half.
+- **`arpl`** adjusts a selector's requested privilege level. It was implemented for a REGISTER
+  destination and **three games still stopped on it**, because `arpl [ebp-4], ax` is the
+  common form and a memory destination is a read-modify-write. Both forms are now handled.
+- **`fdisi8087_nop`** is the x87 no-op range. Its defined effect on a processor that has the
+  features it disables is NOTHING, and refusing it stopped three games on an instruction whose
+  whole purpose is to do nothing.
+
+MEASURED: `gunroar`, `parsec47` and `tumiki_fighters` went from stopping on the lifter to
+**lifting 100%**, and `herocore` went from 20,058 unsupported instructions to 2,147.
+
+**THE CONSTRAINT MOVED.** Those three games now stop on **82, 99 and 95 missing imports** --
+the Windows runtime surface -- not on the translation. That is a different problem with a
+different shape: a lifter gap is a few instructions, and a GUI runtime surface is hundreds of
+functions. Recording which one is binding matters more than the count of games that fail.
+
 ## Known gaps, recorded rather than implied
 
 - **No type recovery.** No struct layout, no field offsets, no `static_assert` on layout.

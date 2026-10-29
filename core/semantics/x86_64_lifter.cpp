@@ -1934,6 +1934,68 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
     return;
   }
 
+  // THE x87 NO-OP ENCODINGS. `fdisi`, `fsetpm` and `fnop` are the D9 E0-E4 range: they exist
+  // so that code written for an 8087 can run on a later coprocessor, and their defined effect
+  // on a processor that has the features they disable or set is NOTHING. Capstone reports all
+  // of them under this one mnemonic, and refusing it stops three of the thirteen GUI games on
+  // an instruction whose whole purpose is to do nothing.
+  if (mnemonic == "fdisi8087_nop" || mnemonic == "fsetpm" || mnemonic == "fnop" ||
+      mnemonic == "fnstsw8087_nop") {
+    return;
+  }
+
+  if (mnemonic == "arpl") {
+    // Adjust RPL. If the DESTINATION's low two bits are LOWER than the SOURCE's, they are
+    // raised to match and ZF is set; otherwise nothing changes and ZF is cleared. It is a
+    // 16-bit legacy instruction with no 64-bit form, but a 32-bit program can contain one --
+    // three of the thirteen GUI games do -- and treating it as a no-op would silently skip a
+    // privilege adjustment the program asked for.
+    if (operands.size() == 2 &&
+        (operands[0].kind == Operand::Kind::Register || operands[0].kind == Operand::Kind::Memory)) {
+      const auto width = operand_width(operands[0], 2);
+      const auto destination = register_read_expression(operands[0].register_name);
+      std::string source;
+      if (operands[1].kind == Operand::Kind::Register)
+        source = register_read_expression(operands[1].register_name);
+      else
+        source = "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", 2)";
+      // The write goes through the SAME descriptor table the read used, so the slot cannot
+      // drift from the name.
+      // A MEMORY destination is a read-modify-write on guest memory. It is the common form:
+      // `arpl [ebp-4], ax` is what a compiler emits for a selector stored on the stack, and
+      // requiring a register here meant three of the thirteen games still stopped on it after
+      // the register form was handled.
+      if (operands[0].kind == Operand::Kind::Memory) {
+        const auto address = effective_address_expression(instruction, operands[0]);
+        std::string source_value;
+        if (operands[1].kind == Operand::Kind::Register)
+          source_value = register_read_expression(operands[1].register_name);
+        else
+          source_value = "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) + ", 2)";
+        emit("{ const std::uint64_t arpl_address = " + address + ";");
+        emit("  const std::uint64_t destination_value = load_guest_memory(context, arpl_address, 2);");
+        emit("  const std::uint64_t source_value = " + source_value + ";");
+        emit("  if ((destination_value & 3u) < (source_value & 3u)) {");
+        emit("    store_guest_memory(context, arpl_address, (destination_value & ~3ull) | (source_value & 3u), 2);");
+        emit("    context->zero_flag = 1;");
+        emit("  } else { context->zero_flag = 0; } }");
+        return;
+      }
+      const auto descriptor = register_descriptors().find(operands[0].register_name);
+      if (descriptor != register_descriptors().end()) {
+        const auto destination_slot = static_cast<int>(descriptor->second.index);
+        emit("{ const std::uint64_t destination_value = " + destination + ";");
+        emit("  const std::uint64_t source_value = " + source + ";");
+        emit("  if ((destination_value & 3u) < (source_value & 3u)) {");
+        emit("    context->registers[" + std::to_string(destination_slot) + "] = (destination_value & ~3ull) | (source_value & 3u);");
+        emit("    context->zero_flag = 1;");
+        emit("  } else { context->zero_flag = 0; } }");
+        (void)width;
+        return;
+      }
+    }
+  }
+
   if (mnemonic == "ret") {
     std::uint64_t adjustment = 8;
     if (!operands.empty() && operands[0].kind == Operand::Kind::Immediate)
@@ -2547,9 +2609,16 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
 
   // Counted loops. CLD/STD are handled earlier, next to the other
   // direction-flag instruction, so this block only owns the counted jumps.
-  if (mnemonic == "jecxz" || mnemonic == "jrcxz") {
+  if (mnemonic == "jecxz" || mnemonic == "jrcxz" || mnemonic == "jcxz") {
     const auto target = static_cast<std::uint64_t>(operands[0].immediate_value);
-    emit("if (context->registers[1] == 0) " + branch_body(target));
+    // `jcxz` is the 16-BIT form and tests only the low half of the counter. Folding it into
+    // the 32-bit test would take the branch whenever the upper bits were non-zero with CX
+    // itself zero, which is a different program. Measured: this is the most common single
+    // unsupported instruction across the GUI game corpus, four of thirteen games.
+    const auto counter = mnemonic == "jcxz"
+                             ? "(context->registers[1] & 0xffffu)"
+                             : "context->registers[1]";
+    emit("if (" + std::string(counter) + " == 0) " + branch_body(target));
     return;
   }
   if (mnemonic == "loop" || mnemonic == "loope" || mnemonic == "loopne") {

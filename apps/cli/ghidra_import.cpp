@@ -28,12 +28,14 @@ int main(int argc, char** argv) {
     std::cerr << "usage: ghidra-import <binary> <ExportFunctions output> <ghidra version>\n";
     return 2;
   }
-  std::ifstream binary(argv[1], std::ios::binary), input(argv[2]);
+  std::ifstream binary(argv[1], std::ios::binary), input(argv[2], std::ios::binary);
   if (!binary || !input) { std::cerr << "cannot read binary or Ghidra export\n"; return 1; }
   std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(binary)), {});
+  std::vector<unsigned char> export_bytes((std::istreambuf_iterator<char>(input)), {});
+  std::istringstream export_stream(std::string(export_bytes.begin(), export_bytes.end()));
   std::vector<std::vector<std::string>> rows;
   std::string line;
-  while (std::getline(input, line)) {
+  while (std::getline(export_stream, line)) {
     if (line.empty() || line[0] == '#') continue;
     std::vector<std::string> fields;
     std::istringstream stream(line);
@@ -49,8 +51,10 @@ int main(int argc, char** argv) {
   }
   if (rows.empty()) { std::cerr << "Ghidra export contains no functions\n"; return 1; }
   std::cout << "{\"schema_version\":1,\"binary_sha256\":" << quoted(recomp::common::sha256(bytes))
-            << ",\"provider\":\"Ghidra\",\"provider_version\":" << quoted(argv[3])
-            << ",\"exporter\":\"pcrecomp ExportFunctions a85ea970f9e0640ab6546d2ca7a01fccb132973d\","
+            << ",\"export_sha256\":" << quoted(recomp::common::sha256(export_bytes))
+            << ",\"provider_claim\":\"Ghidra\",\"provider_version_claim\":" << quoted(argv[3])
+            << ",\"export_format\":\"pcrecomp ExportFunctions\","
+               "\"binary_export_association\":\"unverified\","
                "\"verification\":\"unverified\",\"functions\":[";
   bool first = true;
   for (const auto& row : rows) {

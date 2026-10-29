@@ -68,6 +68,8 @@ add_executable(recomp-studio ${RECOMP_SOURCES})
 add_executable(ghidra-import apps/cli/ghidra_import.cpp core/common/sha256.cpp)
 target_compile_features(ghidra-import PRIVATE cxx_std_20)
 target_include_directories(ghidra-import PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME ghidra_import COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_import_test.py $<TARGET_FILE:ghidra-import>)
 target_compile_features(recomp-studio PRIVATE cxx_std_20)
 target_include_directories(recomp-studio PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(recomp-studio PRIVATE ${RECOMP_LIBRARIES})

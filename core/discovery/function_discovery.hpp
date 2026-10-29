@@ -56,6 +56,18 @@ struct RecoveredFunction {
   // which means "none reserved here", not "no frame".
   std::uint64_t frame_bytes{};
   bool frame_known{};
+
+  // THE SIGNATURE, which is what makes readable source possible at all.
+  //
+  // A function's `ret N` states how many bytes of arguments it removes, and for a 32-bit
+  // guest each argument occupies four, so N/4 IS the argument count -- stated by the function
+  // rather than inferred from how many times it happens to touch the stack. `ret` with no
+  // operand means the CALLER cleans up (cdecl) and states no count, which is recorded as
+  // unknown rather than assumed to be zero.
+  std::uint32_t argument_bytes{};
+  std::uint32_t argument_count{};
+  bool signature_known{};
+  bool caller_cleans_stack{};
 };
 
 class FunctionDiscovery {

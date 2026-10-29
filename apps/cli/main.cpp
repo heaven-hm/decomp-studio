@@ -297,9 +297,13 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   // How many functions state their own frame size in the prologue. This is the only SHAPE
   // fact recovered today; everything else about a function is behaviour.
   std::size_t functions_with_frame = 0;
+  std::size_t functions_with_signature = 0;
+  std::size_t functions_with_arguments = 0;
   for (const auto& [address, function] : discovery.functions()) {
     (void)address;
     if (function.frame_known) ++functions_with_frame;
+    if (function.signature_known) ++functions_with_signature;
+    if (function.argument_count > 0) ++functions_with_arguments;
   }
 
   if (json) {
@@ -324,6 +328,8 @@ int command_coverage(const std::filesystem::path& input, bool json) {
               << ",\"unresolved_functions\":" << unresolved_functions
               // The first recovered fact about function SHAPE rather than behaviour.
               << ",\"functions_with_recovered_frame\":" << functions_with_frame
+              << ",\"functions_with_recovered_signature\":" << functions_with_signature
+              << ",\"functions_with_arguments\":" << functions_with_arguments
               << ",\"unsupported\":[";
     for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
       const auto& entry = census.unsupported[index];
@@ -350,11 +356,21 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
             << statement_percent.str() << "%)\n"
             // §13 requires the delivered source to be reported as TWO categories, never one.
-            << "high-level:     0 functions (no recovered signatures or types exist)\n"
+            // A SIGNATURE IS NOT A RECONSTRUCTED BODY, and the two lines below say so
+            // separately. Signatures are now recovered -- convention, argument bytes and
+            // argument count, each stated by the function's own epilogue -- but no function's
+            // BODY has been expressed as source, so the high-level count stays zero. Reporting
+            // a signature as "high-level reconstruction" would be the confusion the directive
+            // names, one level down.
+            << "high-level:     0 functions (bodies are machine-level; signatures are recovered "
+               "but no body is expressed as source)\n"
             << "low-level:      " << discovery.functions().size() << " functions (machine-level translation)\n"
             << "unresolved:     " << unresolved_functions << " functions\n"
             << "frames:         " << functions_with_frame << " of " << discovery.functions().size()
-            << " functions have a frame size recovered from their prologue\n";
+            << " functions state their frame size in the prologue\n"
+            << "signatures:     " << functions_with_signature << " of " << discovery.functions().size()
+            << " state their convention and argument bytes; "
+            << functions_with_arguments << " take at least one argument\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;

@@ -613,6 +613,25 @@ void FunctionDiscovery::discover() {
       }
       break;  // only the prologue's own adjustment counts
     }
+
+    // THE SIGNATURE, from the epilogue. `ret N` is the function stating its own argument
+    // bytes; `ret` alone is cdecl, where the caller cleans and no count is stated.
+    for (const auto& [address, instruction] : function.instructions) {
+      (void)address;
+      if (instruction.mnemonic != "ret") continue;
+      function.signature_known = true;
+      if (!instruction.operands.empty() &&
+          instruction.operands[0].kind == Operand::Kind::Immediate) {
+        function.argument_bytes = static_cast<std::uint32_t>(instruction.operands[0].immediate_value);
+        // Four bytes per argument on a 32-bit guest. The pointer width is not known here, so
+        // this is only meaningful for PE32 -- and it is recorded as a byte count as well, so a
+        // reader can apply the right width rather than trusting the division.
+        function.argument_count = function.argument_bytes / 4;
+      } else {
+        function.caller_cleans_stack = true;
+      }
+      break;
+    }
     functions_.emplace(entry, std::move(function));
   }
 }

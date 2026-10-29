@@ -320,8 +320,11 @@ ParsedMnemonic parse_mnemonic(const std::string& raw) {
     parsed.has_repeat_prefix = true;
   }
   if (parsed.mnemonic.compare(0, 5, "lock ") == 0) parsed.mnemonic = parsed.mnemonic.substr(5);
-  // MPX `bnd` is a non-semantic bounds hint when MPX is disabled; ordinary
-  // branches prefixed with it execute exactly like their unprefixed form.
+  // `bnd` is the MPX bounds prefix. It is a HINT: on a processor without MPX, or with it
+  // disabled, the instruction it prefixes executes exactly as if the prefix were absent.
+  // A program compiled with MPX emits it on ordinary branches (`bnd jae`), so refusing it
+  // refuses the program over a prefix that does nothing -- and the report names it as one
+  // of the reasons real applications fail. Dropping it is what the hardware does.
   if (parsed.mnemonic.compare(0, 4, "bnd ") == 0) parsed.mnemonic = parsed.mnemonic.substr(4);
   return parsed;
 }

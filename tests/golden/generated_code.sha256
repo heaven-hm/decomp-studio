@@ -14,7 +14,13 @@
 #
 # Generated output changed when issue #67 added per-function provenance headers: every
 # function now records its source classification, evidence and byte/instruction counts,
-# and the file header records the census. Fixture digests are unchanged.
+# and the file header records the census.
+#
+# The x86/x64/ARM64 MVP branch carried a baseline without the issue #67 headers because
+# it forked before them. After merging that branch's instruction handlers and import-shim
+# coverage (VEX, wide-char CRT, comctl32), the entries below were regenerated from the
+# merged compiler: it reproduces the issue #67 output for every pinned fixture, and the
+# fixture input digests are unchanged, which is what distinguishes this from a rebuild.
 
 aliasing.exe 821b287ccd7d9d358b1e0f9364f4f8d65e4aec859d8e38be1d5cde6760dae834 29a382badadcb3e0d328d5b435fe9a73c7ad75677ef1076071fda4a06ff91b59 283304
 arith.exe bb67ed0c581a1a00cfce9fd324c4003a970d4869829bb472e5f91b4ee476be3c ce62b25da78bea529cd9fa6234f531acbe244ded6e5c32e50ef78876178a693e 1125808

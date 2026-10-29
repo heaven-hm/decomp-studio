@@ -23,6 +23,11 @@ with tempfile.TemporaryDirectory(prefix="recomp-readable-") as directory:
                                 "--source-style", "readable", "--json").stdout)
     assert translated["high_level_functions"] >= 1
     assert "High-level reconstruction" in (project / "guest.cpp").read_text()
+    faithful = root / "faithful"
+    fallback = json.loads(run(cli, "translate", str(binary), "--output", str(faithful),
+                              "--json").stdout)
+    assert fallback["high_level_functions"] == 0
+    assert "High-level reconstruction" not in (faithful / "guest.cpp").read_text()
     run(cli, "build", str(project), "--json")
     result = json.loads(run(cli, "verify", str(project), "--json").stdout)
     assert result["verdict"] == "VERIFIED", result

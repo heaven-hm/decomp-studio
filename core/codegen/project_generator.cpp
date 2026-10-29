@@ -138,7 +138,8 @@ GeneratedProject ProjectGenerator::generate(const std::filesystem::path& output_
   project.stack_top = choose_stack_top(executable_, configuration_, project.heap_base);
   project.function_count = discovery_.functions().size();
   project.import_count = executable_.imports.size();
-  project.high_level_function_count = lifter_.high_level_function_count();
+  project.high_level_function_count = configuration_.source_style == "readable"
+                                          ? lifter_.high_level_function_count() : 0;
   return project;
 }
 

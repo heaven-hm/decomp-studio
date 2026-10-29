@@ -1012,15 +1012,23 @@ void win32_heap_size(GuestContext* context) {
 }
 
 void win32_get_tick_count(GuestContext* context) {
+  // Derived from the FIXED clock, like every other guest-visible time. A tick count read
+  // from the host advances between the two sides, and a program that branches on elapsed
+  // time -- which is what a tick count is for -- then takes different branches. This was the
+  // second of the three host-clock reads; the first was `time`, and fixing only that one
+  // would have left the same defect reachable through a different import.
   timespec now{};
-  ::clock_gettime(CLOCK_MONOTONIC, &now);
+  now.tv_sec = guest_fixed_time();
+  now.tv_nsec = 0;
   const auto milliseconds = static_cast<std::uint64_t>(now.tv_sec) * 1000ull +
                             static_cast<std::uint64_t>(now.tv_nsec) / 1000000ull;
   set_import_result(context, static_cast<std::uint32_t>(milliseconds));
 }
 void win32_query_performance_counter(GuestContext* context) {
+  // The third host-clock read, fixed for the same reason.
   timespec now{};
-  ::clock_gettime(CLOCK_MONOTONIC, &now);
+  now.tv_sec = guest_fixed_time();
+  now.tv_nsec = 0;
   const auto nanoseconds = static_cast<std::uint64_t>(now.tv_sec) * 1000000000ull +
                            static_cast<std::uint64_t>(now.tv_nsec);
   const auto out = import_argument(context, 0);
@@ -1088,8 +1096,37 @@ void build_environment_blocks() {
   std::memset(guest_memory + environment_block_w, 0, 0x100000);
   std::uint64_t ansi = 0;
   std::uint64_t wide = 0;
-  for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
-    const std::string variable{*entry};
+  // THE GUEST'S ENVIRONMENT IS A FIXED SET, not the host's.
+  //
+  // This is the third instance of the same defect class as the clock and the pid. The
+  // candidate is a SUBPROCESS and the reference runs in the harness process, so `environ`
+  // differs between them by construction: the child inherits whatever the harness exported
+  // plus its own additions. A guest that calls `getenv` therefore received a different answer
+  // on each side, and `getenv("PATH")` alone is enough to make a program branch differently.
+  //
+  // The harness already EXCLUDED the environment page from the heap comparison, which hid
+  // the symptom without fixing it -- the guest could still read the difference, it just was
+  // not compared. A fixed set is the fix: the environment is an INPUT, and both sides must
+  // receive the same one. `RECOMP_ENVIRONMENT` can name a file of `NAME=value` lines for a
+  // program that genuinely needs a specific environment.
+  std::vector<std::string> variables;
+  if (const char* path = std::getenv("RECOMP_ENVIRONMENT")) {
+    std::ifstream input(path);
+    std::string line;
+    while (std::getline(input, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (!line.empty()) variables.push_back(line);
+    }
+  }
+  if (variables.empty()) {
+    // A plausible, minimal Windows environment. Values are fixed strings, so both sides see
+    // exactly these bytes.
+    variables = {"PATH=C:\\Windows\\System32;C:\\Windows", "SystemRoot=C:\\Windows",
+                 "TEMP=C:\\Windows\\Temp", "TMP=C:\\Windows\\Temp",
+                 "OS=Windows_NT", "COMPUTERNAME=RECOMP", "USERNAME=recomp",
+                 "PROCESSOR_ARCHITECTURE=x86"};
+  }
+  for (const auto& variable : variables) {
     if (ansi + variable.size() + 1 < 0x0fffff) {
       std::memcpy(guest_memory + environment_block_a + ansi, variable.data(), variable.size());
       ansi += variable.size() + 1;  // the terminator is already zero
@@ -4283,7 +4320,12 @@ void msvcrt_isatty(GuestContext* context) {
   set_import_result(context, ::isatty(static_cast<int>(import_argument(context, 0))) != 0);
 }
 void msvcrt_getpid(GuestContext* context) {
-  set_import_result(context, static_cast<std::uint64_t>(::getpid()));
+  // A FIXED pid, because the two sides are different processes and their real pids differ by
+  // construction. This is the same class of defect as the clock: the pid is an input the
+  // guest can print, compare or seed from, and a value that differs between the two sides
+  // makes the comparison report a translation difference where there is none. The value is
+  // fixed rather than removed so that a program which asks still gets a plausible answer.
+  set_import_result(context, 4242);
 }
 void msvcrt_ldexp(GuestContext* context) {
   const auto value = load_guest_double(context, context->registers[4] + 4);

@@ -131,6 +131,33 @@ verification system lies:
   guest's time lay between two HOST readings -- which is the coupling that caused the
   divergence. It now checks what matters: that the guest's clock is DETERMINISTIC, plausible,
   and that `GetLocalTime` agrees with the runtime's own `_time64` rather than with the host.
+
+### The clock was one instance of a CLASS, and the class is now closed
+
+The clock was not a one-off. **Any host state a guest can read is an input, and the two sides
+are different processes, so any host state they read differently is a false divergence.** A
+sweep for that class found four more instances, all now fixed:
+
+| host state | why it differed | now |
+|---|---|---|
+| `time`, `_time64`, `GetLocalTime`, `GetSystemTime` | different processes, different instants | fixed instant |
+| `GetTickCount`, `QueryPerformanceCounter` | the same, via a monotonic clock | derived from the fixed instant |
+| `getpid` | the candidate is a **subprocess**; the reference is not | a fixed pid |
+| `getenv` / `GetEnvironmentStrings` | the child inherits the harness's environment plus its own; the parent's differs | a **fixed set** of variables |
+
+The environment one is worth naming twice: **the harness already EXCLUDED the environment page
+from the heap comparison**, which hid the symptom without fixing it. The guest could still read
+the difference -- it simply was not compared. Excluding a region from comparison is not the
+same as making it agree, and the difference matters because a program can branch on it.
+
+Two tests failed when these were fixed, and in both cases **the assertion was the bug**:
+`runtime_time_test` bracketed the host clock, and `runtime_command_line_test` asserted the
+guest's environment matched `environ[0]`. Both now assert the property that matters --
+determinism, and sameness between the two sides.
+
+**The general rule this establishes:** a runtime shim may read host state only if that state is
+either fixed or shared with the guest, because the guest's view of it is part of what the
+differential comparison is comparing.
 - `testtmp`-based fixtures are affected by machine load: a corpus sweep under memory pressure
   (load average 73) produced 13 spurious SIGKILL results that all produced real verdicts when
   re-run, and three applications that PASSED were first recorded as failures.

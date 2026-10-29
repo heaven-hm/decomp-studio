@@ -100,5 +100,29 @@ Per the directive, never merged into one percentage:
 | differential verification success | the `Verdict` |
 | gameplay scenario coverage | **none: no game has been verified** |
 
-The last two rows are the honest answer to "how far along is this". **No game has been
-verified**, and the pipeline has never been run against Project I.G.I. end to end.
+## Project I.G.I. -- the first end-to-end run, MEASURED
+
+The pipeline has now been run against `igi.exe` (1,384,448 bytes, PE32 x86, 128 imports) with
+`autorecomp --buildrun`:
+
+| stage | result |
+|---|---|
+| inspect | PE32 x86, 128 imports |
+| recover functions | **9,475 functions, 960,403 instructions** |
+| classify instruction coverage | **960,403 of 960,403 lifted, 0 unsupported** |
+| check import compatibility | **95 of 128 shimmed, 33 missing** |
+| translate | 9,475 functions, 128 imports |
+| build native executable | **succeeded**, 45 s |
+| run native executable | **exit 124** -- the 20-second ceiling, 0 bytes of output |
+
+**What this does and does not mean.** The machine code is recovered and lifted completely --
+every one of 960,403 instructions -- and the result compiles to a native binary. That is a
+real result and it is the first time this pipeline has been taken to I.G.I. end to end.
+
+It is **not** a working port. The program exits on the timeout having produced no output,
+which is what a GUI game that waits for a window and input does here: there is no window
+manager and no input. And **33 of its 128 imports are unimplemented**, so even reaching its
+first frame is blocked on the runtime surface, not on the translation.
+
+**No game has been verified**, and the rows above are the evidence for that sentence rather
+than a hedge around it.

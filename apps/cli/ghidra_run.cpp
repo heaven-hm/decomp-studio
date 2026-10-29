@@ -12,8 +12,8 @@ extern char** environ;
 namespace fs = std::filesystem;
 
 int main(int argc, char** argv) {
-  if (argc != 5) {
-    std::cerr << "usage: ghidra-run <analyzeHeadless> <pcrecomp script directory> <binary> <new output directory>\n";
+  if (argc != 5 && !(argc == 6 && std::string(argv[5]) == "--decompile")) {
+    std::cerr << "usage: ghidra-run <analyzeHeadless> <pcrecomp script directory> <binary> <new output directory> [--decompile]\n";
     return 2;
   }
   try {
@@ -26,11 +26,20 @@ int main(int argc, char** argv) {
     std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(script)), {});
     if (recomp::common::sha256(bytes) != "5c13c2fc0d38f266ae07fcf7319a86c50258f115e30bc023baef433d2ef7a9ad")
       throw std::runtime_error("exporter does not match pinned PCRecomp revision");
+    const bool decompile = argc == 6;
+    if (decompile) {
+      std::ifstream source(scripts / "DecompileAll.java", std::ios::binary);
+      if (!source) throw std::runtime_error("cannot read DecompileAll.java");
+      std::vector<unsigned char> script_bytes((std::istreambuf_iterator<char>(source)), {});
+      if (recomp::common::sha256(script_bytes) != "801c4ffdc18697311298b4bb95edf3f8255abc216fa94f1536f40a0a37392c1e")
+        throw std::runtime_error("decompiler script does not match pinned PCRecomp revision");
+    }
     if (!fs::create_directory(output)) throw std::runtime_error("output directory must not exist");
-    const std::vector<std::string> args = {headless.string(), output.string(), "analysis", "-import", binary.string(),
-      "-scriptPath", scripts.string(), "-postScript", "ExportFunctions.java", output.string(),
-      "-deleteProject", "-log", (output / "ghidra.log").string(),
-      "-scriptlog", (output / "script.log").string()};
+    std::vector<std::string> args = {headless.string(), output.string(), "analysis", "-import", binary.string(),
+      "-scriptPath", scripts.string(), "-postScript", "ExportFunctions.java", output.string()};
+    if (decompile) args.insert(args.end(), {"-postScript", "DecompileAll.java", output.string()});
+    args.insert(args.end(), {"-deleteProject", "-log", (output / "ghidra.log").string(),
+      "-scriptlog", (output / "script.log").string()});
     std::vector<char*> raw;
     for (const auto& arg : args) raw.push_back(const_cast<char*>(arg.c_str()));
     raw.push_back(nullptr);
@@ -50,7 +59,11 @@ int main(int argc, char** argv) {
     const auto exported = output / (name + "_functions.txt");
     if (!fs::is_regular_file(exported) || fs::file_size(exported) == 0)
       throw std::runtime_error("Ghidra produced no function export; inspect the output logs");
+    const auto decompiled = output / (name + "_decompiled.c");
+    if (decompile && (!fs::is_regular_file(decompiled) || fs::file_size(decompiled) == 0))
+      throw std::runtime_error("Ghidra produced no decompiler output; inspect the output logs");
     std::cout << exported.string() << '\n';
+    if (decompile) std::cout << decompiled.string() << '\n';
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "ghidra-run: " << error.what() << '\n';

@@ -135,3 +135,8 @@ but narrow, and it is recorded here rather than relied on silently.
 4. **`THIRD_PARTY_NOTICES.md` is updated in the same commit as the adaptation**, not later.
 5. **No claim that "it is only a tool" settles the question.** The mechanism is described,
    and the obligation it creates is stated.
+
+`ghidra-run` also accepts `--decompile`, which invokes PCRecomp's pinned
+`tools/ghidra/DecompileAll.java` in the same analysis session and reports the
+resulting `_decompiled.c` path. This is Ghidra pseudocode for investigation;
+it is not a compilable reconstruction or behavioral verification.

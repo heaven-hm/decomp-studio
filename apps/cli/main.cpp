@@ -574,7 +574,70 @@ int command_translate(const std::filesystem::path& input, const std::filesystem:
   return 0;
 }
 
-int command_build(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json) {
+// Verify every source file against the manifest written at generation time.
+//
+// THIS IS THE GUARD FOR THE HARD RULE that the delivered source must BE the source built into
+// the executable. Without it the rule is a promise; with it, a source tree that has drifted
+// from what was generated is REFUSED rather than compiled and shipped. It fails closed: a
+// missing manifest, a missing file, or a digest that does not match all stop the build, and
+// none of them is reported as success.
+int verify_source_manifest(const std::filesystem::path& project, bool json) {
+  const auto manifest_path = project / "SOURCE_MANIFEST.json";
+  std::ifstream manifest(manifest_path, std::ios::binary);
+  if (!manifest) {
+    std::cerr << "refusing to build: " << manifest_path.string()
+              << " is missing, so the sources cannot be shown to be the ones generated\n";
+    return 3;
+  }
+  const std::string text((std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
+  // Deliberately a small, literal scan rather than a general JSON parser: the manifest is
+  // written by this tool and its shape is fixed, and a parser here would be more code to get
+  // wrong than the format is worth.
+  std::vector<std::pair<std::string, std::string>> entries;
+  std::size_t cursor = 0;
+  while ((cursor = text.find("\"name\": \"", cursor)) != std::string::npos) {
+    const auto name_begin = cursor + 9;
+    const auto name_end = text.find('"', name_begin);
+    if (name_end == std::string::npos) break;
+    const auto digest_key = text.find("\"sha256\": \"", name_end);
+    if (digest_key == std::string::npos) break;
+    const auto digest_begin = digest_key + 11;
+    const auto digest_end = text.find('"', digest_begin);
+    if (digest_end == std::string::npos) break;
+    entries.emplace_back(text.substr(name_begin, name_end - name_begin),
+                         text.substr(digest_begin, digest_end - digest_begin));
+    cursor = digest_end;
+  }
+  if (entries.empty()) {
+    std::cerr << "refusing to build: the source manifest lists no files\n";
+    return 3;
+  }
+  for (const auto& [name, expected] : entries) {
+    std::ifstream input(project / name, std::ios::binary);
+    if (!input) {
+      std::cerr << "refusing to build: " << name << " is listed in the manifest but missing\n";
+      return 3;
+    }
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto actual = recomp::common::sha256(std::span<const unsigned char>(
+        reinterpret_cast<const unsigned char*>(contents.data()), contents.size()));
+    if (actual != expected) {
+      std::cerr << "refusing to build: " << name << " does not match the manifest\n"
+                << "  expected " << expected << "\n  actual   " << actual << "\n"
+                << "  The delivered source would not be the source built into the executable.\n";
+      return 3;
+    }
+  }
+  if (json) std::cout << "{\"manifest_verified\":true,\"files\":" << entries.size() << "}\n";
+  return 0;
+}
+
+int command_build(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json,
+                  bool enforce_manifest = true) {
+  if (enforce_manifest) {
+    const auto manifest_status = verify_source_manifest(project, false);
+    if (manifest_status != 0) return manifest_status;
+  }
   auto configuration = config_path.empty() ? recomp::pipeline::load_project_configuration(project)
                                            : make_configuration(config_path, "", project);
   if (configuration.compiler.empty()) configuration.compiler = "clang++";
@@ -1540,7 +1603,18 @@ int main(int argc, char** argv) {
         if (project.empty()) project = argv[index];
       }
       if (project.empty()) return fail("build requires a project directory", json);
-      return command_build(project, config, json);
+      // The gate exists to prove the delivered source IS the built source. A caller that is
+      // deliberately modifying generated sources -- the heap-corruption mutation test does
+      // exactly this -- must say so, and the build reports that it did.
+      bool allow_modified = false;
+      for (int index = 2; index < argc; ++index)
+        if (std::string{argv[index]} == "--allow-modified-sources") allow_modified = true;
+      if (allow_modified) {
+        std::cerr << "warning: --allow-modified-sources set; the source manifest is NOT being "
+                     "enforced and the delivered source may differ from the generated one\n";
+        return command_build(project, config, json, false);
+      }
+      return command_build(project, config, json, true);
     }
     if (command == "run") {
       std::filesystem::path project;

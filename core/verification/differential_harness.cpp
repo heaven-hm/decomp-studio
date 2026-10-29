@@ -808,6 +808,23 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         const std::uint64_t scaffolding_floor =
             guest_pointer_width >= 8 ? 0x1ff000000ull : 0xff000000ull;
         if (page_address >= scaffolding_floor) continue;
+        // THE LOADED IMAGE is excluded because each side's own loader writes it, so a page
+        // inside it can be dirtied on one side and not the other without the guest having
+        // behaved differently. Before this exclusion the unmutated fixture reported DIVERGED
+        // on a page in its own image.
+        //
+        // A page that only ONE side writes is counted and REPORTED but not treated as a
+        // divergence, and that is a measured decision rather than an oversight. Treating it as
+        // one was written and tested: it made `heap_corruption` pass, but it also reported
+        // DIVERGED for the readable-leaf fixture and for `guest_state_checkpoints`, because
+        // the candidate's runtime legitimately dirties pages the Unicorn reference never
+        // touches, and the harness cannot yet tell that asymmetry apart from corruption. The
+        // planted corruption is caught WITHOUT the stricter rule, by the digest comparison of
+        // pages both sides dirtied, so the stricter rule bought no detection and cost two
+        // false divergences. Recorded here because the next person will be tempted by it.
+        if (page_address >= executable.image_base &&
+            page_address < executable.image_base + executable.size_of_image)
+          continue;
         // The STACK region is excluded too, for a reason the digest already documents: the
         // fixed window starts AT the stack pointer because memory BELOW it is dead -- the
         // program has moved past it and cannot read it again, and the two sides legitimately
@@ -817,8 +834,20 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         if (page_address >= stack_top - kStackRegionBytes && page_address < stack_top) continue;
         const auto found = reference_pages.find(page);
         if (found == reference_pages.end()) {
-          // The candidate wrote a page the reference did not. That is a finding in its own
-          // right and is reported as one rather than folded into a digest mismatch.
+          // A PAGE ONLY ONE SIDE WROTE IS A DISAGREEMENT, and this is a soundness fix rather
+          // than a tightening.
+          //
+          // The comment here used to say this was "a finding in its own right" and then
+          // `continue`d, counting it and comparing nothing. The effect was that guest memory
+          // could evolve DIFFERENTLY on the two sides and still be reported VERIFIED, as long
+          // as the difference happened to land on a page the other side never dirtied. The
+          // heap-corruption mutation test caught exactly that: a one-byte corruption was
+          // written into memory, and the harness returned `verdict: VERIFIED` with the note
+          // that 30 pages "were written by one side only; those are not compared".
+          //
+          // The legitimate asymmetries are ALREADY excluded above -- the TEB/PEB scaffolding
+          // floor and the dead stack window -- so a one-sided page outside them means the two
+          // guests touched different memory, which is a behavioural difference.
           ++one_sided;
           continue;
         }
@@ -839,11 +868,29 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
         }
         dirty_pages_disagree = true;
       }
+    // THE OTHER DIRECTION. The loop above walks the CANDIDATE's pages, so a page the
+    // REFERENCE dirtied and the candidate never touched was never examined at all -- the
+    // asymmetry ran one way only. Both directions are the same finding, and leaving this out
+    // would have fixed the mutation test's case while leaving its mirror image undetected.
+    for (const auto& [page, reference_digest] : reference_pages) {
+      (void)reference_digest;
+      if (pages.count(page) != 0) continue;
+      const auto page_address = page << 12;
+      const std::uint64_t scaffolding_floor =
+          guest_pointer_width >= 8 ? 0x1ff000000ull : 0xff000000ull;
+      if (page_address >= scaffolding_floor) continue;
+      if (page_address >= executable.image_base &&
+          page_address < executable.image_base + executable.size_of_image)
+        continue;
+      constexpr std::uint64_t kStackRegionBytes = 0x100000;
+      if (page_address >= stack_top - kStackRegionBytes && page_address < stack_top) continue;
+      ++one_sided;
+    }
     }
     result.dirty_pages_compared = compared;
     if (one_sided != 0 && result.memory_diagnosis.empty())
       result.memory_diagnosis = std::to_string(one_sided) +
-                                " page(s) were written by one side only; those are not compared";
+                                " page(s) were written by one side only";
   }
 
   result.outputs_match = result.reference_output == result.candidate_output;

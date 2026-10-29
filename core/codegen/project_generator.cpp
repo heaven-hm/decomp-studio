@@ -1,6 +1,13 @@
 #include "core/codegen/project_generator.hpp"
 
+#include "core/common/diagnostic.hpp"
+#include "core/common/sha256.hpp"
+
 #include <fstream>
+#include <iterator>
+#include <span>
+#include <utility>
+#include <vector>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -131,6 +138,44 @@ GeneratedProject ProjectGenerator::generate(const std::filesystem::path& output_
     if (!output) throw std::runtime_error("cannot write " + destination.string());
     output << read_file(source);
     project.runtime_sources.push_back(destination);
+  }
+
+  // THE SOURCE MANIFEST.
+  //
+  // The hard rule is that the source delivered to the user must BE the source built into the
+  // executable -- not a related implementation, not pseudocode, not a sketch. A manifest of
+  // per-file digests is what makes that checkable rather than asserted: `build` recomputes
+  // them and REFUSES to compile a project whose sources do not match what was generated.
+  //
+  // It records the input binary's digest as well, so the chain from binary to source to
+  // executable is unbroken at both ends.
+  {
+    std::vector<std::pair<std::string, std::string>> entries;
+    const auto digest_of = [](const std::filesystem::path& path) {
+      std::ifstream input(path, std::ios::binary);
+      const std::string contents((std::istreambuf_iterator<char>(input)),
+                                 std::istreambuf_iterator<char>());
+      return recomp::common::sha256(std::span<const unsigned char>(
+          reinterpret_cast<const unsigned char*>(contents.data()), contents.size()));
+    };
+    entries.emplace_back(project.guest_source.filename().string(), digest_of(project.guest_source));
+    for (const auto& source : project.runtime_sources)
+      entries.emplace_back(source.filename().string(), digest_of(source));
+
+    const auto manifest = output_directory / "SOURCE_MANIFEST.json";
+    std::ofstream output(manifest);
+    if (!output) throw std::runtime_error("cannot write the source manifest");
+    output << "{\n  \"schema_version\": 1,\n"
+           << "  \"binary_sha256\": \"" << recomp::common::sha256(std::span<const unsigned char>(
+                  executable_.file_bytes.data(), executable_.file_bytes.size())) << "\",\n"
+           << "  \"binary_path\": " << recomp::common::quote_json(executable_.path.string()) << ",\n"
+           << "  \"files\": [\n";
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      output << "    {\"name\": " << recomp::common::quote_json(entries[index].first)
+             << ", \"sha256\": \"" << entries[index].second << "\"}"
+             << (index + 1 == entries.size() ? "\n" : ",\n");
+    }
+    output << "  ]\n}\n";
   }
 
   project.image_base = executable_.image_base;

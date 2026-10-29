@@ -61,6 +61,12 @@ const std::vector<OptionSpec>& specs() {
       {"--repair", "", "Enable automated repair", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--autorepair", "", "Alias for --repair", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--dry-run", "", "Validate and preview without execution", ValueKind::Flag, {}, "", "Execution Options", false},
+      // The source manifest proves the delivered source IS the built source. This flag turns
+      // that check off, for a caller that is DELIBERATELY modifying generated sources -- the
+      // heap-corruption mutation test patches the project's runtime and rebuilds. It is named
+      // rather than silent so the weakening is visible in the command and in the warning the
+      // build prints, and it is not the default.
+      {"--allow-modified-sources", "", "Build even if sources do not match the manifest", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--explain", "", "Explain the selected pipeline and capabilities", ValueKind::Flag, {}, "", "Execution Options", false},
       {"--report-format", "<format>", "Report format", ValueKind::Enum,
        {"text", "json"}, "text", "Execution Options", true},

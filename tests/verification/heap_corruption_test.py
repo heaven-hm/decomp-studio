@@ -89,10 +89,16 @@ def main():
             return 1
         runtime.write_text(text.replace(anchor, MUTATION + anchor, 1))
 
-        rebuilt = subprocess.run([CLI, "build", str(project)], text=True, capture_output=True)
+        rebuilt = subprocess.run([CLI, "build", str(project), "--allow-modified-sources"],
+                                 text=True, capture_output=True)
         check("mutation/builds", rebuilt.returncode == 0, rebuilt.stderr[:300])
 
         corrupted = verify(project)
+        # This check was FAILING for a reason worth keeping: the unmutated fixture itself
+        # reported DIVERGED on a page inside its own LOADED IMAGE, which each side's loader
+        # writes, so the run never reached a clean baseline. The image region is now excluded
+        # for that reason and the corruption is caught by the ordinary digest comparison -- a
+        # page BOTH sides dirty, compared byte for byte.
         check("corrupt/not-verified",
               corrupted is not None and corrupted.get("status") != "pass",
               f"a one-byte heap corruption was NOT detected: {corrupted}")

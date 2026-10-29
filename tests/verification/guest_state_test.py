@@ -134,7 +134,10 @@ def main():
                 return 1
             project_runtime.write_text(project_source.replace(
                 marker, "checkpoint.flags = eflags_value(context) ^ 0x1u;  // test mutation"))
-            if run_cli(["build", str(mutated_project)]).returncode != 0:
+            # The mutation above edits a generated source, so the manifest check would refuse the
+            # rebuild. Saying so explicitly is the point of the flag: the weakening is visible
+            # in the command rather than hidden in a bypass.
+            if run_cli(["build", str(mutated_project), "--allow-modified-sources"]).returncode != 0:
                 print("FAIL: build failed after the mutation", file=sys.stderr)
                 return 1
 

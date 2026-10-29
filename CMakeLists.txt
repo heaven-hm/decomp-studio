@@ -16,11 +16,11 @@ if(RECOMP_PCRECOMP_SOURCE)
   if(NOT PCRECOMP_GIT_RESULT EQUAL 0 OR NOT PCRECOMP_REVISION STREQUAL "a85ea970f9e0640ab6546d2ca7a01fccb132973d")
     message(FATAL_ERROR "PCRecomp checkout must be at a85ea970f9e0640ab6546d2ca7a01fccb132973d")
   endif()
-  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} status --porcelain --untracked-files=all -- runtime/win32hle runtime/recomp32
+  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} status --porcelain --untracked-files=all -- tools runtime/win32hle runtime/recomp32
     OUTPUT_VARIABLE PCRECOMP_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE PCRECOMP_STATUS_RESULT)
   if(NOT PCRECOMP_STATUS_RESULT EQUAL 0 OR PCRECOMP_DIRTY)
-    message(FATAL_ERROR "PCRecomp runtime sources must be clean for a reproducible provider build")
+    message(FATAL_ERROR "PCRecomp tools and runtime sources must be clean for a reproducible provider build")
   endif()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(PCRECOMP_SDL REQUIRED IMPORTED_TARGET sdl2 SDL2_ttf)
@@ -110,12 +110,26 @@ endif()
 set_source_files_properties(runtime/recomp_runtime.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
 add_executable(recomp-studio ${RECOMP_SOURCES})
+if(RECOMP_PCRECOMP_SOURCE AND PCRECOMP_MINGW_CC AND RECOMP_ENABLE_UNICORN AND UNICORN_INCLUDE_DIR AND UNICORN_LIBRARY)
+  add_test(NAME pcrecomp_pe32_unicorn_reference COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_fixture_test.py
+    ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c
+    ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${PKG_CONFIG_EXECUTABLE} ${CMAKE_OSX_SYSROOT}
+    --reference-cli $<TARGET_FILE:recomp-studio>)
+  set_tests_properties(pcrecomp_pe32_unicorn_reference PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
+endif()
 add_executable(ghidra-import apps/cli/ghidra_import.cpp core/common/sha256.cpp)
 add_executable(ghidra-run apps/cli/ghidra_run.cpp core/common/sha256.cpp)
+add_executable(revng-run apps/cli/revng_run.cpp core/common/sha256.cpp)
+target_compile_features(revng-run PRIVATE cxx_std_20)
+target_include_directories(revng-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME revng_run COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/revng_run_test.py $<TARGET_FILE:revng-run>)
 target_compile_features(ghidra-run PRIVATE cxx_std_20)
 target_include_directories(ghidra-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME ghidra_run COMMAND ${Python3_EXECUTABLE}
-  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_run_test.py $<TARGET_FILE:ghidra-run>)
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_run_test.py $<TARGET_FILE:ghidra-run> ${RECOMP_PCRECOMP_SOURCE})
 target_compile_features(ghidra-import PRIVATE cxx_std_20)
 target_include_directories(ghidra-import PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME ghidra_import COMMAND ${Python3_EXECUTABLE}

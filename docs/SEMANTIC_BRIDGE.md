@@ -12,16 +12,15 @@ it.** A record whose association is unverified cannot be allowed to change what 
 translator does, because a wrong association would attribute one program's function
 boundaries to another and every downstream fact would inherit the error.
 
-The directive's rule is to resolve that by comparison rather than by trust, and to preserve
-conflicts rather than average them.
+Comparison can expose conflicts, but matching addresses do not establish which binary an
+export came from. Preserve conflicts and require separate provenance for binary identity.
 
 ## What is reconciled
 
 This project's **own** function discovery is the independent source. It is derived from the
 binary by a different method -- Capstone decoding, seeded from the entry point, relocations,
 exception data and jump tables -- and shares no code with Ghidra. Two independent derivations
-of the same binary that agree are corroboration; where they disagree, the disagreement is the
-finding.
+of the same binary that agree would be corroboration; this tool cannot establish that premise.
 
 ```
 binary ──┬─> recomp-studio discovery ──> local addresses     ─┐
@@ -33,7 +32,7 @@ binary ──┬─> recomp-studio discovery ──> local addresses     ─┐
 
 | state | meaning | confidence |
 |---|---|---|
-| `agreed` | **both** sources recovered a function at this address | `confirmed-by-two-providers` |
+| `agreed` | both records report this address | `matching-address-only` |
 | `provider-only` | only the provider reports it | `single-provider` |
 | `local-only` | only this project reports it | `single-provider` |
 
@@ -47,12 +46,11 @@ corroborated.
 
 | verdict | when |
 |---|---|
-| `verified` | every provider address is corroborated by local discovery |
-| `partially-verified` | some are corroborated, some are not |
-| `contradicted` | none are |
+| `unverified` | every record: address overlap alone cannot prove binary identity |
 
-The process **exits non-zero unless the association is `verified`**, so a caller cannot
-mistake partial agreement for success.
+The separate `address_agreement` field reports `complete`, `partial`, or `none`.
+Exit zero means every reported provider address appeared in local discovery; it does not
+verify identity, completeness, function boundaries or behavior.
 
 ## Two bugs the test found in the implementation
 
@@ -61,7 +59,8 @@ Recorded because both are ways a reconciliation layer lies while looking correct
 1. **The parser accepted only one writer's spacing.** It required `"address":"` exactly, so a
    record written with a space after the colon parsed as having **no functions at all** --
    and full agreement was reported as a **contradiction**. A parser that accepts one writer's
-   formatting is not reading JSON. It now tolerates whitespace, which JSON permits.
+   formatting is not reading JSON. It now uses the vendored JSON for Modern C++ parser,
+   reads addresses only from the functions array, and rejects malformed and duplicate addresses.
 2. **The exit rule treated any agreement as success.** It was
    `agreed.empty() && !provider.empty()`, so a record that agreed on 36 functions and
    invented a 37th exited **zero**. Partial agreement is still disagreement about the rest,
@@ -85,6 +84,7 @@ never been shown a contradiction has not been shown to detect one.
   `jmp`, or a thunk -- is reported `unknown` rather than defaulted to cdecl.
   The provider's `calling_convention` field is **not yet read**, so the two are not compared.
 - **`flags`, `body_bytes` and `references` are not compared either.**
-- **It has no rev.ng input**, because there is no rev.ng adapter -- and per
-  `docs/UPSTREAM_COMPONENTS.md` any future one must be an external process, since rev.ng is
-  GPLv2.
+- **It has no rev.ng input.** The external-process `revng-run` adapter preserves a raw rev.ng
+  artifact, but parsing and reconciling that artifact are not implemented -- so rev.ng is not
+  yet a second provider here. When it is, the mechanism is already fixed: per
+  `docs/UPSTREAM_COMPONENTS.md` rev.ng is GPLv2, so it must stay an external process.

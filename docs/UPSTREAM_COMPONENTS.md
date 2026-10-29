@@ -57,7 +57,7 @@ primary foundation and its licence permits integration.
 
 The optional CMake setting `RECOMP_PCRECOMP_SOURCE` builds PCRecomp's actual
 `win32hle_selftest.c` and `gdi_selftest.c` against its runtime sources at revision
-`a85ea970f9e0640ab6546d2ca7a01fccb132973d`. It requires a clean checkout,
+`a85ea970f9e0640ab6546d2ca7a01fccb132973d`. It requires clean upstream tools and runtime sources,
 SDL2 and SDL2_ttf. Configure with `-DRECOMP_PCRECOMP_SOURCE=/path/to/pcrecomp`,
 build the `pcrecomp_win32hle_selftest` and `pcrecomp_gdi_selftest` targets, then
 run `ctest -R '^pcrecomp_' --output-on-failure` from that build directory.
@@ -71,9 +71,12 @@ With `i686-w64-mingw32-gcc` and Python Capstone installed, the optional
 `pcrecomp_pe32_fixture` test also compiles the project's arithmetic fixture to
 PE32, runs PCRecomp's generator, builds its generated C with `win32hle`, and
 checks the native output. It uses the original PE as the upstream host's image
-input. The expected output is a fixture oracle, not an independent execution
-of the original Windows binary; this test does not establish game support or
-high-level source reconstruction.
+input. When Unicorn is enabled, `pcrecomp_pe32_unicorn_reference` also executes
+the original PE under Recomp Studio's Unicorn reference and compares its output
+byte for byte with PCRecomp's native program. The two paths use
+different runtime implementations, but the reference is emulated rather than
+native Windows. Neither test establishes game support or high-level source
+reconstruction.
 
 **Its own NOTICE demonstrates the file-level rule this document insists on.** The repository
 carries a `LICENSES/` directory and a `NOTICE` that lists each exception by PATH:
@@ -93,9 +96,14 @@ but narrow, and it is recorded here rather than relied on silently.
 
 ## What is deliberately NOT used
 
-- **rev.ng** -- assigned high-level source reconstruction by the directive. **No adapter
-  exists and no rev.ng code is present.** Its licence has now been established, and the
-  answer decides the integration mechanism:
+- **rev.ng** -- assigned high-level source reconstruction by the directive. `revng-run`
+  invokes the documented `quick artifact emit-c-as-single-file` command as an external
+  process, renders it using `revng ptml --plain`, and records input and output hashes.
+  It preserves both the raw YAML artifact and rendered analysis text, and
+  marks its association and behavior unverified. The adapter has been tested against a
+  controlled stand-in; no rev.ng executable is installed here, so actual PE support and
+  output remain untested. No rev.ng code is linked into the core. Its license informs
+  the integration mechanism:
 
   **rev.ng is GPLv2, and its own README says why**: "rev.ng depends on certain on GPLv2
   components (in particular, QEMU), so the project is GPLv2-licensed as a whole"
@@ -132,3 +140,12 @@ but narrow, and it is recorded here rather than relied on silently.
 4. **`THIRD_PARTY_NOTICES.md` is updated in the same commit as the adaptation**, not later.
 5. **No claim that "it is only a tool" settles the question.** The mechanism is described,
    and the obligation it creates is stated.
+
+`ghidra-run` also accepts `--decompile`, which invokes PCRecomp's pinned
+`tools/ghidra/DecompileAll.java` in the same analysis session and reports the
+resulting `_decompiled.c` path. This is Ghidra pseudocode for investigation;
+it is not a compilable reconstruction or behavioral verification.
+The run writes `analysis-provenance.json` with hashes of the input and emitted
+artifacts, and refuses to write that record if the input hash changes during
+the run. These hashes record observed files; they do not authenticate Ghidra or
+prove that an export was derived from that binary.

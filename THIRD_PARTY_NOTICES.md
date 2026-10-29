@@ -1,5 +1,11 @@
 # Third-party notices
 
+The Ghidra reconciler uses the unmodified single-header [JSON for Modern C++](https://github.com/nlohmann/json),
+version 3.12.0, commit `55f93686c01528224f448c19128836e7df245f72`, file
+`single_include/nlohmann/json.hpp`, copyright 2013–2025 Niels Lohmann, MIT license.
+The source and license are at `third_party/nlohmann/json.hpp` and
+`third_party/nlohmann/LICENSE.MIT`.
+
 Recomp Studio links against or invokes the following components and includes
 adaptations of third-party code identified below.
 

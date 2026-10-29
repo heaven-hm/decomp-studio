@@ -6,7 +6,8 @@ import subprocess
 import sys
 import tempfile
 
-cli, fixture = sys.argv[1:]
+cli, fixture = sys.argv[1], sys.argv[2]
+EXPECT = sys.argv[3] if len(sys.argv) > 3 else "constant"
 
 def run(*args):
     return subprocess.run(args, text=True, capture_output=True, check=True)
@@ -22,7 +23,13 @@ with tempfile.TemporaryDirectory(prefix="recomp-readable-") as directory:
     translated = json.loads(run(cli, "translate", str(binary), "--output", str(project),
                                 "--source-style", "readable", "--json").stdout)
     assert translated["high_level_functions"] >= 1
-    assert "High-level reconstruction" in (project / "guest.cpp").read_text()
+    source = (project / "guest.cpp").read_text()
+    assert "High-level reconstruction" in source
+    # WHICH shape was recognised matters: a test that only checks the comment would pass if
+    # the constant recogniser fired on an accessor, which would be the wrong reconstruction.
+    if EXPECT == "argument":
+        assert "returns stack argument" in source, source[:400]
+        assert "return arg0;" in source, source[:400]
     faithful = root / "faithful"
     fallback = json.loads(run(cli, "translate", str(binary), "--output", str(faithful),
                               "--json").stdout)

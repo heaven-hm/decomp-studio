@@ -2705,6 +2705,8 @@ std::string X86_64Lifter::lift_function(const RecoveredFunction& function, bool 
   if (readable) {
     if (const auto high_level = recognize_constant_return(function))
       return render_constant_return(*high_level, guest_function_name(function.entry));
+    if (const auto accessor = recognize_argument_return(function))
+      return render_argument_return(*accessor, guest_function_name(function.entry));
   }
   const auto lifted = lift_function_to_ir(function);
   std::string output;
@@ -2767,7 +2769,7 @@ std::size_t X86_64Lifter::high_level_function_count() const {
   std::size_t count = 0;
   for (const auto& [address, function] : discovery_.functions()) {
     if (native_overrides_.count(address) == 0 && stubbed_functions_.count(address) == 0 &&
-        recognize_constant_return(function))
+        (recognize_constant_return(function) || recognize_argument_return(function)))
       ++count;
   }
   return count;

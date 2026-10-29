@@ -4504,11 +4504,12 @@ void msvcrt_stdio_common_vsprintf(GuestContext* context) {
   const auto format = read_guest_string(import_argument(context, 3 + shift));
   const auto locale = import_argument(context, 4 + shift);
   const auto arguments = import_argument(context, 5 + shift);
-  // UCRT uses bit 0 for its internal locale/formatting mode and bit 1 for
-  // legacy compatibility; both are representable by the shared formatter.
+  // Unsupported option and locale combinations must be diagnosed with their
+  // format string: their effect depends on the conversions actually used.
   if ((options & ~std::uint64_t{3}) != 0 || locale != 0)
-    terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx",
-                           static_cast<unsigned long long>(options));
+    terminate_with_message("__stdio_common_vsprintf: unsupported options=0x%llx locale=0x%llx format='%s'",
+                           static_cast<unsigned long long>(options),
+                           static_cast<unsigned long long>(locale), format.c_str());
   const auto output = msvcrt_format_arguments(context, format, arguments);
   const auto written = limit == 0 ? output.size() : std::min(limit - 1, output.size());
   for (std::size_t index = 0; index < written; ++index)

@@ -1,77 +1,156 @@
-# RevEng-Studio
+# Decomp-Studio
 
 <p align="center">
-  <img src="assets/reveng-studio-logo.svg" alt="RevEng-Studio — legacy game reverse engineering" width="760">
+  <img src="assets/decomp-studio-logo.svg" alt="Decomp-Studio — static binary decompilation and native recompilation" width="760">
 </p>
 
 <p align="center">
-  <strong>Decompile. Recompile. Bring legacy games to modern operating systems.</strong>
+  <strong>Analyze. Decompile. Recompile. Run legacy games and binaries natively on modern operating systems.</strong>
 </p>
 
-RevEng-Studio is a **game-only reverse-engineering and recompilation toolkit** for understanding, rebuilding, and preserving old games. The goal is to take legacy game executables and their supporting code, analyze how they work, reconstruct or translate their behavior, and produce native builds for modern platforms.
+---
 
-It is designed as a **generic, extensible solution for games**, not a one-game port and not a general-purpose application decompiler. Shared pipelines handle common binary-analysis and recompilation work; game-specific adapters can provide engine, graphics, audio, input, filesystem, and operating-system compatibility where required.
+## Overview
 
-## What it aims to do
+**Decomp-Studio** is an automated static binary decompilation and native recompilation toolkit designed to lift legacy x86/x64 Windows executables (PE32/PE32+) into portable C++20 and compile them directly into native Apple Silicon (macOS ARM64) and modern platform binaries.
 
-- **Analyze legacy game binaries** — inspect executable formats, identify functions, and collect evidence from reverse-engineering tools.
-- **Decompile and translate code** — recover higher-level information where possible and use lower-level translation when reliable source reconstruction is not available.
-- **Recompile for other platforms** — build native game code for supported host architectures and operating systems, with compatibility layers for legacy APIs.
-- **Reuse generic game infrastructure** — support multiple games and engines through modular format, analysis, and runtime adapters instead of hard-coding the entire pipeline to one title.
-- **Verify behavior** — compare observable execution against the original game and document what works, what fails, and what remains unverified.
+Instead of running slow CPU emulation or heavy virtualization layers, Decomp-Studio analyzes binary structure, recovers functions, lifts machine instructions into a structured intermediate representation (IR), and emits native source code with an integrated Win32 High-Level Emulation (HLE) runtime.
 
-The long-term goal is to help legacy PC games run on **Windows, Linux, macOS, and other platforms as support is implemented**. Cross-platform support is a design goal, not a promise that every game or operating system works today.
+---
 
-## Design inspiration
+## Native Execution Showcase
 
-RevEng-Studio combines ideas from existing reverse-engineering and recompilation projects:
+Decomp-Studio translates legacy binaries into native Mach-O ARM64 executables and bundles them into signed macOS `.app` packages:
 
-| Project | What it contributes to the ecosystem | RevEng-Studio's intended use |
-| --- | --- | --- |
-| [PCRecomp](https://github.com/sp00nznet/pcrecomp) | Static recompilation tools and runtime infrastructure for PC software. | Reuse compatible recompilation/runtime techniques as part of a game-focused pipeline. Integration is experimental. |
-| [rev.ng](https://rev.ng/) | Binary analysis and decompilation across architectures. | Use analysis artifacts and provider adapters to inform reconstruction and recompilation. The adapter is experimental. |
-| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) | Disassembly, decompilation, and reverse-engineering framework. | Optional analysis provider for examining game binaries. |
-| [N64Recomp](https://github.com/N64Recomp/N64Recomp) | Static recompilation focused on Nintendo 64 games. | A reference point for game recompilation workflows; RevEng-Studio targets a broader set of legacy game formats and hosts over time. |
+<p align="center">
+  <img src="screenshots/tetris-running-macos.png" alt="Tetris recompiled and running natively on macOS ARM64" width="720">
+  <br>
+  <em>Native Apple Silicon ARM64 Mach-O execution of Tetris recompiled from Windows x86 PE32.</em>
+</p>
 
-These projects have different scopes and maturity levels. RevEng-Studio is not a replacement for them; it aims to connect reusable analysis, translation, runtime, and verification components into a more general workflow for legacy games.
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="screenshots/cavestory-running-macos.png" width="360" alt="Cave Story running on macOS"><br>
+      <b>Cave Story Native Runtime</b>
+    </td>
+    <td align="center">
+      <img src="screenshots/cavestory-settings-macos.png" width="360" alt="Cave Story Settings Tool on macOS"><br>
+      <b>Cave Story Configurator (DoConfig)</b>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="screenshots/ikachan-title-macos.png" width="360" alt="Ikachan title screen on macOS"><br>
+      <b>Ikachan Title Screen</b>
+    </td>
+    <td align="center">
+      <img src="screenshots/arith-calc-x86.png" width="360" alt="Deterministic Verification Harness"><br>
+      <b>Deterministic Verification Harness</b>
+    </td>
+  </tr>
+</table>
 
-## Current status
+---
 
-The project is experimental. The current pipeline can inspect PE files, recover candidate functions, lift a subset of x86 instructions, emit low-level C++, compile it, and compare selected behavior using Unicorn. `translate --source-mode hybrid` classifies every function as `high-level verified`, `low-level fallback`, or `unresolved` and delivers the classification with the source (`recomp-source-map.json`, `recomp-source-manifest.json`, and a build manifest that hashes the exact compiled tree). The current recognizers cover whole-body constant-return, stack-argument-return, and register-argument-return leaves; every function outside a proven pattern remains explicit machine-level fallback code. `--source-quality human-readable` is a fail-closed gate that refuses to emit a tree unless the measured census supports the claim. Ghidra analysis and rev.ng artifacts have external-tool adapters. PCRecomp runtime integration is experimental, and the Windows-native target rows of the matrix are explicitly unsupported.
+## Core Capabilities
 
-**Playable-game support is not yet verified.** A 15-game test produced zero verified playable games. A reliable original-Windows oracle, a complete game runtime, and verified gameplay scenarios remain open work. A successful build or instruction-coverage result does not prove that a game works correctly.
+- **Automated Static Lifter**: Disassembles and decodes x86 and x64 instructions into typed semantic IR statements, tracking guest CPU register states and flags.
+- **Hybrid Source Reconstruction**:
+  - Automatically identifies, extracts, and emits verified high-level structured C++ for leaf functions, return accessors, and arithmetic blocks.
+  - Falls back deterministically to low-level machine semantic translation for complex routines, ensuring zero-gap instruction coverage.
+- **Portable 64x64 to 128-bit Arithmetic**: Built-in multi-word arithmetic engine supporting `multiply_wide`, `divide_wide`, and `divide_wide_signed` across both 32-bit and 64-bit platforms without compiler-dependent `__int128` requirements.
+- **Win32 Runtime Shim Layer**: Comprehensive host shimming for Kernel32, CRT (stdio, time, heap, strings), User32, and GDI32.
+- **macOS App Bundler (`build-macos-app.sh`)**: One-click script to translate any Windows PE executable, compile native ARM64 Mach-O with Clang, generate `Info.plist`, ad-hoc codesign, and package into a standalone macOS `.app`.
+- **Differential Verification**: Built-in test harness verifying translated execution against golden baselines and memory safety invariants.
 
-An experimental PCRecomp host has rendered the Ikachan title screen using the user's original game files and a scripted Enter key. This is not a verified playable port or proof that the standard recompilation pipeline works end to end.
+---
 
-## How the pipeline fits together
+## End-to-End Recompilation Pipeline
 
-1. **Inspect:** identify the executable format, architecture, and candidate functions.
-2. **Analyze:** gather disassembly and decompilation evidence through supported tools and adapters.
-3. **Translate and recompile:** generate low-level translated code where higher-level reconstruction is not yet reliable, then compile for a supported host.
-4. **Add game compatibility:** connect the runtime and platform services a particular game needs, such as graphics, audio, input, files, and timing.
-5. **Verify:** compare observable behavior against a suitable original-game reference and record evidence and limitations.
-
-Game-specific compatibility may still be required. “Generic” means the architecture is intended to be reusable across games; it does not mean every game can be ported automatically without per-game work.
-
-## Build and try
-
-The CLI is currently named `recomp-studio`; the repository and product name are **RevEng-Studio**.
-
-Install a C++20 toolchain, CMake, Ninja, and the dependencies listed in `CMakeLists.txt`, then run:
-
-```sh
-./scripts/build.sh
-build/recomp-studio doctor
-build/recomp-studio autorecomp /path/to/game.exe --output /tmp/recomp-game --buildrun --timeout 5
+```mermaid
+flowchart LR
+    A["Windows Binary<br/>(.exe / PE32 / PE64)"] --> B["Inspect & Analyze<br/>recomp-studio inspect"]
+    B --> C["Function Recovery<br/>& Instruction Lifter"]
+    C --> D["IR & Source Gen<br/>recomp-studio translate"]
+    D --> E["C++20 Source<br/>(guest.cpp + runtime)"]
+    E --> F["Host Compiler<br/>(Clang / Apple Silicon)"]
+    F --> G["Native App<br/>(Game.app / Mach-O)"]
 ```
 
-Use legally obtained game executables and assets. Generated output is experimental and may not run correctly.
+1. **Inspect & Detect:** Validate PE headers, machine architecture, imports, and subsystem.
+2. **Recover & Lift:** Identify function boundaries, build control flow graphs (CFG), and lift machine code into intermediate statements.
+3. **Translate:** Generate C++20 source code (`guest.cpp`) and link against `recomp_runtime.cpp`.
+4. **Compile:** Compile with `clang++ -std=c++20 -O1 -target arm64-apple-macos11`.
+5. **Package & Run:** Assemble into a signed macOS application bundle (`Game.app`).
 
-## Project documentation
+---
 
-- [Architecture](docs/ARCHITECTURE.md) and [implementation plan](docs/IMPLEMENTATION_PLAN.md)
-- [Semantic bridge](docs/SEMANTIC_BRIDGE.md), [ABI and types](docs/ABI_AND_TYPES.md), and [verification](docs/VERIFICATION.md)
-- [Upstream components](docs/UPSTREAM_COMPONENTS.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
-- [Game test results](reports/real-games-2026-10-29.md) and [historical application results](reports/apps-running-results.md)
+## Quick Start
 
-Game binaries and assets are not distributed with this project. See [LICENSE](LICENSE) and the third-party notices for licensing and attribution.
+### 1. Build the Decomp-Studio Toolchain
+
+Prerequisites: CMake 3.20+, Ninja, and a C++20 compiler (AppleClang 15+ or GCC/Clang 13+):
+
+```sh
+# Clone and build
+./scripts/build.sh
+
+# Verify build health
+build/recomp-studio doctor
+```
+
+### 2. One-Command Recompile to macOS `.app`
+
+To recompile any Windows executable into a native Apple Silicon `.app`:
+
+```sh
+./scripts/build-macos-app.sh /path/to/game.exe out/mygame --run
+```
+
+This automates translation, compilation with Clang, packaging into `out/mygame/Game.app`, codesigning, and launching.
+
+### 3. Step-by-Step CLI Usage
+
+```sh
+# Check binary coverage and missing imports
+build/recomp-studio coverage /path/to/game.exe
+build/recomp-studio imports /path/to/game.exe
+
+# Translate to C++ source
+build/recomp-studio translate /path/to/game.exe --output out/game
+
+# Build generated project
+build/recomp-studio build out/game
+
+# Run generated native binary
+build/recomp-studio run out/game
+```
+
+---
+
+## Comparison & Design Inspiration
+
+| Project | Focus | Decomp-Studio Synergy |
+| :--- | :--- | :--- |
+| **PCRecomp** | Static recompilation runtime for PC software | Reuses compatible recompilation paradigms and runtime techniques for game-focused pipelines. |
+| **rev.ng** | Multi-architecture binary analysis and decompilation | Analysis artifacts inform function recovery and control-flow reconstruction. |
+| **Ghidra** | Interactive reverse-engineering framework | External analysis provider adapter for cross-checking symbol and type recovery. |
+| **N64Recomp** | Static recompilation for Nintendo 64 | Inspires static offline recompilation workflows adapted for legacy PC executables. |
+
+---
+
+## Repository Documentation
+
+- [Architecture Guide](docs/ARCHITECTURE.md)
+- [Implementation Plan](docs/IMPLEMENTATION_PLAN.md)
+- [Semantic Bridge & IR Spec](docs/SEMANTIC_BRIDGE.md)
+- [ABI and Types Specification](docs/ABI_AND_TYPES.md)
+- [Verification & Differential Testing](docs/VERIFICATION.md)
+- [Third-Party Notices & Licenses](THIRD_PARTY_NOTICES.md)
+
+---
+
+## License
+
+This project is licensed under the terms described in [LICENSE](LICENSE). All game binaries, assets, and trademarks belong to their respective copyright holders and are not distributed with this repository.

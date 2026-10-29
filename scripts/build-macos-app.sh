@@ -7,8 +7,18 @@
 # ==============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# Resolve canonical path across symlinks
+REAL_SCRIPT="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}" 2>/dev/null || readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$REAL_SCRIPT")"
+if [[ "$(basename "$SCRIPT_DIR")" == "scripts" ]]; then
+  REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+else
+  REPO_ROOT="$SCRIPT_DIR"
+fi
+
+# Ensure valid working directory even if invoked from a deleted/stale folder
+cd "$REPO_ROOT" 2>/dev/null || true
+
 RECOMP_STUDIO="${RECOMP_STUDIO_BIN:-${REPO_ROOT}/build/recomp-studio}"
 
 usage() {
@@ -32,7 +42,7 @@ if [[ $# -lt 1 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
   usage
 fi
 
-INPUT_EXE="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+INPUT_EXE="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$1" 2>/dev/null || echo "$1")"
 if [[ ! -f "$INPUT_EXE" ]]; then
   echo "Error: Input executable not found: $1"
   exit 1
@@ -58,7 +68,7 @@ if [[ -z "$OUTPUT_DIR" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/out/${GAME_NAME}"
 fi
 mkdir -p "$OUTPUT_DIR"
-OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+OUTPUT_DIR="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$OUTPUT_DIR" 2>/dev/null || echo "$OUTPUT_DIR")"
 
 echo "========================================================================"
 echo "  Static Recompilation -> Native macOS .app Pipeline"

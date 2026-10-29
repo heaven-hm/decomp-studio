@@ -1,0 +1,32 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/warning_forever/wf.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/warning_forever
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x00033569, image base 0x000400000
+      sha256 5eb8095ed202f27a6edb8d27768947aa9c4e3687f4b8771e6ae58e023002eb3c
+    ok: PE32 x86, 147 imports (0.046s)
+[3/9] recover functions
+      2776 functions, 243420 instructions
+    ok: 2776 functions, 243420 instructions (1.513s)
+[4/9] classify instruction coverage
+      unsupported cvtsd2si x6
+      unsupported cmpltpd x5
+      unsupported cmpnlepd x5
+      unsupported pmaxsw x2
+    ok: 243402/243420 lifted, 18 unsupported (3.736s)
+[5/9] check import compatibility
+      108 of 147 imports have shims
+    WARN: 108/147 imports shimmed, 39 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/warning_forever/wf.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'cmpltpd' at 0x434830ull (3.175s)
+
+result: failed — unsupported instruction 'cmpltpd' at 0x434830ull

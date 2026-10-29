@@ -1,0 +1,35 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32+ x86_64, 152 imports (0.01s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 487 functions, 21491 instructions (0.14s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 21491/21491 lifted, 0 unsupported (0.30s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 60/152 imports shimmed, 92 missing (0.00s)
+[6/9] translate to host source ...
+✔ [6/9] translate to host source — 487 functions, 152 imports (0.46s)
+[7/9] build native executable ...
+✔ [7/9] build native executable — recomp-guest (21.32s)
+[8/9] run native executable ...
+✔ [8/9] run native executable — exit code 3, 0 bytes of output (0.48s)
+[9/9] verify against the reference ...
+recomp: _initterm skipped unrecovered initializer 0x140007380
+recomp: _initterm skipped unrecovered initializer 0x140007438
+recomp: _initterm skipped unrecovered initializer 0x140007448
+recomp: _initterm skipped unrecovered initializer 0x140001000
+✘ [9/9] verify against the reference — reference_completed=no candidate_completed=no outputs_match=no (0.05s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake
+  functions   487  instructions 21491
+  coverage    100%  (0 unsupported in 0 classes)
+  imports     92 without shims
+  executable  /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake/recomp-guest
+  run         exit code 3
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake/autorecomp.log
+
+error: differential verification did not pass

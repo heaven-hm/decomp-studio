@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 145 imports (0.03s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 2028 functions, 104007 instructions (0.68s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 104002/104007 lifted, 5 unsupported (1.62s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 50/145 imports shimmed, 95 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'jcxz' at 0x41c69bull (1.83s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/tumiki_fighters
+  functions   2028  instructions 104007
+  coverage    99.9952%  (5 unsupported in 2 classes)
+  imports     95 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/tumiki_fighters/autorecomp.log
+
+error: unsupported instruction 'jcxz' at 0x41c69bull

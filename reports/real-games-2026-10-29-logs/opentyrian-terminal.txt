@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32+ x86_64, 181 imports (0.08s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 2843 functions, 1342011 instructions (7.89s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 1341858/1342011 lifted, 153 unsupported (21.20s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 85/181 imports shimmed, 96 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'cmpnless' at 0x140008e44ull (9.49s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/opentyrian
+  functions   2843  instructions 1342011
+  coverage    99.9886%  (153 unsupported in 5 classes)
+  imports     96 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/opentyrian/autorecomp.log
+
+error: unsupported instruction 'cmpnless' at 0x140008e44ull

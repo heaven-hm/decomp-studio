@@ -1,0 +1,31 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 97 imports (0.03s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 558 functions, 81123 instructions (0.55s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 81123/81123 lifted, 0 unsupported (1.24s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 76/97 imports shimmed, 21 missing (0.00s)
+[6/9] translate to host source ...
+✔ [6/9] translate to host source — 558 functions, 97 imports (1.83s)
+[7/9] build native executable ...
+✔ [7/9] build native executable — recomp-guest (68.18s)
+[8/9] run native executable ...
+✔ [8/9] run native executable — exit code 3, 0 bytes of output (0.58s)
+[9/9] verify against the reference ...
+✘ [9/9] verify against the reference — reference_completed=no candidate_completed=no outputs_match=no (0.10s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan
+  functions   558  instructions 81123
+  coverage    100%  (0 unsupported in 0 classes)
+  imports     21 without shims
+  executable  /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan/recomp-guest
+  run         exit code 3
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan/autorecomp.log
+
+error: differential verification did not pass

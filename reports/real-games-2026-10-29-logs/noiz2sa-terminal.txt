@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 140 imports (0.08s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 2426 functions, 384200 instructions (2.10s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 372633/384200 lifted, 11567 unsupported (6.75s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 80/140 imports shimmed, 60 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'arpl' at 0x401988ull (2.27s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/noiz2sa
+  functions   2426  instructions 384200
+  coverage    96.9893%  (11567 unsupported in 3 classes)
+  imports     60 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/noiz2sa/autorecomp.log
+
+error: unsupported instruction 'arpl' at 0x401988ull

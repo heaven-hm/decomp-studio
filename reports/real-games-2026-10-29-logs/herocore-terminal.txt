@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 532 imports (0.33s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 28249 functions, 2000001 instructions (11.11s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 1980354/2000001 lifted, 19647 unsupported (32.19s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 222/532 imports shimmed, 310 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'arpl' at 0x40113aull (12.50s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/herocore
+  functions   28249  instructions 2000001
+  coverage    99.0177%  (19647 unsupported in 23 classes)
+  imports     310 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/herocore/autorecomp.log
+
+error: unsupported instruction 'arpl' at 0x40113aull

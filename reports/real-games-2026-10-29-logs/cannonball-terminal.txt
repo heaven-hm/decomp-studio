@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32+ x86_64, 259 imports (0.06s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 3584 functions, 723709 instructions (4.22s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 723601/723709 lifted, 108 unsupported (10.55s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 80/259 imports shimmed, 179 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'cvttpd2dq' at 0x14002fe9cull (11.83s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/cannonball
+  functions   3584  instructions 723709
+  coverage    99.9851%  (108 unsupported in 1 classes)
+  imports     179 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/cannonball/autorecomp.log
+
+error: unsupported instruction 'cvttpd2dq' at 0x14002fe9cull

@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 164 imports (0.08s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 2523 functions, 354601 instructions (2.00s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 344183/354601 lifted, 10418 unsupported (6.29s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 81/164 imports shimmed, 83 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'arpl' at 0x401842ull (2.25s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/rrootage
+  functions   2523  instructions 354601
+  coverage    97.0621%  (10418 unsupported in 4 classes)
+  imports     83 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/rrootage/autorecomp.log
+
+error: unsupported instruction 'arpl' at 0x401842ull

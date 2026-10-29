@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 206 imports (0.08s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 2685 functions, 718358 instructions (4.55s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 718101/718358 lifted, 257 unsupported (11.10s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 76/206 imports shimmed, 130 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'cvtpd2ps' at 0x406a89ull (4.85s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/generally
+  functions   2685  instructions 718358
+  coverage    99.9642%  (257 unsupported in 1 classes)
+  imports     130 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/generally/autorecomp.log
+
+error: unsupported instruction 'cvtpd2ps' at 0x406a89ull

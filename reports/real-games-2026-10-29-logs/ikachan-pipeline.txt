@@ -1,0 +1,46 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/ikachan/dxIka.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x0000ba76, image base 0x000400000
+      sha256 22923218ba97271a5acc5753b17fcb67d5dd98c00369a317abda44204a10df80
+    ok: PE32 x86, 97 imports (0.027s)
+[3/9] recover functions
+      558 functions, 81123 instructions
+    ok: 558 functions, 81123 instructions (0.554s)
+[4/9] classify instruction coverage
+    ok: 81123/81123 lifted, 0 unsupported (1.244s)
+[5/9] check import compatibility
+      76 of 97 imports have shims
+    WARN: 76/97 imports shimmed, 21 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/ikachan/dxIka.exe` for the full list
+[6/9] translate to host source
+      project written to /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan
+    ok: 558 functions, 97 imports (1.834s)
+[7/9] build native executable
+      command: clang++ -std=c++20 -O2 -w -I /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan -o /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan/recomp-guest /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan/guest.cpp /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan/recomp_runtime.cpp -target arm64-apple-macos11
+    ok: recomp-guest (68.178s)
+[8/9] run native executable
+---- program output ----
+---- program stderr ----
+recomp: 76/97 imports implemented; UNSUPPORTED: version.dll!GetFileVersionInfoSizeA version.dll!GetFileVersionInfoA version.dll!VerQueryValueA ddraw.dll!DirectDrawCreate dsound.dll!#1 kernel32.dll!LockResource kernel32.dll!LoadResource kernel32.dll!FindResourceA kernel32.dll!OpenMutexA kernel32.dll!GetSystemDirectoryA kernel32.dll!LocalAlloc user32.dll!TranslateAcceleratorA user32.dll!DialogBoxParamA user32.dll!LoadAcceleratorsA user32.dll!SetCursor user32.dll!GetCursorPos user32.dll!SetCursorPos gdi32.dll!StretchBlt gdi32.dll!TextOutA gdi32.dll!GetObjectA shell32.dll!ShellExecuteA
+recomp: unimplemented Win32 import kernel32.dll!OpenMutexA (ip=0x40acf4)
+---- end program output ----
+    ok: exit code 3, 0 bytes of output (0.585s)
+      the program exited 3; whether that is CORRECT is decided by the comparison against the reference, not by the status alone
+[9/9] verify against the reference
+      reference executed 11695 instructions
+      exact guest-state checkpoints matched 0/0 (0%)
+      the reference cannot set FS_BASE in 32-bit mode (unicorn 2.1.4 ignores the write); the TEB was placed at address 0 so fs: accesses resolve; the candidate was NOT run: the reference execution did not complete (the runtime does not implement kernel32.dll!OpenMutexA)
+    FAILED: reference_completed=no candidate_completed=no outputs_match=no (0.103s)
+      run `recomp-studio verify /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/ikachan` for the full report
+
+result: failed — differential verification did not pass

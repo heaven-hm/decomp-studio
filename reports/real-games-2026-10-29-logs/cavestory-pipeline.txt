@@ -1,0 +1,31 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/cavestory/Doukutsu.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/cavestory
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x00081d27, image base 0x000400000
+      sha256 fa18379fe942ecb5fd69360ede81675ad6bb8b743bef2120305c4b439c732218
+    ok: PE32 x86, 143 imports (0.147s)
+[3/9] recover functions
+      3151 functions, 587689 instructions
+    ok: 3151 functions, 587689 instructions (4.179s)
+[4/9] classify instruction coverage
+      unsupported aad x4
+      unsupported iretd x1
+      unsupported salc x1
+    ok: 587683/587689 lifted, 6 unsupported (9.170s)
+[5/9] check import compatibility
+      108 of 143 imports have shims
+    WARN: 108/143 imports shimmed, 35 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/cavestory/Doukutsu.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'iretd' at 0x41000dull (4.740s)
+
+result: failed — unsupported instruction 'iretd' at 0x41000dull

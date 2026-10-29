@@ -1,0 +1,33 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/opentyrian/opentyrian.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/opentyrian
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32+, architecture x86_64, entry 0x00001440, image base 0x140000000
+      sha256 8eb615e58e38c4a1c1a7e90eb6e939e6a85b70373758f667ee4d144bec454e74
+    ok: PE32+ x86_64, 181 imports (0.085s)
+[3/9] recover functions
+      2843 functions, 1342011 instructions
+    ok: 2843 functions, 1342011 instructions (7.886s)
+[4/9] classify instruction coverage
+      unsupported cmpnless x104
+      unsupported movshdup x18
+      unsupported pmaxsw x16
+      unsupported cmpnltss x8
+      unsupported movddup x7
+    ok: 1341858/1342011 lifted, 153 unsupported (21.197s)
+[5/9] check import compatibility
+      85 of 181 imports have shims
+    WARN: 85/181 imports shimmed, 96 missing (0.001s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/opentyrian/opentyrian.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'cmpnless' at 0x140008e44ull (9.486s)
+
+result: failed — unsupported instruction 'cmpnless' at 0x140008e44ull

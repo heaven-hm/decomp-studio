@@ -1,0 +1,30 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/tumiki_fighters/tf.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/tumiki_fighters
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x000187d0, image base 0x000400000
+      sha256 8e77d496d636431384fe49577450fa5b7ddf1211b2521d09de73174500305ce1
+    ok: PE32 x86, 145 imports (0.028s)
+[3/9] recover functions
+      2028 functions, 104007 instructions
+    ok: 2028 functions, 104007 instructions (0.682s)
+[4/9] classify instruction coverage
+      unsupported fdisi8087_nop x3
+      unsupported jcxz x2
+    ok: 104002/104007 lifted, 5 unsupported (1.618s)
+[5/9] check import compatibility
+      50 of 145 imports have shims
+    WARN: 50/145 imports shimmed, 95 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/tumiki_fighters/tf.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'jcxz' at 0x41c69bull (1.829s)
+
+result: failed — unsupported instruction 'jcxz' at 0x41c69bull

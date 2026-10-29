@@ -1,0 +1,46 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/snake/snake-windows-x86_64.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32+, architecture x86_64, entry 0x000075e0, image base 0x140000000
+      sha256 207d311be674c17be31131df095534003e0120b1a00a6569b697e00ae0c2d373
+    ok: PE32+ x86_64, 152 imports (0.010s)
+[3/9] recover functions
+      487 functions, 21491 instructions
+    ok: 487 functions, 21491 instructions (0.144s)
+[4/9] classify instruction coverage
+    ok: 21491/21491 lifted, 0 unsupported (0.304s)
+[5/9] check import compatibility
+      60 of 152 imports have shims
+    WARN: 60/152 imports shimmed, 92 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/snake/snake-windows-x86_64.exe` for the full list
+[6/9] translate to host source
+      project written to /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake
+    ok: 487 functions, 152 imports (0.462s)
+[7/9] build native executable
+      command: clang++ -std=c++20 -O2 -w -I /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake -o /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake/recomp-guest /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake/guest.cpp /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake/recomp_runtime.cpp -target arm64-apple-macos11
+    ok: recomp-guest (21.317s)
+[8/9] run native executable
+---- program output ----
+---- program stderr ----
+recomp: 60/152 imports implemented; UNSUPPORTED: msvcp140.dll!?egptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ msvcp140.dll!?gbump@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXH@Z msvcp140.dll!?setg@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXPEAD00@Z msvcp140.dll!?epptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ msvcp140.dll!?setp@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXPEAD0@Z msvcp140.dll!?setp@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXPEAD00@Z msvcp140.dll!?_Pninc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAPEADXZ msvcp140.dll!??1?$basic_ios@DU?$char_traits@D@std@@@std@@UEAA@XZ msvcp140.dll!??0?$basic_ios@DU?$char_traits@D@std@@@std@@IEAA@XZ msvcp140.dll!??0?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z msvcp140.dll!??1?$basic_ostream@DU?$char_traits@D@std@@@std@@UEAA@XZ msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_K@Z msvcp140.dll!??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@N@Z msvcp140.dll!?setprecision@std@@YA?AU?$_Smanip@_J@1@_J@Z msvcp140.dll!?setw@std@@YA?AU?$_Smanip@_J@1@_J@Z msvcp140.dll!?imbue@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAXAEBVlocale@2@@Z msvcp140.dll!?sync@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAHXZ msvcp140.dll!?setbuf@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAPEAV12@PEAD_J@Z msvcp140.dll!?xsputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAA_JPEBD_J@Z msvcp140.dll!?xsgetn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAA_JPEAD_J@Z msvcp140.dll!?uflow@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAHXZ msvcp140.dll!?showmanyc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAA_JXZ msvcp140.dll!?_Unlock@?$basic_streambuf@DU?$char_traits@D@std@@@std@@UEAAXXZ msvcp140.dll!?_Lock@?$basic_streambuf@DU?$char_traits@D@std@@@std@@UEAAXXZ msvcp140.dll!?pptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ msvcp140.dll!_Query_perf_frequency msvcp140.dll!??0_Lockit@std@@QEAA@H@Z msvcp140.dll!??1_Lockit@std@@QEAA@XZ msvcp140.dll!?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ msvcp140.dll!?always_noconv@codecvt_base@std@@QEBA_NXZ msvcp140.dll!?in@?$codecvt@DDU_Mbstatet@@@std@@QEBAHAEAU_Mbstatet@@PEBD1AEAPEBDPEAD3AEAPEAD@Z msvcp140.dll!?out@?$codecvt@DDU_Mbstatet@@@std@@QEBAHAEAU_Mbstatet@@PEBD1AEAPEBDPEAD3AEAPEAD@Z msvcp140.dll!?unshift@?$codecvt@DDU_Mbstatet@@@std@@QEBAHAEAU_Mbstatet@@PEAD1AEAPEAD@Z msvcp140.dll!?_Getcat@?$codecvt@DDU_Mbstatet@@@std@@SA_KPEAPEBVfacet@locale@2@PEBV42@@Z msvcp140.dll!??Bios_base@std@@QEBA_NXZ msvcp140.dll!?getloc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEBA?AVlocale@2@XZ msvcp140.dll!?_Gndec@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAPEADXZ msvcp140.dll!?_Gninc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAPEADXZ msvcp140.dll!?_Gnavail@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBA_JXZ msvcp140.dll!?pbump@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXH@Z msvcp140.dll!?_Pnavail@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBA_JXZ msvcp140.dll!?_Init@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXXZ msvcp140.dll!?_Init@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAAXPEAPEAD0PEAH001@Z msvcp140.dll!?_Fiopen@std@@YAPEAU_iobuf@@PEBDHH@Z msvcp140.dll!??0?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z msvcp140.dll!??1?$basic_istream@DU?$char_traits@D@std@@@std@@UEAA@XZ msvcp140.dll!??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAH@Z msvcp140.dll!??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_K@Z msvcp140.dll!?_Id_cnt@id@locale@std@@0HA msvcp140.dll!?id@?$codecvt@DDU_Mbstatet@@@std@@2V0locale@2@A msvcp140.dll!?pbase@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ msvcp140.dll!?gptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ msvcp140.dll!?eback@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ msvcp140.dll!??1?$basic_streambuf@DU?$char_traits@D@std@@@std@@UEAA@XZ msvcp140.dll!??0?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAA@XZ msvcp140.dll!?setf@ios_base@std@@QEAAHHH@Z msvcp140.dll!?_Xbad_alloc@std@@YAXXZ msvcp140.dll!?_Xlength_error@std@@YAXPEBD@Z msvcp140.dll!?cout@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A msvcp140.dll!?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ msvcp140.dll!?uncaught_exception@std@@YA_NXZ msvcp140.dll!?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ msvcp140.dll!?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADXZ msvcp140.dll!?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ msvcp140.dll!?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ msvcp140.dll!?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z msvcp140.dll!?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z msvcp140.dll!?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z msvcp140.dll!?width@ios_base@std@@QEAA_J_J@Z msvcp140.dll!?width@ios_base@std@@QEBA_JXZ msvcp140.dll!?flags@ios_base@std@@QEBAHXZ msvcp140.dll!?good@ios_base@std@@QEBA_NXZ msvcp140.dll!_Query_perf_counter vcruntime140.dll!_purecall vcruntime140.dll!__std_terminate vcruntime140.dll!__std_exception_copy vcruntime140.dll!__std_exception_destroy vcruntime140.dll!_CxxThrowException vcruntime140.dll!memmove vcruntime140_1.dll!__CxxFrameHandler4 api-ms-win-crt-runtime-l1-1-0.dll!_get_initial_narrow_environment api-ms-win-crt-runtime-l1-1-0.dll!_invoke_watson api-ms-win-crt-stdio-l1-1-0.dll!_get_stream_buffer_pointers api-ms-win-crt-stdio-l1-1-0.dll!fgetpos api-ms-win-crt-stdio-l1-1-0.dll!fsetpos api-ms-win-crt-heap-l1-1-0.dll!_callnewh api-ms-win-crt-filesystem-l1-1-0.dll!_lock_file api-ms-win-crt-filesystem-l1-1-0.dll!_access api-ms-win-crt-filesystem-l1-1-0.dll!_mkdir api-ms-win-crt-filesystem-l1-1-0.dll!_unlock_file
+recomp: unimplemented Win32 import api-ms-win-crt-runtime-l1-1-0.dll!_get_initial_narrow_environment (ip=0x140008191)
+---- end program output ----
+    ok: exit code 3, 0 bytes of output (0.480s)
+      the program exited 3; whether that is CORRECT is decided by the comparison against the reference, not by the status alone
+[9/9] verify against the reference
+      reference executed 221 instructions
+      exact guest-state checkpoints matched 0/0 (0%)
+      the candidate was NOT run: the reference execution did not complete (the runtime does not implement api-ms-win-crt-runtime-l1-1-0.dll!_get_initial_narrow_environment)
+    FAILED: reference_completed=no candidate_completed=no outputs_match=no (0.047s)
+      run `recomp-studio verify /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/snake` for the full report
+
+result: failed — differential verification did not pass

@@ -83,16 +83,23 @@ std::string escape_shell(const std::filesystem::path& value) {
 
 RunReport capture_process(const std::string& command, const std::filesystem::path& error_path) {
   RunReport report;
-  std::string invocation = command + " 2> " + escape_shell(error_path);
-  if (const char* stdin_path = std::getenv("RECOMP_STDIN_FILE"))
-    invocation += " < " + escape_shell(stdin_path);
+  // The generated guest and the timeout supervisor must start even when Codex,
+  // CI, or a parent terminal exports a locale that is not installed on this
+  // host (for example C.UTF-8 on macOS).  A C locale is available on every
+  // supported POSIX host and keeps the guest's default CRT locale deterministic.
+  std::string invocation = "env LC_ALL=C LANG=C sh -c " +
+                           escape_shell(command + " 2> " + escape_shell(error_path));
+  // The runtime loads RECOMP_STDIN_FILE into the guest-side input capture during
+  // initialization. Do not also append a shell redirection here: a stale path would
+  // make `/bin/sh` exit before the generated guest starts, hiding the actual guest
+  // diagnostic (and turning a missing input file into a misleading exit code 1).
   if (const char* timeout_env = std::getenv("RECOMP_RUN_TIMEOUT")) {
     int seconds = std::atoi(timeout_env);
     if (seconds > 0) {
       // Keep the supervisor alive while its child runs. `exec` here would replace
       // Perl before the alarm fires, so the handler could not kill a guest that hangs
       // waiting for input; it would instead leave that child orphaned.
-      invocation = "perl -e 'my $t=shift; my $pid=fork(); die \"fork failed\" unless defined $pid; "
+      invocation = "env LC_ALL=C LANG=C perl -e 'my $t=shift; my $pid=fork(); die \"fork failed\" unless defined $pid; "
                    "if (!$pid) { setpgrp; exec @ARGV; exit 127; } my $expired=0; "
                    "$SIG{ALRM}=sub { $expired=1; kill 9, -$pid; }; alarm $t; waitpid($pid,0); "
                    "my $status=$?; alarm 0; exit($expired ? 124 : (($status & 127) ? "
@@ -238,8 +245,14 @@ RunReport run(const std::filesystem::path& output_directory) {
   // Named explicitly rather than left to the working directory, so `run` and the
   // differential harness choose the same root for the same project.
   ::setenv("RECOMP_APP_DIR", std::filesystem::absolute(output_directory).string().c_str(), 1);
+  // The executable path must be ABSOLUTE. The command below changes directory to the
+  // project, so a relative `output_directory/recomp-guest` is resolved against the project
+  // rather than against the caller -- `recomp-studio verify .audit/proj` from the repository
+  // root then fails with exit 127 and "No such file or directory", which reads as a broken
+  // port rather than as a path bug. Found by an independent audit that hit it.
   const auto command = "cd " + escape_shell(std::filesystem::absolute(output_directory)) +
-                       " && RECOMP_APP_NAME=" + escape_shell(app_name) + " " + escape_shell(executable);
+                       " && RECOMP_APP_NAME=" + escape_shell(app_name) + " " +
+                       escape_shell(std::filesystem::absolute(executable));
   return capture_process(command, error_path);
 }
 

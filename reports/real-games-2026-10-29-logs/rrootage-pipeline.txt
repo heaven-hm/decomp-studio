@@ -1,0 +1,32 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/rrootage/rr.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/rrootage
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x00001000, image base 0x000400000
+      sha256 f3d81d7025738cde59e26b5f2af082e5c43ee75937dbc00aa8f5326fcabe5def
+    ok: PE32 x86, 164 imports (0.079s)
+[3/9] recover functions
+      2523 functions, 354601 instructions
+    ok: 2523 functions, 354601 instructions (1.999s)
+[4/9] classify instruction coverage
+      unsupported arpl x10069
+      unsupported das x213
+      unsupported popaw x119
+      unsupported movd x17
+    ok: 344183/354601 lifted, 10418 unsupported (6.289s)
+[5/9] check import compatibility
+      81 of 164 imports have shims
+    WARN: 81/164 imports shimmed, 83 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/rrootage/rr.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'arpl' at 0x401842ull (2.251s)
+
+result: failed — unsupported instruction 'arpl' at 0x401842ull

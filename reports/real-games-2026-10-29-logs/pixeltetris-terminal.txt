@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32+ x86_64, 121 imports (0.11s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 7497 functions, 554055 instructions (3.74s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 553921/554055 lifted, 134 unsupported (8.22s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 70/121 imports shimmed, 51 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'movntps' at 0x14005cc00ull (6.42s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/pixeltetris
+  functions   7497  instructions 554055
+  coverage    99.9758%  (134 unsupported in 10 classes)
+  imports     51 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/pixeltetris/autorecomp.log
+
+error: unsupported instruction 'movntps' at 0x14005cc00ull

@@ -349,6 +349,84 @@ void FunctionDiscovery::discover() {
     }
     return {};
   };
+  // JUMP TABLES. A switch compiles to a table of 32-bit RVAs that a `jmp reg` reaches
+  // through `mov reg32, [base + index*4 + disp]` / `add reg, base` / `jmp reg`. The table
+  // lives in a DATA section, so the relocation and data-pointer scans above do not see
+  // its entries as code addresses: they are small RVAs, not image-base pointers. The
+  // targets are real code and a program that reaches one dies with "indirect jump to
+  // unmapped guest address" -- which is what `notepad.exe` does at 0x140028109, an address
+  // that is entry 6 of a table at RVA 0x37118.
+  //
+  // The table address is `base + disp`, and `base` is a register whose value is not known
+  // statically. The image base is tried, because that is what the compiler puts there in
+  // practice (the register dump at the failure shows r10 = 0x140000000). The guess is
+  // VALIDATED before anything is added: every entry must be an in-image code address that
+  // decodes, and the run must be long enough to be a table rather than coincidence. If the
+  // validation fails, nothing is added -- the heuristic fails closed, which is the
+  // property the `lea` seed did not have when it invented 1,851 functions.
+  {
+    const auto image_base = executable_.image_base;
+    for (const auto& section : executable_.sections) {
+      if (!section.is_executable()) continue;
+      for (std::uint32_t offset = 0; offset + 10 <= section.raw_size; ++offset) {
+        // `mov r32, [base + index*4 + disp32]` -- opcode 8B with a SIB byte and a
+        // 32-bit displacement, which is what a jump table load looks like.
+        if (executable_.read_rva(section.virtual_address + offset, 1) != std::vector<std::uint8_t>{0x8b})
+          continue;
+        const auto modrm = executable_.read_rva(section.virtual_address + offset + 1, 1);
+        if (modrm.empty()) continue;
+        // The `rm` field is 0b100 (SIB) and `mod` must not be 0b11 (register). Masking
+        // with 0xc7 -- which the first version did -- also tests the `reg` field, so it
+        // matched almost nothing: the real instruction here is `47 8b 9c 9a ...`, whose
+        // modrm is 0x9c, and 0x9c & 0xc7 is 0x84.
+        if ((modrm[0] & 0x07) != 0x04 || (modrm[0] & 0xc0) == 0xc0) continue;
+        const auto sib = executable_.read_rva(section.virtual_address + offset + 2, 1);
+        if (sib.empty() || (sib[0] & 0xc0) != 0x80) continue;  // scale 4 (a 4-byte table)
+        if ((sib[0] & 0x07) == 0x05) continue;                // no base register
+        const auto displacement = executable_.read_u32(section.virtual_address + offset + 3);
+        if (!displacement) continue;
+        // The displacement IS the table's RVA. Adding the image base to it was wrong and
+        // looked right: 0x140000000 truncated to 32 bits is 0x40000000, not 0, so the
+        // table was computed as 0x40037118 instead of 0x37118 and every lookup missed.
+        const auto table_rva = *displacement;
+        // The table lives in DATA. (The first version of this wrote the test backwards and
+        // skipped every candidate, which looked like the heuristic simply not matching.)
+        if (contains_code(table_rva)) continue;
+        std::vector<std::uint64_t> candidates;
+        for (int index = 0; index < 512; ++index) {
+          const auto entry = executable_.read_u32(table_rva + static_cast<std::uint32_t>(index) * 4);
+          if (!entry || !contains_code(*entry)) break;
+          candidates.push_back(image_base + *entry);
+        }
+        // A table, not a coincidence: at least four entries, every one in an executable
+        // section, and every one decoding as instructions.
+        //
+        // `decodes_as_code` is deliberately NOT used here, and the reason is the whole
+        // point of a jump table: its entries are CONSECUTIVE blocks, so the byte before
+        // entry N is the last byte of block N-1 and `ends_a_routine` -- the routine-
+        // boundary evidence that makes the data-pointer scan safe -- rejects every one of
+        // them. The table is the evidence instead: a run of four or more in-image
+        // addresses that all decode is not something data produces by accident, and the
+        // table's own structure is what is being trusted.
+        if (candidates.size() < 4) continue;
+        const bool all_decode = std::all_of(candidates.begin(), candidates.end(),
+                                            [&](std::uint64_t target) {
+                                              auto address = static_cast<std::uint32_t>(target - image_base);
+                                              for (int index = 0; index < 4; ++index) {
+                                                if (!contains_code(address)) return false;
+                                                const auto instruction = decode(address);
+                                                if (instruction.size == 0 || instruction.mnemonic.empty())
+                                                  return false;
+                                                address += static_cast<std::uint32_t>(instruction.size);
+                                              }
+                                              return true;
+                                            });
+        if (!all_decode) continue;
+        for (const auto target : candidates) pending_entries.push_back(target);
+      }
+    }
+  }
+
   // Executable sections are scanned too: a compiler is free to place a function
   // pointer table inside .text, and this one does -- the C runtime's exit table
   // lives there, so skipping code sections missed exactly the entries the
@@ -370,10 +448,20 @@ void FunctionDiscovery::discover() {
         pending_entries.push_back(executable_.image_base + *begin);
       }
     }
-    if (section.raw_size < 4) continue;
+    // Initializer and callback arrays store full virtual addresses.  PE32+
+    // entries are eight bytes; scanning them as DWORDs sees only the low RVA
+    // half and loses the high image-base bits before `decodes_as_code` can
+    // validate a perfectly real constructor.
+    const auto pointer_bytes = executable_.is_64_bit ? 8u : 4u;
+    if (section.raw_size < pointer_bytes) continue;
     const bool in_code_section = section.is_executable();
-    for (std::uint32_t offset = 0; offset + 4 <= section.raw_size; offset += 4) {
-      const auto value = executable_.read_u32(section.virtual_address + offset);
+    for (std::uint32_t offset = 0; offset + pointer_bytes <= section.raw_size; offset += pointer_bytes) {
+      std::optional<std::uint64_t> value;
+      if (executable_.is_64_bit) {
+        value = executable_.read_u64(section.virtual_address + offset);
+      } else if (const auto entry = executable_.read_u32(section.virtual_address + offset)) {
+        value = *entry;
+      }
       if (!value || !decodes_as_code(*value, in_code_section)) continue;
       pending_entries.push_back(*value);
     }

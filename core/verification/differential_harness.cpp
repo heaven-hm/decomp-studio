@@ -62,11 +62,18 @@ struct ReferenceState {
   std::uint64_t guest_instruction_count{};
   std::uint64_t current_instruction{};
   bool requested_exit{};
+  int exit_status{};
   std::uint64_t last_counted_address{~0ull};
   std::FILE* mxcsr_log{};
   std::uint32_t mxcsr_last{0xffffffffu};
   std::FILE* store_log{};
   std::vector<GuestCheckpoint> checkpoints;
+  // Per checkpoint, the digest of each page the reference has written so far. Recorded at
+  // the SAME checkpoints the candidate records, so the two can be compared as readings of
+  // the same instant. Without this the comparison was between the candidate's checkpoint-0
+  // digest and the reference's FINAL memory -- two different points in time, which reported
+  // every heap page as diverging.
+  std::vector<std::map<std::uint64_t, std::uint64_t>> page_digests;
   // The memory windows themselves, when a byte-level comparison is asked for. A
   // digest says only that memory differs; classifying the difference needs the bytes.
   std::vector<std::vector<std::uint8_t>> memory_windows;
@@ -333,6 +340,20 @@ void code_hook(uc_engine* engine, std::uint64_t address, std::uint32_t size, voi
         state.memory_windows.push_back(std::move(window));
       }
       state.checkpoints.push_back(checkpoint);
+      {
+        std::map<std::uint64_t, std::uint64_t> pages;
+        for (std::uint64_t page = 0; page < (guest_memory_size >> 12); ++page) {
+          if (guest_page_dirty == nullptr || guest_page_dirty[page] == 0) continue;
+          std::uint64_t hash = 14695981039346656037ull;
+          const auto* bytes = guest_memory + (page << 12);
+          for (std::uint64_t offset = 0; offset < 0x1000; ++offset) {
+            hash ^= bytes[offset];
+            hash *= 1099511628211ull;
+          }
+          pages[page] = hash;
+        }
+        state.page_digests.push_back(std::move(pages));
+      }
     }
   }
   if (state.instruction_count > kInstructionBudget) {
@@ -403,9 +424,12 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   guest_output_capture = &state.output;
   // The guest calling ExitProcess must end the reference run, not the studio.
   guest_exit_handler = [](int code) {
-    (void)code;
     if (reference_state != nullptr) {
       reference_state->finished = true;
+      // The status is KEPT, not discarded. It is the reference's answer to the same
+      // question the candidate answers, and comparing them is the only way to tell a
+      // program that chose to exit non-zero from a translation that diverged.
+      reference_state->exit_status = code;
       uc_emu_stop(reference_state->engine);
     }
   };
@@ -493,6 +517,8 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   const auto error = uc_emu_start(engine, executable.image_base + executable.entry_point_rva, 0, 0, 0);
   run.output = state.output;
   run.instruction_count = state.instruction_count;
+  run.reference_exit_code = state.exit_status;
+  run.reference_reached_exit = state.finished;
   run.note = state.note;
   // Handlers the guest registered with atexit are NOT run here. The candidate can run
   // them because they are compiled functions; the reference has no compiled code and
@@ -502,6 +528,7 @@ ReferenceRun run_reference(const binary::PortableExecutable& executable,
   // neither runs them, and the runtime says so instead of reporting success.
   run.checkpoints = std::move(state.checkpoints);
   run.memory_windows = std::move(state.memory_windows);
+  run.page_digests = std::move(state.page_digests);
   run.trace = std::move(trace);
   if (state.store_log != nullptr) std::fclose(state.store_log);
   if (state.mxcsr_log != nullptr) std::fclose(state.mxcsr_log);
@@ -602,7 +629,11 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   // only catches a GUEST loop; a candidate blocked on input, a shim, or the host itself
   // is not executing guest instructions at all and ran unbounded. Neither `verify` nor
   // `autorecomp` set this, so the limit was never in force.
-  if (std::getenv("RECOMP_RUN_TIMEOUT") == nullptr) ::setenv("RECOMP_RUN_TIMEOUT", "120", 1);
+  // 600 seconds, chosen FROM MEASUREMENT like the instruction ceiling and not by taste:
+  // `tictactoe` legitimately executes 108,107,930 guest instructions and takes longer than
+  // 120 seconds, so a 120-second default failed it with exit 124. A limit that rejects a
+  // working program is worse than no limit, because it looks like a translation defect.
+  if (std::getenv("RECOMP_RUN_TIMEOUT") == nullptr) ::setenv("RECOMP_RUN_TIMEOUT", "600", 1);
 
   // Overridable, so the mechanism can be exercised with a small ceiling instead of
   // waiting for a billion instructions to prove it works.
@@ -710,7 +741,18 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.candidate_error = candidate.standard_error;
   result.candidate_ran = true;
   result.candidate_exit_code = candidate.exit_code;
-  result.candidate_completed = candidate.exit_code == 0;
+  // COPIED from the reference run. Setting `run.reference_exit_code` inside run_reference is
+  // not enough: `result` is what every caller and the JSON read, so leaving this out made
+  // the field permanently zero -- a comparison that always saw the candidate disagree with
+  // a reference status that was never populated. The value was there; the copy was not.
+  result.reference_exit_code = reference.reference_exit_code;
+  result.reference_reached_exit = reference.reference_reached_exit;
+  // A port is not wrong because the PROGRAM chose a non-zero status. It is wrong when the
+  // two sides DISAGREE about the status. The old rule -- `exit_code == 0` -- marked every
+  // program that legitimately exits non-zero as a failed port, which is how `dominosasolver`
+  // came to be reported as a failure while its output matched the reference byte for byte.
+  result.candidate_completed = candidate.exit_code == result.reference_exit_code;
+  result.exit_codes_match = candidate.exit_code == result.reference_exit_code;
   {
     std::filesystem::create_directories(project_directory / "reports");
     std::ofstream(project_directory / "reports" / "reference.txt") << result.reference_output;
@@ -718,50 +760,90 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   }
   // The measured value. A candidate that failed to run is reported through its own
   // fields; overwriting this one with false destroyed the comparison that was made.
-  // The pages the CANDIDATE wrote, hashed in the reference's memory and compared.
+  // Set by the heap-page comparison below and applied only after the checkpoint loop, so
+  // that loop's agreement cannot silently overwrite a difference this one found.
+  bool dirty_pages_disagree = false;
+
+  // The heap pages, compared AT THE SAME CHECKPOINT on both sides.
   //
-  // This is the coverage the fixed windows never had: 68 KiB of stack and image, against a
-  // 128 MiB heap that takes 74% of the stores in the one allocating fixture. A buffer
-  // written and never printed was compared by nothing, so a silent heap corruption could
-  // not be detected at all.
+  // The candidate exports a digest per page per checkpoint; the reference records the same
+  // thing as it runs. Comparing the candidate's checkpoint-0 digest against the reference's
+  // FINAL memory -- which is what reading `guest_memory` here did -- compares two different
+  // points in time and reports every page as diverging.
   //
-  // The set of pages decides WHAT to compare and never whether the two sides agree -- which
-  // is what an earlier attempt got wrong by folding the set into the digest itself.
+  // Only the pages BOTH sides wrote are compared, and the pages only one side wrote are
+  // reported separately. The set decides what to compare; it never decides whether the two
+  // sides agree.
   {
+    std::map<std::uint64_t, std::map<std::uint64_t, std::string>> candidate_pages;
     std::ifstream dirty_input(dirty_pages_path);
     std::string line;
-    std::size_t pages_compared = 0;
-    std::string first_difference;
     while (std::getline(dirty_input, line)) {
       std::istringstream fields(line);
       std::uint64_t checkpoint_index = 0;
       std::uint64_t page = 0;
-      std::string expected_digest;
-      if (!(fields >> checkpoint_index >> page >> expected_digest)) continue;
-      const auto address = page << 12;
-      if (address + 0x1000 > guest_memory_size) continue;
-      // The reference's memory is the one this process holds, so the same digest function
-      // is applied to the same addresses.
-      std::uint64_t hash = 14695981039346656037ull;
-      const auto* bytes = guest_memory + address;
-      for (std::uint64_t offset = 0; offset < 0x1000; ++offset) {
-        hash ^= bytes[offset];
-        hash *= 1099511628211ull;
-      }
-      std::ostringstream rendered;
-      rendered << std::hex << hash;
-      ++pages_compared;
-      if (rendered.str() != expected_digest && first_difference.empty()) {
-        first_difference = "checkpoint " + std::to_string(checkpoint_index / 1000) + ": guest page at 0x" +
-                           hex_text(address) + " differs (candidate " + expected_digest + ", reference " +
-                           rendered.str() + ")";
+      std::string digest;
+      if (fields >> checkpoint_index >> page >> digest)
+        candidate_pages[checkpoint_index / kCheckpointInterval][page] = digest;
+    }
+    std::size_t compared = 0;
+    std::size_t one_sided = 0;
+    for (const auto& [checkpoint_number, pages] : candidate_pages) {
+      if (checkpoint_number >= reference.page_digests.size()) break;
+      const auto& reference_pages = reference.page_digests[checkpoint_number];
+      for (const auto& [page, digest] : pages) {
+        // The runtime's OWN scaffolding is excluded, and the reason is not convenience.
+        // The environment blocks, the TEB and the PEB are built from the HOST's
+        // environment and process state, which differ between the two processes by
+        // construction -- the candidate is a child with its own environment. Comparing them
+        // reports the harness's own asymmetry as a translation defect. Everything the
+        // PROGRAM can allocate or write is still compared.
+        const auto page_address = page << 12;
+        // The floor depends on the GUEST's width: a 32-bit guest's address space ends at
+        // 4 GiB, so its TEB, PEB and environment blocks live near 0xfff00000, not near
+        // 0x1ff000000. Using the 64-bit floor for a 32-bit guest compared its TEB -- which
+        // the reference cannot even set up (Unicorn 2.1.4 ignores FS_BASE writes in 32-bit
+        // mode, so the TEB is placed at address 0 there) -- and reported a translation
+        // defect that was the harness's own asymmetry.
+        const std::uint64_t scaffolding_floor =
+            guest_pointer_width >= 8 ? 0x1ff000000ull : 0xff000000ull;
+        if (page_address >= scaffolding_floor) continue;
+        // The STACK region is excluded too, for a reason the digest already documents: the
+        // fixed window starts AT the stack pointer because memory BELOW it is dead -- the
+        // program has moved past it and cannot read it again, and the two sides legitimately
+        // differ there. Comparing dirty stack pages re-introduces exactly what that window
+        // deliberately leaves out, and reported dead stack as a translation defect.
+        constexpr std::uint64_t kStackRegionBytes = 0x100000;  // 1 MiB
+        if (page_address >= stack_top - kStackRegionBytes && page_address < stack_top) continue;
+        const auto found = reference_pages.find(page);
+        if (found == reference_pages.end()) {
+          // The candidate wrote a page the reference did not. That is a finding in its own
+          // right and is reported as one rather than folded into a digest mismatch.
+          ++one_sided;
+          continue;
+        }
+        ++compared;
+        // HEX, because the exported digest is hex. `std::to_string` produces DECIMAL, so
+        // the two never compared equal and every page was reported as differing even when
+        // the digests were identical -- which the diagnosis showed, printing the same value
+        // on both sides of the comparison.
+        std::ostringstream reference_digest;
+        reference_digest << std::hex << found->second;
+        if (reference_digest.str() == digest) continue;
+        if (!dirty_pages_disagree) {
+          std::ostringstream text;
+          text << "checkpoint " << checkpoint_number << ": guest page at 0x" << std::hex
+               << (page << 12) << " differs (candidate " << digest << ", reference "
+               << reference_digest.str() << ")";
+          result.memory_diagnosis = text.str();
+        }
+        dirty_pages_disagree = true;
       }
     }
-    result.dirty_pages_compared = pages_compared;
-    if (!first_difference.empty()) {
-      result.memory_match = false;
-      result.memory_diagnosis = first_difference;
-    }
+    result.dirty_pages_compared = compared;
+    if (one_sided != 0 && result.memory_diagnosis.empty())
+      result.memory_diagnosis = std::to_string(one_sided) +
+                                " page(s) were written by one side only; those are not compared";
   }
 
   result.outputs_match = result.reference_output == result.candidate_output;
@@ -988,6 +1070,11 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
     diagnosis << "\n  candidate: " << snippet(result.candidate_output, offset);
     result.diagnosis = diagnosis.str();
   }
+  // LAST, after the checkpoint loop and every other assignment. That loop sets
+  // `memory_match = true` when the fixed windows agree, and it runs BELOW where this was
+  // first placed -- so the heap difference was detected, diagnosed, and then overwritten by
+  // a comparison of different memory. A finding must be applied where nothing follows it.
+  if (dirty_pages_disagree) result.memory_match = false;
   return result;
 }
 

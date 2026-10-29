@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 147 imports (0.05s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 2776 functions, 243420 instructions (1.51s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 243402/243420 lifted, 18 unsupported (3.74s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 108/147 imports shimmed, 39 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'cmpltpd' at 0x434830ull (3.17s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/warning_forever
+  functions   2776  instructions 243420
+  coverage    99.9926%  (18 unsupported in 4 classes)
+  imports     39 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/warning_forever/autorecomp.log
+
+error: unsupported instruction 'cmpltpd' at 0x434830ull

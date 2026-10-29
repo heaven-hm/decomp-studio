@@ -1,0 +1,31 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/torus_trooper/tt.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/torus_trooper
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x000254ec, image base 0x000400000
+      sha256 b3a93b12e110e885d5ccc5546722dbee8864e69d1b9cf111c31e43b1012ce1cb
+    ok: PE32 x86, 155 imports (0.057s)
+[3/9] recover functions
+      2583 functions, 126497 instructions
+    ok: 2583 functions, 126497 instructions (0.948s)
+[4/9] classify instruction coverage
+      unsupported aad x9
+      unsupported fdisi8087_nop x3
+      unsupported jcxz x3
+    ok: 126482/126497 lifted, 15 unsupported (2.162s)
+[5/9] check import compatibility
+      53 of 155 imports have shims
+    WARN: 53/155 imports shimmed, 102 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/torus_trooper/tt.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'jcxz' at 0x42938bull (2.432s)
+
+result: failed — unsupported instruction 'jcxz' at 0x42938bull

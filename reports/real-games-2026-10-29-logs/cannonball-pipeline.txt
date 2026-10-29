@@ -1,0 +1,29 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/cannonball/cannonball.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/cannonball
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32+, architecture x86_64, entry 0x0004f784, image base 0x140000000
+      sha256 6a631fecc563c9ed6ecf243ba72d519e60e3956ff8092780bc0306a63b2de798
+    ok: PE32+ x86_64, 259 imports (0.057s)
+[3/9] recover functions
+      3584 functions, 723709 instructions
+    ok: 3584 functions, 723709 instructions (4.225s)
+[4/9] classify instruction coverage
+      unsupported cvttpd2dq x108
+    ok: 723601/723709 lifted, 108 unsupported (10.555s)
+[5/9] check import compatibility
+      80 of 259 imports have shims
+    WARN: 80/259 imports shimmed, 179 missing (0.001s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/cannonball/cannonball.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'cvttpd2dq' at 0x14002fe9cull (11.832s)
+
+result: failed — unsupported instruction 'cvttpd2dq' at 0x14002fe9cull

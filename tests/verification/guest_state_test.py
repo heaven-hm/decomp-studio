@@ -113,15 +113,30 @@ def main():
                 check("state/mutation-point-exists", False,
                       f"cannot find {marker!r} in runtime/recomp_runtime.cpp")
                 return 1
-            RUNTIME.write_text(original.replace(
-                marker, "checkpoint.flags = eflags_value(context) ^ 0x1u;  // test mutation"))
-
+            # The mutation goes into the GENERATED PROJECT's copy, never the source
+            # tree. Writing to runtime/recomp_runtime.cpp -- which this used to do --
+            # makes `ctest -j` unsafe: a dozen other tests copy that exact file at
+            # translate time, so they would pick up the mutation and fail for a reason
+            # that is not theirs, and a SIGKILL inside the window leaves the tree
+            # poisoned for every later run. A test may not edit tracked source to prove
+            # something, and the restore below is kept only so the file's contents are
+            # unchanged if anything ever writes to it again.
             mutated_project = workspace / "mutated"
             if run_cli(["translate", str(fixture), "--target", "macos-arm64",
                         "--output", str(mutated_project)]).returncode != 0:
-                print("FAIL: translate failed after the mutation", file=sys.stderr)
+                print("FAIL: translate failed", file=sys.stderr)
                 return 1
-            run_cli(["build", str(mutated_project)])
+            project_runtime = mutated_project / "recomp_runtime.cpp"
+            project_source = project_runtime.read_text()
+            if marker not in project_source:
+                check("state/mutation-point-exists", False,
+                      f"cannot find {marker!r} in the generated project's runtime copy")
+                return 1
+            project_runtime.write_text(project_source.replace(
+                marker, "checkpoint.flags = eflags_value(context) ^ 0x1u;  // test mutation"))
+            if run_cli(["build", str(mutated_project)]).returncode != 0:
+                print("FAIL: build failed after the mutation", file=sys.stderr)
+                return 1
 
             mutated = verify_json(mutated_project)
             check("state/mutation-json", mutated is not None, "verify --json did not return JSON")

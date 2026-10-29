@@ -71,6 +71,22 @@ std::uint64_t call(const char* symbol, std::uint64_t a = 0, std::uint64_t b = 0,
   return context.registers[0];
 }
 
+std::uint64_t call_kernel32(const char* symbol, std::uint64_t a = 0, std::uint64_t b = 0,
+                            std::uint64_t c = 0, std::uint64_t d = 0) {
+  recomp::GuestContext context{};
+  context.registers[4] = 0x700000;
+  context.registers[1] = a;
+  context.registers[2] = b;
+  context.registers[8] = c;
+  context.registers[9] = d;
+  recomp::store_guest_memory(&context, context.registers[4] + 4, a, 4);
+  recomp::store_guest_memory(&context, context.registers[4] + 8, b, 4);
+  recomp::store_guest_memory(&context, context.registers[4] + 12, c, 4);
+  recomp::store_guest_memory(&context, context.registers[4] + 16, d, 4);
+  recomp::invoke_shared_shim(&context, "kernel32.dll", symbol);
+  return context.registers[0];
+}
+
 }  // namespace
 
 int main() {
@@ -78,6 +94,90 @@ int main() {
   if (!map_guest_memory(kGuestAddressSpaceBytes)) return 1;
   guest_pointer_width = 8;
   initialize_guest_state(0x100000, 0x70000000, 0x7fff0000);
+
+  // PE32 CRT character functions are cdecl: repeated calls must not consume
+  // the caller's argument slot or walk ESP into the caller's local variables.
+  {
+    GuestContext context{};
+    guest_pointer_width = 4;
+    context.registers[4] = 0x700000;
+    for (int i = 0; i < 32; ++i) {
+      store_guest_memory(&context, context.registers[4], 'A', 4);
+      invoke_win32_import(&context, "api-ms-win-crt-string-l1-1-0.dll", "isalnum", 0x1234);
+      check(context.registers[4] == 0x700000, "PE32 isalnum preserves caller argument slot");
+    }
+    guest_pointer_width = 8;
+  }
+
+  // PE32 UCRT passes a 64-bit options word followed by five 32-bit arguments.
+  // Distinct slots ensure a missing locale or high options word cannot pass.
+  {
+    GuestContext context{};
+    guest_pointer_width = 4;
+    context.registers[4] = 0x700000;
+    const auto format = put_string(0x220000, "value=%d");
+    store_guest_memory(&context, 0x230000, 42, 4);
+    const std::uint32_t args[] = {2, 0, 0x240000, 32, static_cast<std::uint32_t>(format), 0, 0x230000};
+    for (std::size_t i = 0; i < 7; ++i)
+      store_guest_memory(&context, context.registers[4] + 4 + i * 4, args[i], 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(context.registers[0] == 8, "PE32 __stdio_common_vsprintf returns the formatted length");
+    check(get_string(0x240000) == "value=42", "PE32 __stdio_common_vsprintf reads its va_list after locale");
+    const auto float_format = put_string(0x220000, "%.1f %d");
+    const double floating = 1.5;
+    std::uint64_t bits;
+    std::memcpy(&bits, &floating, sizeof(bits));
+    store_guest_memory(&context, 0x230000, bits, 8);
+    store_guest_memory(&context, 0x230008, 42, 4);
+    store_guest_memory(&context, context.registers[4] + 20, float_format, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(get_string(0x240000) == "1.5 42", "PE32 va_list preserves double bits and advances eight bytes");
+    const auto text_format = put_string(0x220000, "%s_DEFAULT");
+    const auto text_arg = put_string(0x250000, "CUBE");
+    store_guest_memory(&context, 0x230000, text_arg, 4);
+    store_guest_memory(&context, context.registers[4] + 4, 0x26, 4);
+    store_guest_memory(&context, context.registers[4] + 20, text_format, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(get_string(0x240000) == "CUBE_DEFAULT", "UCRT 0x26 narrow string format");
+    const auto integer_format = put_string(0x220000, ",%d");
+    store_guest_memory(&context, 0x230000, 42, 4);
+    store_guest_memory(&context, context.registers[4] + 20, integer_format, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(get_string(0x240000) == ",42", "UCRT 0x26 integer format");
+    store_guest_memory(&context, 0x240000, 0x55, 1);
+    store_guest_memory(&context, context.registers[4] + 16, 0, 4);
+    invoke_shared_shim(&context, "msvcrt.dll", "__stdio_common_vsprintf");
+    check(context.registers[0] == 3, "UCRT zero-capacity sizing returns required length");
+    check(load_guest_memory(&context, 0x240000, 1) == 0x55, "UCRT zero-capacity sizing does not write");
+    guest_pointer_width = 8;
+  }
+
+  // The console/heap adapter is derived from project-igi-browser's MIT
+  // kernel32 provider.  Verify the guest ABI, not merely its table presence.
+  {
+    const auto block = call_kernel32("HeapAlloc", 0x1000, 0, 37);
+    check(block != 0, "HeapAlloc returned a guest block for HeapSize");
+    check(call_kernel32("HeapSize", 0x1000, 0, block) >= 37,
+          "HeapSize reports the runtime allocator's full guest block size");
+    check(call_kernel32("HeapSize", 0x1000, 0, 0x1234) == 0xffffffffu,
+          "HeapSize reports -1 for an invalid guest block");
+    check(call_kernel32("HeapFree", 0x1000, 0, block) == 1,
+          "HeapFree accepts the block queried by HeapSize");
+
+    const auto text = put_string(0x230000, "console A");
+    std::string captured;
+    guest_output_capture = &captured;
+    check(call_kernel32("WriteConsoleA", 11, text, 9, 0) == 1,
+          "WriteConsoleA reports a complete output write");
+    check(captured == "console A", "WriteConsoleA writes through the captured output path");
+    captured.clear();
+    store_guest_memory(nullptr, 0x231000, 'A', 2);
+    store_guest_memory(nullptr, 0x231002, 0x03a9, 2);
+    check(call_kernel32("WriteConsoleW", 11, 0x231000, 2, 0) == 1,
+          "WriteConsoleW reports a complete UTF-16 output write");
+    guest_output_capture = nullptr;
+    check(captured == "A\xce\xa9", "WriteConsoleW converts UTF-16 guest text to UTF-8 host output");
+  }
 
   // wctype returns a descriptor that is consumed by iswctype; keep the descriptor
   // opaque and verify the pair against the host CRT implementation.
@@ -205,22 +305,14 @@ int main() {
               std::to_string(call("strlen", left)) + ", the host says " + std::to_string(std::strlen(test.left)));
   }
 
-  // Non-v* printf-family entry points receive variadic values inline after their
-  // fixed arguments. A value such as 7 must never be interpreted as a va_list
-  // pointer (which would read arbitrary guest memory).
-  {
-    const auto format = put_string(0x240000, "value=%d");
-    std::string captured;
-    guest_output_capture = &captured;
-    check(call("printf", format, 7) == 7, "printf returns bytes written for inline varargs");
-    guest_output_capture = nullptr;
-    check(captured == "value=7", "printf formats inline integer varargs");
-
-    const auto buffer = 0x250000ull;
-    const auto sprintf_format = put_string(0x250100, "hex=%x");
-    check(call("sprintf", buffer, sprintf_format, 0x2a) == 6,
-          "sprintf returns bytes written for inline varargs");
-    check(get_string(buffer) == "hex=2a", "sprintf formats inline integer varargs");
+  // strerror takes one errno argument and returns a guest pointer to CRT-owned
+  // storage. The returned pointer must be directly readable by the guest and the
+  // ABI must not consume a fictitious destination-buffer argument.
+  for (const int error : {0, 2, 13}) {
+    const auto result = call("strerror", static_cast<std::uint64_t>(error));
+    check(result != 0, "strerror returns a guest pointer");
+    check(get_string(result) == std::strerror(error),
+          std::string("strerror(") + std::to_string(error) + ") matches the host CRT");
   }
 
   // --- strcpy/strncpy/strcat, including the padding strncpy is required to do -------

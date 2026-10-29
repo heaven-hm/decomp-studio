@@ -286,6 +286,14 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   std::ostringstream percent;
   percent << std::fixed << std::setprecision(2) << census.coverage_percent();
 
+  // A function is UNRESOLVED when at least one of its instructions could not be lifted. It is
+  // counted per FUNCTION rather than per instruction because the source is delivered per
+  // function: a function containing one unlifted instruction is not usable as source, however
+  // small the instruction fraction.
+  std::set<std::uint64_t> unresolved_entries;
+  for (const auto& entry : census.unsupported) unresolved_entries.insert(entry.first_function_entry);
+  const auto unresolved_functions = unresolved_entries.size();
+
   if (json) {
     std::cout << "{\"status\":\"ok\",\"architecture\":\"" << executable.architecture_name()
               << "\",\"format\":\"" << executable.format_name()
@@ -295,6 +303,17 @@ int command_coverage(const std::filesystem::path& input, bool json) {
               << ",\"unsupported_instructions\":" << census.unsupported_instructions
               << ",\"coverage_percent\":" << percent.str()
               << ",\"unsupported_class_count\":" << census.unsupported.size()
+              // THE HYBRID-SOURCE BREAKDOWN the directive requires, reported separately
+              // rather than folded into one success figure.
+              //
+              // "high-level reconstructed" means a function with a RECOVERED SIGNATURE or
+              // TYPE that a reader could follow as source. Nothing here qualifies: there is
+              // no type recovery, so every recovered function is machine-level translation.
+              // Saying so is the point -- classifying all of it as semantic reconstruction
+              // would be exactly the confusion the directive names.
+              << ",\"high_level_functions\":0"
+              << ",\"low_level_fallback_functions\":" << discovery.functions().size()
+              << ",\"unresolved_functions\":" << unresolved_functions
               << ",\"unsupported\":[";
     for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
       const auto& entry = census.unsupported[index];
@@ -319,7 +338,11 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             // rest is the migration still to do, and it is a measured fraction
             // rather than an impression.
             << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
-            << statement_percent.str() << "%)\n";
+            << statement_percent.str() << "%)\n"
+            // §13 requires the delivered source to be reported as TWO categories, never one.
+            << "high-level:     0 functions (no recovered signatures or types exist)\n"
+            << "low-level:      " << discovery.functions().size() << " functions (machine-level translation)\n"
+            << "unresolved:     " << unresolved_functions << " functions\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;
@@ -574,6 +597,8 @@ int command_verify(const std::filesystem::path& project, const std::filesystem::
               << ",\"candidate_ran\":" << (result.candidate_ran ? "true" : "false")
               << ",\"diagnosis\":" << recomp::common::quote_json(result.diagnosis)
               << ",\"candidate_exit_code\":" << result.candidate_exit_code
+              << ",\"reference_exit_code\":" << result.reference_exit_code
+              << ",\"exit_codes_match\":" << (result.exit_codes_match ? "true" : "false")
               << ",\"executed_instructions\":" << result.executed_instructions
               << ",\"reference_bytes\":" << result.reference_output.size()
               << ",\"candidate_bytes\":" << result.candidate_output.size()
@@ -1015,24 +1040,34 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
   }
 
   int run_exit_code = 0;
+  bool run_completed = false;
   bool verified = false;
   if (failure.empty() && build_and_run) {
     display.begin("run native executable");
     try {
       const auto report = recomp::pipeline::run(output);
       run_exit_code = report.exit_code;
+      run_completed = true;
       log_file << "---- program output ----\n" << report.standard_output;
       if (!report.standard_error.empty()) log_file << "---- program stderr ----\n" << report.standard_error;
       log_file << "---- end program output ----\n";
       log_file.flush();
       if (!report.standard_output.empty()) display.note("program produced " +
                                                         std::to_string(report.standard_output.size()) + " bytes");
-      display.finish(report.exit_code == 0,
+      // A NON-ZERO EXIT IS NOT A FAILURE. The run stage executes the candidate and cannot
+      // know what status the program is supposed to return -- only the differential
+      // comparison against the reference can answer that. Treating `!= 0` as a failed port
+      // marked every program that legitimately exits non-zero as broken, which is exactly
+      // what the verification stage was fixed for one round earlier; this was the same bug
+      // in a second place, and it made `dominosasolver` report AUTORECOMP FAILED while its
+      // own `verified` line in the same output said `yes`.
+      display.finish(true,
                      "exit code " + std::to_string(report.exit_code) + ", " +
                          std::to_string(report.standard_output.size()) + " bytes of output");
       if (report.exit_code != 0) {
-        display.note("the program ran but exited non-zero, so the port is not verified");
-        fail_step("the translated program exited with code " + std::to_string(report.exit_code));
+        display.note("the program exited " + std::to_string(report.exit_code) +
+                     "; whether that is CORRECT is decided by the comparison against the "
+                     "reference, not by the status alone");
       }
     } catch (const std::exception& error) {
       display.finish(false, error.what());
@@ -1119,7 +1154,7 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << ",\"unsupported_class_count\":" << unsupported_classes
               << ",\"missing_imports\":" << missing_imports
               << ",\"built\":" << (built_executable.empty() ? "false" : "true")
-              << ",\"run_exit_code\":" << run_exit_code
+              << ",\"run_exit_code\":" << (run_completed ? std::to_string(run_exit_code) : "null")
               << ",\"verified\":" << (verified ? "true" : "false")
               << ",\"repaired\":" << (repaired ? "true" : "false")
               << ",\"log\":" << recomp::common::quote_json(log_path.string());
@@ -1138,7 +1173,10 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << "%  (" << unsupported << " unsupported in " << unsupported_classes << " classes)\n"
               << "  imports     " << missing_imports << " without shims\n";
     if (!built_executable.empty()) std::cout << "  executable  " << built_executable.string() << "\n";
-    if (build_and_run) std::cout << "  run         exit code " << run_exit_code << "\n";
+    if (build_and_run) {
+      if (run_completed) std::cout << "  run         exit code " << run_exit_code << "\n";
+      else std::cout << "  run         not completed\n";
+    }
     // ALWAYS printed. Guarded by `build_and_run`, a plain `autorecomp` printed
     // AUTORECOMP COMPLETE and exited 0 without ever saying whether anything was verified,
     // and "complete" then reads as a stronger claim than "the stages I ran finished".

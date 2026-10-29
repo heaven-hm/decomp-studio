@@ -18,6 +18,11 @@ struct ReferenceRun {
   std::string output;
   std::vector<std::uint64_t> trace;
   std::uint64_t instruction_count{};
+  // The status the guest asked for when it exited, and whether it reached the exit path at
+  // all. Both were previously discarded, which is why the two sides' exit statuses were
+  // never compared.
+  int reference_exit_code{};
+  bool reference_reached_exit{};
   // Set when the reference stopped at the shared instruction ceiling rather than
   // because the program terminated.
   bool truncated{};
@@ -27,6 +32,11 @@ struct ReferenceRun {
   // two can be compared directly.
   std::vector<GuestCheckpoint> checkpoints;
   std::vector<std::vector<std::uint8_t>> memory_windows;
+  // Per checkpoint, the digest of each page the reference had written by then. The
+  // candidate exports the same thing, and the two are compared AT THE SAME CHECKPOINT --
+  // comparing a candidate checkpoint against the reference's final memory compares two
+  // different instants and reports every page as diverging.
+  std::vector<std::map<std::uint64_t, std::uint64_t>> page_digests;
 };
 
 // What a verification run actually established. Issue #11 asks for an explicit verdict
@@ -103,6 +113,13 @@ struct DifferentialResult {
   bool control_registers_match{};
   std::string control_diagnosis;
   int candidate_exit_code{};
+  // The reference's own exit status. It was never recorded, so it was never compared --
+  // which is why a program that legitimately exits non-zero was reported as a FAILED port
+  // with `candidate_completed = exit_code == 0`. A port is not wrong because the program
+  // chose a non-zero status; it is wrong when the two sides DISAGREE.
+  int reference_exit_code{};
+  bool exit_codes_match{};
+  bool reference_reached_exit{};
   std::string reference_output;
   std::string candidate_output;
   std::string candidate_error;

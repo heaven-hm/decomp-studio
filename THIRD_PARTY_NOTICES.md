@@ -1,9 +1,23 @@
 # Third-party notices
 
+The Ghidra reconciler uses the unmodified single-header [JSON for Modern C++](https://github.com/nlohmann/json),
+version 3.12.0, commit `55f93686c01528224f448c19128836e7df245f72`, file
+`single_include/nlohmann/json.hpp`, copyright 2013–2025 Niels Lohmann, MIT license.
+The source and license are at `third_party/nlohmann/json.hpp` and
+`third_party/nlohmann/LICENSE.MIT`.
+
 Recomp Studio links against or invokes the following components and includes
 adaptations of third-party code identified below.
 
 ## Adapted source
+
+`runtime/pcrecomp/gdidc.c` is adapted from `runtime/win32hle/gdidc.c` in
+[PCRecomp](https://github.com/sp00nznet/pcrecomp) commit
+`a85ea970f9e0640ab6546d2ca7a01fccb132973d`, copyright 2026 sp00nz, MIT;
+see `third_party/pcrecomp-LICENSE.txt`. Its packed 1-bit and 4-bit DIB reads
+were adapted using the high-bit-first expansion in SDL's `src/video/SDL_bmp.c`,
+[SDL](https://github.com/libsdl-org/SDL) commit `98d1f3a45aae568ccd6ed5fec179330f47d4d356`,
+copyright 1997–2025 Sam Lantinga, zlib license; see `third_party/SDL2-LICENSE.txt`.
 
 Several Win32 shims in `runtime/recomp_runtime.cpp` are adapted from
 `shim/src/kernel32.c` and `shim/src/ole32.c` in
@@ -11,6 +25,14 @@ Several Win32 shims in `runtime/recomp_runtime.cpp` are adapted from
 HenryKun55. The `GetLocalTime` adaptation comes from commit
 `278eaf6394f7f42c7de6cffef2cf982154f59899`. The MIT license is reproduced in
 [third_party/igi-recomp-LICENSE](third_party/igi-recomp-LICENSE).
+
+The `GetConsoleMode`, `SetConsoleMode`, `WriteConsoleA/W`, and `HeapSize`
+runtime adapters use the corresponding behavior in
+`host/kernel32.c` from the locally audited
+[project-igi-browser](https://github.com/Dhaiwat10/project-igi-browser) source
+(copyright 2026 Dhaiwat Pandya and Sagar Joshi, MIT). The adapter is translated
+to Recomp Studio's `GuestContext` ABI; the original project license is
+reproduced in [third_party/project-igi-browser-LICENSE](third_party/project-igi-browser-LICENSE).
 The function-entry jump in `core/semantics/x86_64_lifter.cpp` is also adapted
 from `tools/recomp/gen.py` in the same project at that revision.
 

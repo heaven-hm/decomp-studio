@@ -4,6 +4,73 @@ project(recomp_studio VERSION 0.4.0 LANGUAGES CXX)
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# Build the actual upstream Win32 provider tests when a pinned checkout is supplied.
+# This does not yet connect the provider to generated Recomp Studio guests.
+set(RECOMP_PCRECOMP_SOURCE "" CACHE PATH "PCRecomp checkout for upstream Win32 HLE tests")
+if(RECOMP_PCRECOMP_SOURCE)
+  enable_language(C)
+  find_package(Git REQUIRED)
+  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} rev-parse HEAD
+    OUTPUT_VARIABLE PCRECOMP_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PCRECOMP_GIT_RESULT)
+  if(NOT PCRECOMP_GIT_RESULT EQUAL 0 OR NOT PCRECOMP_REVISION STREQUAL "a85ea970f9e0640ab6546d2ca7a01fccb132973d")
+    message(FATAL_ERROR "PCRecomp checkout must be at a85ea970f9e0640ab6546d2ca7a01fccb132973d")
+  endif()
+  execute_process(COMMAND ${GIT_EXECUTABLE} -C ${RECOMP_PCRECOMP_SOURCE} status --porcelain --untracked-files=all -- tools runtime/win32hle runtime/recomp32
+    OUTPUT_VARIABLE PCRECOMP_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PCRECOMP_STATUS_RESULT)
+  if(NOT PCRECOMP_STATUS_RESULT EQUAL 0 OR PCRECOMP_DIRTY)
+    message(FATAL_ERROR "PCRecomp tools and runtime sources must be clean for a reproducible provider build")
+  endif()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(PCRECOMP_SDL REQUIRED IMPORTED_TARGET sdl2 SDL2_ttf)
+  find_package(Threads REQUIRED)
+  set(PCRECOMP_HLE_DIR "${RECOMP_PCRECOMP_SOURCE}/runtime/win32hle")
+  file(GLOB PCRECOMP_HLE_SOURCES CONFIGURE_DEPENDS "${PCRECOMP_HLE_DIR}/*.c")
+  list(FILTER PCRECOMP_HLE_SOURCES EXCLUDE REGEX "_selftest\\.c$")
+  foreach(test_name IN ITEMS win32hle gdi)
+    add_executable(pcrecomp_${test_name}_selftest ${PCRECOMP_HLE_SOURCES}
+      "${PCRECOMP_HLE_DIR}/${test_name}_selftest.c")
+    target_include_directories(pcrecomp_${test_name}_selftest PRIVATE
+      "${PCRECOMP_HLE_DIR}" "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+    target_link_libraries(pcrecomp_${test_name}_selftest PRIVATE PkgConfig::PCRECOMP_SDL Threads::Threads m)
+    add_test(NAME pcrecomp_${test_name} COMMAND pcrecomp_${test_name}_selftest)
+    set_tests_properties(pcrecomp_${test_name} PROPERTIES
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+  endforeach()
+  set(PCRECOMP_PROVIDER_SOURCES ${PCRECOMP_HLE_SOURCES})
+  list(FILTER PCRECOMP_PROVIDER_SOURCES EXCLUDE REGEX "/gdidc\\.c$")
+  list(APPEND PCRECOMP_PROVIDER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/pcrecomp/gdidc.c")
+  add_library(pcrecomp_stateless_crt_provider STATIC ${PCRECOMP_PROVIDER_SOURCES}
+    runtime/recomp_runtime.cpp runtime/pcrecomp_stateless_crt.cpp)
+  target_compile_features(pcrecomp_stateless_crt_provider PRIVATE cxx_std_20)
+  target_include_directories(pcrecomp_stateless_crt_provider PRIVATE runtime "${PCRECOMP_HLE_DIR}"
+    "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+  target_link_libraries(pcrecomp_stateless_crt_provider PUBLIC PkgConfig::PCRECOMP_SDL Threads::Threads m)
+  add_executable(pcrecomp_stateless_crt_test tests/compat/pcrecomp_stateless_crt_test.cpp)
+  target_compile_features(pcrecomp_stateless_crt_test PRIVATE cxx_std_20)
+  target_include_directories(pcrecomp_stateless_crt_test PRIVATE "${PCRECOMP_HLE_DIR}"
+    "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+  target_link_libraries(pcrecomp_stateless_crt_test PRIVATE pcrecomp_stateless_crt_provider)
+  add_test(NAME pcrecomp_stateless_crt COMMAND pcrecomp_stateless_crt_test)
+  set_tests_properties(pcrecomp_stateless_crt PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+  add_executable(pcrecomp_indexed_bitmap_test tests/compat/pcrecomp_indexed_bitmap_test.c)
+  target_include_directories(pcrecomp_indexed_bitmap_test PRIVATE "${PCRECOMP_HLE_DIR}"
+    "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+  target_link_libraries(pcrecomp_indexed_bitmap_test PRIVATE pcrecomp_stateless_crt_provider)
+  add_test(NAME pcrecomp_indexed_bitmap COMMAND pcrecomp_indexed_bitmap_test)
+  set_tests_properties(pcrecomp_indexed_bitmap PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+  find_program(PCRECOMP_MINGW_CC i686-w64-mingw32-gcc)
+  if(PCRECOMP_MINGW_CC)
+    add_test(NAME pcrecomp_pe32_fixture COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_fixture_test.py
+      ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c
+      ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${PKG_CONFIG_EXECUTABLE} ${CMAKE_OSX_SYSROOT})
+    set_tests_properties(pcrecomp_pe32_fixture PROPERTIES
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
+  endif()
+endif()
+
 # Unicorn (GPL-2.0) powers the differential verification backend. It is optional
 # so the core recompiler and CLI can be built without it.
 option(RECOMP_ENABLE_UNICORN "Build the Unicorn-based verification backend (GPL-2.0)" ON)
@@ -65,6 +132,47 @@ endif()
 set_source_files_properties(runtime/recomp_runtime.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
 add_executable(recomp-studio ${RECOMP_SOURCES})
+if(RECOMP_PCRECOMP_SOURCE AND PCRECOMP_MINGW_CC AND RECOMP_ENABLE_UNICORN AND UNICORN_INCLUDE_DIR AND UNICORN_LIBRARY)
+  add_test(NAME pcrecomp_crt_bridge_pe32 COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_crt_bridge_test.py
+    ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/pcrecomp_crt_bridge.c
+    ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${CMAKE_CXX_COMPILER} ${PKG_CONFIG_EXECUTABLE}
+    $<TARGET_FILE:pcrecomp_stateless_crt_provider> $<TARGET_FILE:recomp-studio> ${CMAKE_OSX_SYSROOT})
+  set_tests_properties(pcrecomp_crt_bridge_pe32 PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
+  add_test(NAME pcrecomp_pe32_unicorn_reference COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_fixture_test.py
+    ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c
+    ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${PKG_CONFIG_EXECUTABLE} ${CMAKE_OSX_SYSROOT}
+    --reference-cli $<TARGET_FILE:recomp-studio>)
+  set_tests_properties(pcrecomp_pe32_unicorn_reference PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
+endif()
+add_executable(ghidra-import apps/cli/ghidra_import.cpp core/common/sha256.cpp)
+add_executable(ghidra-run apps/cli/ghidra_run.cpp core/common/sha256.cpp)
+add_executable(revng-run apps/cli/revng_run.cpp core/common/sha256.cpp)
+target_compile_features(revng-run PRIVATE cxx_std_20)
+target_include_directories(revng-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME revng_run COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/revng_run_test.py $<TARGET_FILE:revng-run>)
+target_compile_features(ghidra-run PRIVATE cxx_std_20)
+target_include_directories(ghidra-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME ghidra_run COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_run_test.py $<TARGET_FILE:ghidra-run> ${RECOMP_PCRECOMP_SOURCE})
+target_compile_features(ghidra-import PRIVATE cxx_std_20)
+target_include_directories(ghidra-import PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME ghidra_import COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_import_test.py $<TARGET_FILE:ghidra-import>)
+# The reconciler needs the project's own discovery, so it links the same sources the studio
+# does rather than reimplementing any of them.
+add_executable(ghidra-reconcile apps/cli/ghidra_reconcile.cpp core/binary/pe.cpp
+  core/discovery/function_discovery.cpp)
+target_compile_features(ghidra-reconcile PRIVATE cxx_std_20)
+target_include_directories(ghidra-reconcile PRIVATE ${RECOMP_INCLUDE_DIRS})
+target_link_libraries(ghidra-reconcile PRIVATE ${RECOMP_LIBRARIES})
+add_test(NAME ghidra_reconcile COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_reconcile_test.py $<TARGET_FILE:ghidra-reconcile>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c)
 target_compile_features(recomp-studio PRIVATE cxx_std_20)
 target_include_directories(recomp-studio PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(recomp-studio PRIVATE ${RECOMP_LIBRARIES})
@@ -87,6 +195,15 @@ add_executable(half_precision_test tests/compat/half_precision_test.cpp)
 target_compile_features(half_precision_test PRIVATE cxx_std_20)
 target_include_directories(half_precision_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
 add_test(NAME half_precision COMMAND half_precision_test)
+
+# Coverage is not detection. This injects a one-byte heap difference that does NOT change
+# stdout and asserts the comparison catches it.
+add_test(NAME heap_corruption
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/heap_corruption_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps
+          ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(heap_corruption PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
 
 add_executable(runtime_crt_test tests/compat/runtime_crt_test.cpp runtime/recomp_runtime.cpp)
 target_compile_features(runtime_crt_test PRIVATE cxx_std_20)
@@ -153,6 +270,11 @@ add_test(NAME autorecomp_pipeline
 
 add_test(NAME cli_options
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli/options_test.py
+          $<TARGET_FILE:recomp-studio>
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
+
+add_test(NAME stdin_path_handling
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli/stdin_path_test.py
           $<TARGET_FILE:recomp-studio>
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps)
 

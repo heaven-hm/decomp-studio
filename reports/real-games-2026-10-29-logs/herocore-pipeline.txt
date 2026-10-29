@@ -1,0 +1,33 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/herocore/herocore gm7.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/herocore
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x001841a4, image base 0x000400000
+      sha256 9146fc64eb6704cf99ed5eb1728312a9571a6c472a300415c9261d32fcbd62ec
+    ok: PE32 x86, 532 imports (0.332s)
+[3/9] recover functions
+      28249 functions, 2000001 instructions
+    ok: 28249 functions, 2000001 instructions (11.106s)
+[4/9] classify instruction coverage
+      unsupported arpl x18203
+      unsupported popaw x372
+      unsupported aad x213
+      unsupported sldt x207
+      unsupported salc x179
+    ok: 1980354/2000001 lifted, 19647 unsupported (32.188s)
+[5/9] check import compatibility
+      222 of 532 imports have shims
+    WARN: 222/532 imports shimmed, 310 missing (0.001s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/herocore/herocore gm7.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'arpl' at 0x40113aull (12.504s)
+
+result: failed — unsupported instruction 'arpl' at 0x40113aull

@@ -1,0 +1,30 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/gunroar/gr.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/gunroar
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x0002d49c, image base 0x000400000
+      sha256 6ea800ee918547ca1953a24bebdcd07c29cef4ada617d7321a7dc3701e825636
+    ok: PE32 x86, 136 imports (0.078s)
+[3/9] recover functions
+      3579 functions, 166305 instructions
+    ok: 3579 functions, 166305 instructions (1.168s)
+[4/9] classify instruction coverage
+      unsupported fdisi8087_nop x3
+      unsupported jcxz x2
+    ok: 166300/166305 lifted, 5 unsupported (2.830s)
+[5/9] check import compatibility
+      54 of 136 imports have shims
+    WARN: 54/136 imports shimmed, 82 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/gunroar/gr.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'jcxz' at 0x42fcebull (3.118s)
+
+result: failed — unsupported instruction 'jcxz' at 0x42fcebull

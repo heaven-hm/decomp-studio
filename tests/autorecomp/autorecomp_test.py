@@ -125,9 +125,18 @@ def check_build_only(executable: Path, root: Path) -> None:
     # not attempted and must not be claimed.
     check("buildonly/not-verified", payload["verified"] is False,
           "build-only must not claim verification")
-    check("buildonly/run-not-attempted", payload["run_exit_code"] == 0,
+    check("buildonly/run-not-attempted", payload["run_exit_code"] is None,
           "build-only should not have run the program")
     PASSES.append("buildonly/builds-without-running")
+
+
+def check_translation_failure(executable: Path, root: Path) -> None:
+    result = run_cli(["autorecomp", str(executable), "--output", str(root / "unsupported"), "--buildrun", "--json"])
+    payload = json.loads(result.stdout)
+    check("translation-failure/exit", result.returncode != 0, "unsupported instruction unexpectedly passed")
+    check("translation-failure/no-run-exit", payload["run_exit_code"] is None,
+          f"run not reached but exit code is {payload['run_exit_code']!r}")
+    check("translation-failure/not-built", payload["built"] is False, "unsupported instruction produced a build")
 
 
 def check_failure_is_reported(executable: Path, root: Path) -> None:
@@ -184,7 +193,13 @@ def check_repair_diagnosis(executable: Path, root: Path) -> None:
     payload = json.loads(report.read_text())
     check("repair/no-fake-divergence", payload["diverged"] is False and
           "first control-flow divergence" not in payload["diagnosis"], payload["diagnosis"])
-    check("repair/actual-diagnosis", "user32.dll!MessageBoxA" in payload["diagnosis"], payload["diagnosis"])
+    # The diagnosis must name the import the fixture actually lacks, and that symbol
+    # tracks unsupported_import.c -- it was MessageBoxA until the Win32 window surface was
+    # implemented. The check is on the CAUSE (a named, unimplemented import), not on which
+    # side reached it first: the reference shares the shim table, so both sides lack it and
+    # either may report it.
+    check("repair/actual-diagnosis", "shell32.dll!ShellExecuteA" in payload["diagnosis"],
+          payload["diagnosis"])
 
 
 def main() -> int:
@@ -195,6 +210,7 @@ def main() -> int:
 
         good = fixture_binaries / f"{GOOD_FIXTURE}.exe"
         failing = fixture_binaries / f"{FAILING_FIXTURE}.exe"
+        unsupported = fixture_binaries / "unsupported_instruction.exe"
         if good.exists():
             check_success_path(good, root)
             check_build_only(good, root)
@@ -205,6 +221,10 @@ def main() -> int:
             check_repair_diagnosis(failing, root)
         else:
             FAILURES.append(f"{FAILING_FIXTURE}: fixture was not built")
+        if unsupported.exists():
+            check_translation_failure(unsupported, root)
+        else:
+            FAILURES.append("unsupported_instruction: fixture was not built")
         check_argument_handling()
 
     for name in PASSES:

@@ -1479,6 +1479,138 @@ void X86_64Lifter::emit_instruction(const DecodedInstruction& instruction, const
          std::to_string(operands[2].immediate_value & 0xff) + ");");
     return;
   }
+  // The packed conversions. Each has a register and a MEMORY form, and the memory form is
+  // what a compiler emits for a table load -- the same guard shape that made `pmovzxdq`
+  // look implemented while the form the binary used fell through.
+  {
+    const bool is_ps2pd = mnemonic == "cvtps2pd" || mnemonic == "vcvtps2pd";
+    const bool is_ttps2dq = mnemonic == "cvttps2dq" || mnemonic == "vcvttps2dq";
+    if ((is_ps2pd || is_ttps2dq) && !operands.empty() && is_vector_register(operands[0]) &&
+        operands.size() >= 2) {
+      const auto helper = std::string(is_ps2pd ? "vector_convert_floats_to_doubles"
+                                               : "vector_truncate_floats_to_dwords");
+      if (is_vector_register(operands[1])) {
+        emit(helper + "(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             std::to_string(vector_index(operands[1])) + ");");
+        return;
+      }
+      if (operands[1].kind == discovery::Operand::Kind::Memory) {
+        emit(helper + "_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+             effective_address_expression(instruction, operands[1]) + ");");
+        return;
+      }
+    }
+  }
+  // POPCNT: the number of set bits. Its own instruction because the SSE4.2 encoding is
+  // what a compiler emits for a bit count, and the operation has no other spelling in the
+  // instruction set.
+  if ((mnemonic == "popcnt") && operands.size() == 2 &&
+      operands[0].kind == discovery::Operand::Kind::Register) {
+    const auto width = operand_width(operands[0], 8);
+    std::string source;
+    if (operands[1].kind == discovery::Operand::Kind::Register)
+      source = register_read_expression(operands[1].register_name);
+    else
+      source = "load_guest_memory(context, " + effective_address_expression(instruction, operands[1]) +
+               ", " + std::to_string(width / 8) + ")";
+    operand_write(output, instruction, operands[0],
+                  "static_cast<std::uint64_t>(__builtin_popcountll(" + source + "))", width);
+    return;
+  }
+  // The remaining 128-bit SSE/AVX forms the triage listed as blocking real applications.
+  if ((mnemonic == "movmskps" || mnemonic == "movmskpd" || mnemonic == "vmovmskps" ||
+       mnemonic == "vmovmskpd") &&
+      operands.size() == 2 && operands[0].kind == discovery::Operand::Kind::Register &&
+      is_vector_register(operands[1])) {
+    const bool doubles = mnemonic.find("pd") != std::string::npos;
+    operand_write(output, instruction, operands[0],
+                  std::string(doubles ? "vector_move_mask_doubles" : "vector_move_mask_floats") +
+                      "(context, " + std::to_string(vector_index(operands[1])) + ")",
+                  operand_width(operands[0], 4));
+    return;
+  }
+  if ((mnemonic == "pmovzxdq" || mnemonic == "vpmovzxdq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_dwords_to_qwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  // The MEMORY form, which is the one compilers actually emit: a table of packed values
+  // loaded and widened in a single instruction. Handling only the register form left the
+  // common case unsupported -- `clipjar` fails on exactly this, `pmovzxdq xmm0, qword ptr
+  // [rip+0x259b30]`.
+  if ((mnemonic == "pmovzxdq" || mnemonic == "vpmovzxdq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && operands[1].kind == discovery::Operand::Kind::Memory) {
+    emit("vector_widen_dwords_to_qwords_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         effective_address_expression(instruction, operands[1]) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxwd" || mnemonic == "vpmovzxwd") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_words_to_dwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  // The MEMORY form, which is the one compilers actually emit: a table of packed values
+  // loaded and widened in a single instruction. Handling only the register form left the
+  // common case unsupported -- `clipjar` fails on exactly this, `pmovzxdq xmm0, qword ptr
+  // [rip+0x259b30]`.
+  if ((mnemonic == "pmovzxwd" || mnemonic == "vpmovzxwd") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && operands[1].kind == discovery::Operand::Kind::Memory) {
+    emit("vector_widen_words_to_dwords_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         effective_address_expression(instruction, operands[1]) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxbw" || mnemonic == "vpmovzxbw") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_bytes_to_words(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  // The MEMORY form, which is the one compilers actually emit: a table of packed values
+  // loaded and widened in a single instruction. Handling only the register form left the
+  // common case unsupported -- `clipjar` fails on exactly this, `pmovzxdq xmm0, qword ptr
+  // [rip+0x259b30]`.
+  if ((mnemonic == "pmovzxbw" || mnemonic == "vpmovzxbw") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && operands[1].kind == discovery::Operand::Kind::Memory) {
+    emit("vector_widen_bytes_to_words_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         effective_address_expression(instruction, operands[1]) + ");");
+    return;
+  }
+  if ((mnemonic == "pmovzxbq" || mnemonic == "vpmovzxbq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_widen_bytes_to_qwords(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  // The MEMORY form, which is the one compilers actually emit: a table of packed values
+  // loaded and widened in a single instruction. Handling only the register form left the
+  // common case unsupported -- `clipjar` fails on exactly this, `pmovzxdq xmm0, qword ptr
+  // [rip+0x259b30]`.
+  if ((mnemonic == "pmovzxbq" || mnemonic == "vpmovzxbq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && operands[1].kind == discovery::Operand::Kind::Memory) {
+    emit("vector_widen_bytes_to_qwords_memory(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         effective_address_expression(instruction, operands[1]) + ");");
+    return;
+  }
+  if ((mnemonic == "pminub" || mnemonic == "vpminub") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_min_unsigned_bytes(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "pmuldq" || mnemonic == "vpmuldq") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_multiply_signed_dwords_to_qwords(context, " + std::to_string(vector_index(operands[0])) +
+         ", " + std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
+  if ((mnemonic == "ptest" || mnemonic == "vptest") && operands.size() == 2 &&
+      is_vector_register(operands[0]) && is_vector_register(operands[1])) {
+    emit("vector_test_bits(context, " + std::to_string(vector_index(operands[0])) + ", " +
+         std::to_string(vector_index(operands[1])) + ");");
+    return;
+  }
   // The VEX form of a two-operand SSE instruction has THREE operands, and the first two
   // are its sources: `vpmaddubsw xmm1, xmm2, xmm3` computes xmm1 = xmm2 op xmm3, where
   // `pmaddubsw xmm1, xmm2` computes xmm1 = xmm1 op xmm2. Normalising the MNEMONIC does not

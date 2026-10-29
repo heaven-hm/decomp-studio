@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 143 imports (0.15s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 3151 functions, 587689 instructions (4.18s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 587683/587689 lifted, 6 unsupported (9.17s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 108/143 imports shimmed, 35 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'iretd' at 0x41000dull (4.74s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/cavestory
+  functions   3151  instructions 587689
+  coverage    99.999%  (6 unsupported in 3 classes)
+  imports     35 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/cavestory/autorecomp.log
+
+error: unsupported instruction 'iretd' at 0x41000dull

@@ -1,0 +1,31 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/noiz2sa/noiz2sa.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/noiz2sa
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x00001000, image base 0x000400000
+      sha256 389af5a46ee800419e1596c0fae8114ecfedc650f3658907eed4371264ccd3a5
+    ok: PE32 x86, 140 imports (0.081s)
+[3/9] recover functions
+      2426 functions, 384200 instructions
+    ok: 2426 functions, 384200 instructions (2.100s)
+[4/9] classify instruction coverage
+      unsupported arpl x10697
+      unsupported das x750
+      unsupported popaw x120
+    ok: 372633/384200 lifted, 11567 unsupported (6.746s)
+[5/9] check import compatibility
+      80 of 140 imports have shims
+    WARN: 80/140 imports shimmed, 60 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/noiz2sa/noiz2sa.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'arpl' at 0x401988ull (2.272s)
+
+result: failed — unsupported instruction 'arpl' at 0x401988ull

@@ -1297,6 +1297,183 @@ inline std::uint64_t vector_extract_word(const GuestContext* context, int vector
   return value;
 }
 
+// MOVMSKPS/MOVMSKPD: the SIGN BIT of each lane, packed into a general register as one
+// bit per lane. This is how a vectorised comparison is turned back into a scalar branch,
+// so it is not a convenience -- it is the bridge between the SIMD and scalar halves of a
+// program, and a program that uses it cannot run without it.
+inline std::uint64_t vector_move_mask_floats(const GuestContext* context, int vector_index) {
+  std::uint64_t mask = 0;
+  for (int lane = 0; lane < 4; ++lane) {
+    std::uint32_t bits = 0;
+    const auto value = vector_get_float_lane(context, vector_index, lane);
+    std::memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x80000000u) != 0) mask |= 1ull << lane;
+  }
+  return mask;
+}
+inline std::uint64_t vector_move_mask_doubles(const GuestContext* context, int vector_index) {
+  std::uint64_t mask = 0;
+  for (int lane = 0; lane < 2; ++lane) {
+    std::uint64_t bits = 0;
+    const auto value = vector_get_double_lane(context, vector_index, lane);
+    std::memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x8000000000000000ull) != 0) mask |= 1ull << lane;
+  }
+  return mask;
+}
+
+// PMOVZXDQ and its siblings: widen each lane, ZERO-extending. The zero is the point -- a
+// sign-extending sibling exists under a different mnemonic, and using it would turn a
+// pixel value above 0x7f into a large negative number.
+inline void vector_widen_dwords_to_qwords(GuestContext* context, int destination, int source) {
+  std::uint32_t dwords[4];
+  std::memcpy(dwords, context->vector_registers[source], sizeof(dwords));
+  std::uint64_t qwords[2] = {dwords[0], dwords[1]};
+  std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
+}
+inline void vector_widen_words_to_dwords(GuestContext* context, int destination, int source) {
+  std::uint16_t words[8];
+  std::memcpy(words, context->vector_registers[source], sizeof(words));
+  std::uint32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane) dwords[lane] = words[lane];
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+inline void vector_widen_bytes_to_words(GuestContext* context, int destination, int source) {
+  std::uint8_t bytes[16];
+  std::memcpy(bytes, context->vector_registers[source], sizeof(bytes));
+  std::uint16_t words[8];
+  for (int lane = 0; lane < 8; ++lane) words[lane] = bytes[lane];
+  std::memcpy(context->vector_registers[destination], words, sizeof(words));
+}
+inline void vector_widen_bytes_to_qwords(GuestContext* context, int destination, int source) {
+  std::uint8_t bytes[16];
+  std::memcpy(bytes, context->vector_registers[source], sizeof(bytes));
+  std::uint64_t qwords[2] = {bytes[0], bytes[1]};
+  std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
+}
+
+// CVTPS2PD: two packed SINGLES converted to two packed DOUBLES. It widens, so it is not
+// the same operation as the dword->float conversions above, and it is the single largest
+// unsupported class in two real applications (clipjar 96 occurrences, sqlite3 224).
+inline void vector_convert_floats_to_doubles(GuestContext* context, int destination, int source) {
+  float singles[4];
+  std::memcpy(singles, context->vector_registers[source], sizeof(singles));
+  double doubles[2] = {static_cast<double>(singles[0]), static_cast<double>(singles[1])};
+  std::memcpy(context->vector_registers[destination], doubles, sizeof(doubles));
+}
+inline void vector_convert_floats_to_doubles_memory(GuestContext* context, int destination,
+                                                    std::uint64_t address) {
+  const float first = load_guest_float(context, address);
+  const float second = load_guest_float(context, address + 4);
+  const double doubles[2] = {static_cast<double>(first), static_cast<double>(second)};
+  std::memcpy(context->vector_registers[destination], doubles, sizeof(doubles));
+}
+
+// CVTTPS2DQ: four singles converted to four dwords by TRUNCATION toward zero. The
+// truncating form is a different instruction from the rounding one (cvtps2dq), and using
+// the wrong one is a one-off error on every negative value: -2.7 must become -2, not -3.
+inline void vector_truncate_floats_to_dwords(GuestContext* context, int destination, int source) {
+  float singles[4];
+  std::memcpy(singles, context->vector_registers[source], sizeof(singles));
+  std::int32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    const auto value = singles[lane];
+    // Out-of-range and NaN produce the "integer indefinite" value, which is what the
+    // hardware does rather than something invented here.
+    if (std::isnan(value) || value >= 2147483648.0f || value < -2147483648.0f)
+      dwords[lane] = static_cast<std::int32_t>(0x80000000u);
+    else
+      dwords[lane] = static_cast<std::int32_t>(value);
+  }
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+inline void vector_truncate_floats_to_dwords_memory(GuestContext* context, int destination,
+                                                    std::uint64_t address) {
+  float singles[4];
+  for (int lane = 0; lane < 4; ++lane) singles[lane] = load_guest_float(context, address + lane * 4);
+  std::int32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    const auto value = singles[lane];
+    if (std::isnan(value) || value >= 2147483648.0f || value < -2147483648.0f)
+      dwords[lane] = static_cast<std::int32_t>(0x80000000u);
+    else
+      dwords[lane] = static_cast<std::int32_t>(value);
+  }
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+
+// The MEMORY forms of the widen family. A compiler emits these constantly -- `pmovzxdq
+// xmm0, qword ptr [rip+...]` is how a table of packed values is loaded and widened in one
+// step -- and the register-only guards in the lifter meant the form the binary actually
+// uses fell through to "unsupported instruction". Reading through a guest pointer keeps the
+// load inside the guest's address space, where a wild address is reported rather than
+// faulting the host.
+inline std::uint64_t load_guest_qword_checked(GuestContext* context, std::uint64_t address) {
+  return load_guest_memory(context, address, 8);
+}
+inline void vector_widen_dwords_to_qwords_memory(GuestContext* context, int destination,
+                                                 std::uint64_t address) {
+  std::uint32_t dwords[2] = {static_cast<std::uint32_t>(load_guest_memory(context, address, 4)),
+                             static_cast<std::uint32_t>(load_guest_memory(context, address + 4, 4))};
+  std::uint64_t qwords[2] = {dwords[0], dwords[1]};
+  std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
+}
+inline void vector_widen_words_to_dwords_memory(GuestContext* context, int destination,
+                                                std::uint64_t address) {
+  std::uint32_t dwords[4];
+  for (int lane = 0; lane < 4; ++lane)
+    dwords[lane] = static_cast<std::uint32_t>(load_guest_memory(context, address + lane * 2, 2));
+  std::memcpy(context->vector_registers[destination], dwords, sizeof(dwords));
+}
+inline void vector_widen_bytes_to_words_memory(GuestContext* context, int destination,
+                                               std::uint64_t address) {
+  std::uint16_t words[8];
+  for (int lane = 0; lane < 8; ++lane)
+    words[lane] = static_cast<std::uint16_t>(load_guest_memory(context, address + lane, 1));
+  std::memcpy(context->vector_registers[destination], words, sizeof(words));
+}
+inline void vector_widen_bytes_to_qwords_memory(GuestContext* context, int destination,
+                                                std::uint64_t address) {
+  std::uint64_t qwords[2] = {load_guest_memory(context, address, 1),
+                             load_guest_memory(context, address + 1, 1)};
+  std::memcpy(context->vector_registers[destination], qwords, sizeof(qwords));
+}
+
+// PMINUB: the unsigned minimum of each byte. Unsigned matters -- a signed minimum would
+// treat 0x80 as negative and pick the wrong byte for any value above 0x7f.
+inline void vector_min_unsigned_bytes(GuestContext* context, int destination, int source) {
+  const std::uint8_t* left = context->vector_registers[destination];
+  const std::uint8_t* right = context->vector_registers[source];
+  std::uint8_t result[16];
+  for (int lane = 0; lane < 16; ++lane) result[lane] = left[lane] < right[lane] ? left[lane] : right[lane];
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
+// PMULDQ: the SIGNED 32-bit low halves of each 64-bit lane, multiplied into a 64-bit
+// result. It is not PMULLD -- the operands are signed and only the even dwords are used.
+inline void vector_multiply_signed_dwords_to_qwords(GuestContext* context, int destination, int source) {
+  std::int32_t left[4];
+  std::int32_t right[4];
+  std::memcpy(left, context->vector_registers[destination], sizeof(left));
+  std::memcpy(right, context->vector_registers[source], sizeof(right));
+  std::int64_t result[2] = {static_cast<std::int64_t>(left[0]) * right[0],
+                            static_cast<std::int64_t>(left[2]) * right[2]};
+  std::memcpy(context->vector_registers[destination], result, sizeof(result));
+}
+
+// PTEST sets ZF when the AND of the two operands is zero and CF when the ANDN is zero.
+// Those two flags are the entire result -- the vectors are not modified.
+inline void vector_test_bits(GuestContext* context, int destination, int source) {
+  std::uint64_t left[2];
+  std::uint64_t right[2];
+  std::memcpy(left, context->vector_registers[destination], sizeof(left));
+  std::memcpy(right, context->vector_registers[source], sizeof(right));
+  const auto and_result = (left[0] & right[0]) | (left[1] & right[1]);
+  const auto andnot_result = (~left[0] & right[0]) | (~left[1] & right[1]);
+  context->zero_flag = and_result == 0 ? 1 : 0;
+  context->carry_flag = andnot_result == 0 ? 1 : 0;
+}
+
 // PMULLD: four 32-bit lanes, each multiplied, keeping only the LOW 32 bits of each
 // product. Taking the full 64-bit product would put every result in the wrong lane.
 inline void vector_multiply_low_dwords(GuestContext* context, int destination, int source) {

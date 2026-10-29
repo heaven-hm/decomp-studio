@@ -1,0 +1,30 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/parsec47/p47.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/parsec47
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x00020e2c, image base 0x000400000
+      sha256 41b2f77d2d7ac96821a85a38be3ee7f0f95b4e5096588e38f0c9092e224e520b
+    ok: PE32 x86, 151 imports (0.055s)
+[3/9] recover functions
+      2865 functions, 165913 instructions
+    ok: 2865 functions, 165913 instructions (1.148s)
+[4/9] classify instruction coverage
+      unsupported fdisi8087_nop x3
+      unsupported jcxz x2
+    ok: 165908/165913 lifted, 5 unsupported (2.658s)
+[5/9] check import compatibility
+      52 of 151 imports have shims
+    WARN: 52/151 imports shimmed, 99 missing (0.000s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/parsec47/p47.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'jcxz' at 0x4246dfull (3.033s)
+
+result: failed — unsupported instruction 'jcxz' at 0x4246dfull

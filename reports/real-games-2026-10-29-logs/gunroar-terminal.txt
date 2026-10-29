@@ -1,0 +1,24 @@
+[1/9] detect host and target ...
+✔ [1/9] detect host and target — Darwin/arm64, target macos-arm64 (0.00s)
+[2/9] inspect executable ...
+✔ [2/9] inspect executable — PE32 x86, 136 imports (0.08s)
+[3/9] recover functions ...
+✔ [3/9] recover functions — 3579 functions, 166305 instructions (1.17s)
+[4/9] classify instruction coverage ...
+✔ [4/9] classify instruction coverage — 166300/166305 lifted, 5 unsupported (2.83s)
+[5/9] check import compatibility ...
+⚠ [5/9] check import compatibility — 54/136 imports shimmed, 82 missing (0.00s)
+[6/9] translate to host source ...
+✘ [6/9] translate to host source — unsupported instruction 'jcxz' at 0x42fcebull (3.12s)
+
+AUTORECOMP FAILED
+  target      macos-arm64
+  project     /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/gunroar
+  functions   3579  instructions 166305
+  coverage    99.997%  (5 unsupported in 2 classes)
+  imports     82 without shims
+  run         exit code 0
+  verified    no
+  log         /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/gunroar/autorecomp.log
+
+error: unsupported instruction 'jcxz' at 0x42fcebull

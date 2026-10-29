@@ -1,0 +1,29 @@
+recomp-studio autorecomp
+  input   : /Users/haseeb-mir/Downloads/recomp-apps/games/generally/GeneRally.exe
+  output  : /var/folders/q0/rj0k1xgn28x14thfz4gnbm5c0000gn/T/recomp-real-games-qdk3_4q5/generally
+  target  : detect
+  mode    : build and run
+  repair  : off
+
+[1/9] detect host and target
+      host Darwin/arm64 -> target macos-arm64
+    ok: Darwin/arm64, target macos-arm64 (0.000s)
+[2/9] inspect executable
+      format PE32, architecture x86, entry 0x0009767d, image base 0x000400000
+      sha256 868175b2cc2461ee0fe4d7b599eabfd94581d6dd54ea75a47f89f41617e82391
+    ok: PE32 x86, 206 imports (0.081s)
+[3/9] recover functions
+      2685 functions, 718358 instructions
+    ok: 2685 functions, 718358 instructions (4.548s)
+[4/9] classify instruction coverage
+      unsupported cvtpd2ps x257
+    ok: 718101/718358 lifted, 257 unsupported (11.100s)
+[5/9] check import compatibility
+      76 of 206 imports have shims
+    WARN: 76/206 imports shimmed, 130 missing (0.001s)
+      the recompiled program will stop at the first call into an unshimmed import
+      run `recomp-studio imports /Users/haseeb-mir/Downloads/recomp-apps/games/generally/GeneRally.exe` for the full list
+[6/9] translate to host source
+    FAILED: unsupported instruction 'cvtpd2ps' at 0x406a89ull (4.847s)
+
+result: failed — unsupported instruction 'cvtpd2ps' at 0x406a89ull

@@ -1,0 +1,1 @@
+scripts/build-macos-app.sh

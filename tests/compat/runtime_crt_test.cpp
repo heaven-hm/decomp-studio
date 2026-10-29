@@ -95,6 +95,20 @@ int main() {
   guest_pointer_width = 8;
   initialize_guest_state(0x100000, 0x70000000, 0x7fff0000);
 
+  // PE32 CRT character functions are cdecl: repeated calls must not consume
+  // the caller's argument slot or walk ESP into the caller's local variables.
+  {
+    GuestContext context{};
+    guest_pointer_width = 4;
+    context.registers[4] = 0x700000;
+    for (int i = 0; i < 32; ++i) {
+      store_guest_memory(&context, context.registers[4], 'A', 4);
+      invoke_win32_import(&context, "api-ms-win-crt-string-l1-1-0.dll", "isalnum", 0x1234);
+      check(context.registers[4] == 0x700000, "PE32 isalnum preserves caller argument slot");
+    }
+    guest_pointer_width = 8;
+  }
+
   // PE32 UCRT passes a 64-bit options word followed by five 32-bit arguments.
   // Distinct slots ensure a missing locale or high options word cannot pass.
   {

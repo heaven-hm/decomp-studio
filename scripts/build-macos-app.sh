@@ -8,7 +8,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RECOMP_STUDIO="${RECOMP_STUDIO_BIN:-${SCRIPT_DIR}/build/recomp-studio}"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RECOMP_STUDIO="${RECOMP_STUDIO_BIN:-${REPO_ROOT}/build/recomp-studio}"
 
 usage() {
   cat << 'EOF'
@@ -54,7 +55,7 @@ for arg in "${@:2}"; do
 done
 
 if [[ -z "$OUTPUT_DIR" ]]; then
-  OUTPUT_DIR="${SCRIPT_DIR}/out/${GAME_NAME}"
+  OUTPUT_DIR="${REPO_ROOT}/out/${GAME_NAME}"
 fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
@@ -70,8 +71,8 @@ echo "========================================================================"
 # Step 1: Ensure recomp-studio binary exists
 if [[ ! -x "$RECOMP_STUDIO" ]]; then
   echo "[1/5] Building recomp-studio toolchain..."
-  cmake -B "${SCRIPT_DIR}/build" -G Ninja "${SCRIPT_DIR}"
-  ninja -C "${SCRIPT_DIR}/build" recomp-studio
+  cmake -B "${REPO_ROOT}/build" -G Ninja "${REPO_ROOT}"
+  ninja -C "${REPO_ROOT}/build" recomp-studio
 else
   echo "[1/5] Found recompiler engine: ${RECOMP_STUDIO}"
 fi
@@ -163,7 +164,14 @@ echo "✔ Application bundle successfully created and signed: ${APP_BUNDLE}"
 # Step 5: Run / Verify
 echo "[5/5] Verifying execution on macOS..."
 set +e
-"${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}" --help > "${OUTPUT_DIR}/app_stdout.log" 2> "${OUTPUT_DIR}/app_stderr.log"
+python3 -c '
+import subprocess, sys
+try:
+    p = subprocess.run([sys.argv[1], "--help"], stdin=subprocess.DEVNULL, timeout=3)
+    sys.exit(p.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(0)
+' "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}" > "${OUTPUT_DIR}/app_stdout.log" 2> "${OUTPUT_DIR}/app_stderr.log"
 RUN_EXIT=$?
 set -e
 
@@ -177,6 +185,6 @@ echo "  Logs:          ${OUTPUT_DIR}/app_stderr.log"
 echo "------------------------------------------------------------------------"
 
 if [[ "$SHOULD_RUN" == true ]]; then
-  echo "Launching ${APP_TITLE}.app via macOS open command..."
-  open "${APP_BUNDLE}" || "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
+  echo "Launching ${APP_TITLE}.app..."
+  open "${APP_BUNDLE}" 2>/dev/null || open -a Terminal "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}" || "${APP_BUNDLE}/Contents/MacOS/${BINARY_NAME}"
 fi

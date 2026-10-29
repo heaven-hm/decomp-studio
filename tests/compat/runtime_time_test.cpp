@@ -18,12 +18,26 @@ int main() {
       context.registers[4] = 0x700000;
       store_guest_memory(&context, context.registers[4] + 4, pointer, 4);
       store_guest_memory(&context, 0x200000, 0xdeadbeefcafebabeull, 8);
-      const auto before = std::time(nullptr);
+      // DETERMINISM, not agreement with the host clock. The old assertion here was that the
+      // guest's time lay between two HOST readings -- and that assertion is what the
+      // divergence proved wrong: the candidate and the reference are different processes, so
+      // bracketing the host clock let them receive different seconds and, for a program that
+      // seeds its RNG from the time, take different branches. Measured: `hangman` diverged in
+      // about 8% of runs before this and 0 of 42 after.
       if (!invoke_shared_shim(&context, "api-ms-win-crt-time-l1-1-0.dll", "_time64")) return 2;
-      const auto after = std::time(nullptr);
       const auto returned = width == 4 ? (context.registers[0] | (context.registers[2] << 32))
                                        : context.registers[0];
-      if (returned < static_cast<std::uint64_t>(before) || returned > static_cast<std::uint64_t>(after)) return 3;
+      // A plausible instant, not zero: zero is 1970, which is a different answer rather than
+      // a missing one, and a program that computes an age from it would behave oddly.
+      if (returned < 1000000000ull) return 3;
+      // And the SAME instant on a second call, which is what both sides now rely on.
+      GuestContext repeat{};
+      repeat.registers[4] = 0x700000;
+      store_guest_memory(&repeat, 0x700004, 0, 4);
+      if (!invoke_shared_shim(&repeat, "api-ms-win-crt-time-l1-1-0.dll", "_time64")) return 5;
+      const auto second = width == 4 ? (repeat.registers[0] | (repeat.registers[2] << 32))
+                                     : repeat.registers[0];
+      if (second != returned) return 6;
       if (pointer && load_guest_memory(&context, pointer, 8) != returned) return 4;
     }
     GuestContext tail{};
@@ -56,9 +70,15 @@ int main() {
     local.registers[1] = 0x220000;
     local.registers[4] = 0x700000;
     store_guest_memory(&local, local.registers[4] + 4, 0x220000, 4);
-    const auto before_local = std::time(nullptr);
+    // ASK THE RUNTIME, not the host. The host clock is no longer what the guest sees, so a
+    // test that brackets `std::time(nullptr)` is testing the wrong contract -- and it was
+    // testing the wrong contract before too, because that is exactly the coupling that let
+    // the candidate and the reference disagree. The runtime's own `_time64` is the single
+    // source of truth here, and `GetLocalTime` must agree with IT.
+    if (!invoke_shared_shim(&local, "api-ms-win-crt-time-l1-1-0.dll", "_time64")) return 12;
+    const auto before_local = static_cast<std::time_t>(local.registers[0]);
     if (!invoke_shared_shim(&local, "kernel32.dll", "GetLocalTime")) return 13;
-    const auto after_local = std::time(nullptr);
+    const auto after_local = before_local;
     const auto matches = [&](std::time_t time) {
       std::tm fields{};
       if (!localtime_r(&time, &fields)) return false;

@@ -108,6 +108,29 @@ verification system lies:
   proof that a re-run would agree, and the honest way to state any verification result from
   this harness is "verified on this run". A defect that appears once in twelve runs will
   survive any check that runs once.
+
+  **CAUSE FOUND AND FIXED: THE HOST CLOCK.** The runtime read the wall clock with
+  `std::time(nullptr)` and `clock_gettime`. The candidate is a SUBPROCESS and the reference
+  runs in the harness process, so the two called the host clock at different instants -- and a
+  program that seeds its RNG from the time, `srand(time(NULL))`, which is the idiom, received
+  a **different seed on each side** whenever the two runs straddled a second boundary. The
+  guest then chose a different word, took a different branch, and the two instruction streams
+  diverged. That is exactly the diagnosis: *"the guest instruction stream differs"*.
+
+  It was rare because most runs land inside one second and some do not.
+
+  **The clock is an INPUT to the guest, and a differential comparison is only meaningful if
+  both sides receive the same input.** `guest_fixed_time()` now returns a fixed instant
+  (overridable with `RECOMP_FIXED_TIME`), and every guest-visible clock read goes through it,
+  including the monotonic tick count.
+
+  **MEASURED: 0 divergences in 42 consecutive runs**, where the rate before was about 8%. At
+  8%, 42 clean runs would occur about 3% of the time.
+
+  This also corrected a TEST whose assertion was the bug: `runtime_time_test` checked that the
+  guest's time lay between two HOST readings -- which is the coupling that caused the
+  divergence. It now checks what matters: that the guest's clock is DETERMINISTIC, plausible,
+  and that `GetLocalTime` agrees with the runtime's own `_time64` rather than with the host.
 - `testtmp`-based fixtures are affected by machine load: a corpus sweep under memory pressure
   (load average 73) produced 13 spurious SIGKILL results that all produced real verdicts when
   re-run, and three applications that PASSED were first recorded as failures.

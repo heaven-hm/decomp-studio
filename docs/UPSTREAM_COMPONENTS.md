@@ -67,6 +67,17 @@ address space and global register file, whereas Recomp Studio uses `GuestContext
 The memory, callback and thread contracts must be bridged before that runtime can
 serve Recomp Studio guests.
 
+An experimental `pcrecomp_stateless_crt_test` links the two runtimes and uses
+`runtime/pcrecomp_stateless_crt.cpp` to reuse five existing stateless character
+functions under PCRecomp's machine lock. It checks PE32 cdecl stack behavior.
+The bridge is not registered in the production host; pointer arguments, heaps,
+callbacks, and other CRT calls are not supported by this boundary.
+The `pcrecomp_crt_bridge_pe32` test additionally lifts a real PE32 fixture that
+repeatedly calls `isalnum`, links the generated code with the bridge, and
+compares its output with the original under Unicorn. Both paths use the same
+Recomp Studio CRT implementation for that import, so agreement cannot detect
+common-mode bugs in that implementation.
+
 With `i686-w64-mingw32-gcc` and Python Capstone installed, the optional
 `pcrecomp_pe32_fixture` test also compiles the project's arithmetic fixture to
 PE32, runs PCRecomp's generator, builds its generated C with `win32hle`, and

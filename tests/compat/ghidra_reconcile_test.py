@@ -44,11 +44,17 @@ def run(record_text):
 
 
 # The local functions, discovered independently, so the test states no addresses of its own.
-local = json.loads(subprocess.run([CLI, FIXTURE, "/dev/null"], capture_output=True, text=True).stdout)
+local, _ = run(json.dumps({"functions": []}))
 local_addresses = [f["address"] for f in local["functions"]]
 check("reconcile/has-local-functions", len(local_addresses) > 0, "no functions discovered")
 check("reconcile/empty-record-has-no-agreement", local["address_agreement"] == "none",
       f"a record with no functions reported {local['address_agreement']!r}")
+
+for invalid in ('not json', '{"functions": [', '{"address":"401000"}',
+                '{"functions":[{"address":"401000junk"}]}',
+                '{"functions":[{"address":"401000"},{"address":"401000"}]}'):
+    value, code = run(invalid)
+    check("reconcile/rejects-invalid-record", value is None and code != 0, invalid)
 
 # A record that AGREES: every local address, and nothing else.
 agreed_record = json.dumps({"schema_version": 1, "functions":

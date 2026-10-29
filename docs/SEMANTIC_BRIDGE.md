@@ -59,7 +59,8 @@ Recorded because both are ways a reconciliation layer lies while looking correct
 1. **The parser accepted only one writer's spacing.** It required `"address":"` exactly, so a
    record written with a space after the colon parsed as having **no functions at all** --
    and full agreement was reported as a **contradiction**. A parser that accepts one writer's
-   formatting is not reading JSON. It now tolerates whitespace, which JSON permits.
+   formatting is not reading JSON. It now uses the vendored JSON for Modern C++ parser,
+   reads addresses only from the functions array, and rejects malformed and duplicate addresses.
 2. **The exit rule treated any agreement as success.** It was
    `agreed.empty() && !provider.empty()`, so a record that agreed on 36 functions and
    invented a 37th exited **zero**. Partial agreement is still disagreement about the rest,

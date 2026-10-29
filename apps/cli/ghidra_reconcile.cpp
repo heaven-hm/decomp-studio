@@ -18,6 +18,7 @@
 // agreement; disagreement is reported as disagreement with both sides named.
 #include "core/binary/pe.hpp"
 #include "core/discovery/function_discovery.hpp"
+#include "third_party/nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -34,38 +35,23 @@ namespace {
 
 std::string read_file(const std::string& path) {
   std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("cannot read provider record");
   return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
-// The provider's record is JSON written by this project's own importer, so the addresses are
-// pulled out by scanning for the field rather than by a general parser. A missing field
-// yields nothing rather than a guess: an address nobody stated is not an address of zero.
 std::set<std::uint64_t> provider_addresses(const std::string& record) {
+  const auto json = nlohmann::json::parse(record);
+  if (!json.is_object() || !json.contains("functions") || !json["functions"].is_array())
+    throw std::runtime_error("provider record must contain a functions array");
   std::set<std::uint64_t> addresses;
-  // WHITESPACE BETWEEN THE KEY AND THE VALUE IS ALLOWED BY JSON, so the scan must allow
-  // it. The first version required `"address":"` exactly, which meant a record produced by
-  // any other writer -- including this project's own test, which uses json.dumps -- parsed
-  // as having NO functions at all, and full agreement was reported as a contradiction. A
-  // parser that only accepts one writer's spacing is not reading JSON, it is reading that
-  // writer's output.
-  const std::string key = "\"address\"";
-  std::size_t position = 0;
-  while ((position = record.find(key, position)) != std::string::npos) {
-    position += key.size();
-    position = record.find_first_not_of(" \t\r\n", position);
-    if (position == std::string::npos || record[position] != ':') continue;
-    position = record.find_first_not_of(" \t\r\n", position + 1);
-    if (position == std::string::npos || record[position] != '"') continue;
-    ++position;
-    const auto end = record.find('"', position);
-    if (end == std::string::npos) break;
-    const auto text = record.substr(position, end - position);
-    try {
-      addresses.insert(std::stoull(text, nullptr, 16));
-    } catch (const std::exception&) {
-      // A malformed address is reported by its absence from the count, not by inventing one.
-    }
-    position = end;
+  for (const auto& function : json["functions"]) {
+    if (!function.is_object() || !function.contains("address") || !function["address"].is_string())
+      throw std::runtime_error("function address must be a hexadecimal string");
+    const auto text = function["address"].get<std::string>();
+    if (text.empty() || text.size() > 16 || text.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+      throw std::runtime_error("invalid function address");
+    if (!addresses.insert(std::stoull(text, nullptr, 16)).second)
+      throw std::runtime_error("duplicate function address");
   }
   return addresses;
 }

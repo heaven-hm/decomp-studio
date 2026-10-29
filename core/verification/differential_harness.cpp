@@ -741,6 +741,12 @@ DifferentialResult compare_project(const std::filesystem::path& project_director
   result.candidate_error = candidate.standard_error;
   result.candidate_ran = true;
   result.candidate_exit_code = candidate.exit_code;
+  // COPIED from the reference run. Setting `run.reference_exit_code` inside run_reference is
+  // not enough: `result` is what every caller and the JSON read, so leaving this out made
+  // the field permanently zero -- a comparison that always saw the candidate disagree with
+  // a reference status that was never populated. The value was there; the copy was not.
+  result.reference_exit_code = reference.reference_exit_code;
+  result.reference_reached_exit = reference.reference_reached_exit;
   // A port is not wrong because the PROGRAM chose a non-zero status. It is wrong when the
   // two sides DISAGREE about the status. The old rule -- `exit_code == 0` -- marked every
   // program that legitimately exits non-zero as a failed port, which is how `dominosasolver`

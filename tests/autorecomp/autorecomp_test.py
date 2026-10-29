@@ -125,9 +125,18 @@ def check_build_only(executable: Path, root: Path) -> None:
     # not attempted and must not be claimed.
     check("buildonly/not-verified", payload["verified"] is False,
           "build-only must not claim verification")
-    check("buildonly/run-not-attempted", payload["run_exit_code"] == 0,
+    check("buildonly/run-not-attempted", payload["run_exit_code"] is None,
           "build-only should not have run the program")
     PASSES.append("buildonly/builds-without-running")
+
+
+def check_translation_failure(executable: Path, root: Path) -> None:
+    result = run_cli(["autorecomp", str(executable), "--output", str(root / "unsupported"), "--buildrun", "--json"])
+    payload = json.loads(result.stdout)
+    check("translation-failure/exit", result.returncode != 0, "unsupported instruction unexpectedly passed")
+    check("translation-failure/no-run-exit", payload["run_exit_code"] is None,
+          f"run not reached but exit code is {payload['run_exit_code']!r}")
+    check("translation-failure/not-built", payload["built"] is False, "unsupported instruction produced a build")
 
 
 def check_failure_is_reported(executable: Path, root: Path) -> None:
@@ -201,6 +210,7 @@ def main() -> int:
 
         good = fixture_binaries / f"{GOOD_FIXTURE}.exe"
         failing = fixture_binaries / f"{FAILING_FIXTURE}.exe"
+        unsupported = fixture_binaries / "unsupported_instruction.exe"
         if good.exists():
             check_success_path(good, root)
             check_build_only(good, root)
@@ -211,6 +221,10 @@ def main() -> int:
             check_repair_diagnosis(failing, root)
         else:
             FAILURES.append(f"{FAILING_FIXTURE}: fixture was not built")
+        if unsupported.exists():
+            check_translation_failure(unsupported, root)
+        else:
+            FAILURES.append("unsupported_instruction: fixture was not built")
         check_argument_handling()
 
     for name in PASSES:

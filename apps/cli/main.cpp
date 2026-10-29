@@ -1040,12 +1040,14 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
   }
 
   int run_exit_code = 0;
+  bool run_completed = false;
   bool verified = false;
   if (failure.empty() && build_and_run) {
     display.begin("run native executable");
     try {
       const auto report = recomp::pipeline::run(output);
       run_exit_code = report.exit_code;
+      run_completed = true;
       log_file << "---- program output ----\n" << report.standard_output;
       if (!report.standard_error.empty()) log_file << "---- program stderr ----\n" << report.standard_error;
       log_file << "---- end program output ----\n";
@@ -1152,7 +1154,7 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << ",\"unsupported_class_count\":" << unsupported_classes
               << ",\"missing_imports\":" << missing_imports
               << ",\"built\":" << (built_executable.empty() ? "false" : "true")
-              << ",\"run_exit_code\":" << run_exit_code
+              << ",\"run_exit_code\":" << (run_completed ? std::to_string(run_exit_code) : "null")
               << ",\"verified\":" << (verified ? "true" : "false")
               << ",\"repaired\":" << (repaired ? "true" : "false")
               << ",\"log\":" << recomp::common::quote_json(log_path.string());
@@ -1171,7 +1173,10 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
               << "%  (" << unsupported << " unsupported in " << unsupported_classes << " classes)\n"
               << "  imports     " << missing_imports << " without shims\n";
     if (!built_executable.empty()) std::cout << "  executable  " << built_executable.string() << "\n";
-    if (build_and_run) std::cout << "  run         exit code " << run_exit_code << "\n";
+    if (build_and_run) {
+      if (run_completed) std::cout << "  run         exit code " << run_exit_code << "\n";
+      else std::cout << "  run         not completed\n";
+    }
     // ALWAYS printed. Guarded by `build_and_run`, a plain `autorecomp` printed
     // AUTORECOMP COMPLETE and exited 0 without ever saying whether anything was verified,
     // and "complete" then reads as a stronger claim than "the stages I ran finished".

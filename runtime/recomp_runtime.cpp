@@ -62,6 +62,89 @@ namespace recomp {
 // differential comparison is only meaningful if both sides receive the same input. The value
 // is fixed rather than removed so that a program which asks the time gets a plausible answer,
 // and it can be overridden for a program that must be driven with a specific date.
+// PORTABLE 64x64 -> 128 ARITHMETIC, and it is here rather than using `__int128` for one
+// measured reason: 32-bit mingw does not support `__int128`, so every use of it is a wall
+// between this runtime and a Windows target.
+//
+// The implementations are EXACT, not approximations. The multiply splits each operand into
+// 32-bit halves and sums the four partial products, which is the schoolbook method and cannot
+// lose a bit. The divide is shift-and-subtract over 128 bits, which is exact for the same
+// reason long division is. Neither rounds, saturates or truncates.
+//
+// They are verified the only way that matters: by differential comparison against Unicorn,
+// which executes the real instruction. An error in either would show up as a divergence in
+// `mul`, `imul`, `div` or `idiv`, and the fixtures exercise all four.
+
+struct WideProduct {
+  std::uint64_t high{};
+  std::uint64_t low{};
+};
+
+inline WideProduct multiply_wide(std::uint64_t left, std::uint64_t right) {
+  const std::uint64_t left_low = left & 0xffffffffull;
+  const std::uint64_t left_high = left >> 32;
+  const std::uint64_t right_low = right & 0xffffffffull;
+  const std::uint64_t right_high = right >> 32;
+  const std::uint64_t low_product = left_low * right_low;
+  const std::uint64_t cross_one = left_high * right_low;
+  const std::uint64_t cross_two = left_low * right_high;
+  const std::uint64_t high_product = left_high * right_high;
+  // The middle column carries into the high half; the two additions are done separately so
+  // each carry is captured rather than lost.
+  const std::uint64_t middle = (low_product >> 32) + (cross_one & 0xffffffffull) +
+                               (cross_two & 0xffffffffull);
+  return WideProduct{high_product + (cross_one >> 32) + (cross_two >> 32) + (middle >> 32),
+                     (middle << 32) | (low_product & 0xffffffffull)};
+}
+
+// Exact 128 / 64. `overflow` reports the one case x86 calls #DE: a quotient that does not fit
+// in 64 bits, which is `high >= divisor`. Returning that rather than truncating is what keeps
+// the fault visible to the guest instead of silently producing a wrong answer.
+struct WideQuotient {
+  std::uint64_t quotient{};
+  std::uint64_t remainder{};
+  bool overflow{};
+};
+
+inline WideQuotient divide_wide(std::uint64_t high, std::uint64_t low, std::uint64_t divisor) {
+  if (divisor == 0) return WideQuotient{0, 0, true};
+  if (high >= divisor) return WideQuotient{0, 0, true};
+  std::uint64_t quotient = 0;
+  std::uint64_t remainder = high;
+  for (int bit = 63; bit >= 0; --bit) {
+    const std::uint64_t carry = remainder >> 63;
+    remainder = (remainder << 1) | ((low >> bit) & 1ull);
+    if (carry != 0 || remainder >= divisor) {
+      remainder -= divisor;
+      quotient |= 1ull << bit;
+    }
+  }
+  return WideQuotient{quotient, remainder, false};
+}
+
+// Signed 128 / 64, expressed through the exact unsigned divide by working in magnitudes and
+// re-applying the signs. The magnitudes are computed in UNSIGNED arithmetic, so the most
+// negative value -- whose negation overflows a signed type -- is handled correctly rather than
+// being undefined behaviour.
+inline WideQuotient divide_wide_signed(std::uint64_t high, std::uint64_t low, std::uint64_t divisor) {
+  const bool dividend_negative = (high >> 63) != 0;
+  const bool divisor_negative = (divisor >> 63) != 0;
+  std::uint64_t magnitude_high = high;
+  std::uint64_t magnitude_low = low;
+  if (dividend_negative) {
+    magnitude_low = ~magnitude_low + 1ull;
+    magnitude_high = ~magnitude_high + (magnitude_low == 0 ? 1ull : 0ull);
+  }
+  std::uint64_t magnitude_divisor = divisor;
+  if (divisor_negative) magnitude_divisor = ~magnitude_divisor + 1ull;
+  const auto wide = divide_wide(magnitude_high, magnitude_low, magnitude_divisor);
+  if (wide.overflow) return wide;
+  WideQuotient result = wide;
+  if (dividend_negative != divisor_negative) result.quotient = ~result.quotient + 1ull;
+  if (dividend_negative) result.remainder = ~result.remainder + 1ull;
+  return result;
+}
+
 std::time_t guest_fixed_time() {
   static const std::time_t fixed = [] {
     if (const char* setting = std::getenv("RECOMP_FIXED_TIME")) {
@@ -6040,12 +6123,13 @@ bool register_import_thunk(std::uint64_t address, void (*function)(GuestContext*
 
 void signed_multiply_single(GuestContext* context, std::uint64_t operand, int width) {
   if (width >= 8) {
-    const __int128 product = static_cast<__int128>(static_cast<std::int64_t>(context->registers[0])) *
-                             static_cast<__int128>(static_cast<std::int64_t>(operand));
-    context->registers[0] = static_cast<std::uint64_t>(product);
-    context->registers[2] = static_cast<std::uint64_t>(product >> 64);
+    const auto wide = multiply_wide(context->registers[0], operand);
+    // SIGNED overflow: the high half must be the sign extension of the low half.
+    const std::uint64_t sign_fill = (wide.low >> 63) != 0 ? ~0ull : 0ull;
+    context->registers[0] = wide.low;
+    context->registers[2] = wide.high;
     context->carry_flag = context->overflow_flag =
-        product != static_cast<__int128>(static_cast<std::int64_t>(context->registers[0]));
+        wide.high != sign_fill;
     context->auxiliary_flag = 0;
     update_zero_sign_parity(context, context->registers[0], 8);
     return;
@@ -6063,9 +6147,10 @@ std::uint64_t signed_multiply_two(GuestContext* context, std::uint64_t left, std
   const auto left_value = sign_extend(left, width);
   const auto right_value = sign_extend(right, width);
   if (width >= 8) {
-    const __int128 product = static_cast<__int128>(left_value) * static_cast<__int128>(right_value);
-    const auto result = static_cast<std::uint64_t>(product);
-    context->carry_flag = context->overflow_flag = product != static_cast<__int128>(static_cast<std::int64_t>(result));
+    const auto wide = multiply_wide(left_value, right_value);
+    const auto result = wide.low;
+    const std::uint64_t sign_fill = (result >> 63) != 0 ? ~0ull : 0ull;
+    context->carry_flag = context->overflow_flag = wide.high != sign_fill;
     context->auxiliary_flag = 0;
     update_zero_sign_parity(context, result, 8);
     return result;
@@ -6083,7 +6168,8 @@ void unsigned_multiply_single(GuestContext* context, std::uint64_t operand, int 
   const auto mask = value_mask(width);
   const auto left = context->registers[0] & mask;
   const auto right = operand & mask;
-  const auto product = static_cast<unsigned __int128>(left) * static_cast<unsigned __int128>(right);
+  const auto wide = multiply_wide(left, right);
+  const auto product = wide.low;
   context->registers[0] = static_cast<std::uint64_t>(product) & mask;
   context->registers[2] = static_cast<std::uint64_t>(product >> (width * 8)) & mask;
   context->carry_flag = context->overflow_flag = (product >> (width * 8)) != 0;
@@ -6095,9 +6181,11 @@ void unsigned_divide(GuestContext* context, std::uint64_t divisor, int width) {
   const auto mask = value_mask(width);
   if ((divisor & mask) == 0) { report_divide_error(context); return; }
   if (width >= 8) {
-    const auto dividend = (static_cast<unsigned __int128>(context->registers[2]) << 64) | context->registers[0];
-    context->registers[0] = static_cast<std::uint64_t>(dividend / divisor);
-    context->registers[2] = static_cast<std::uint64_t>(dividend % divisor);
+    const auto wide = divide_wide(context->registers[2], context->registers[0], divisor);
+    // A quotient that does not fit is #DE on x86, which `report_divide_error` already models.
+    if (wide.overflow) { report_divide_error(context); return; }
+    context->registers[0] = wide.quotient;
+    context->registers[2] = wide.remainder;
     return;
   }
   const auto dividend = ((context->registers[2] & mask) << (width * 8)) | (context->registers[0] & mask);
@@ -6110,17 +6198,20 @@ void signed_divide(GuestContext* context, std::uint64_t divisor, int width) {
   if (divisor_value == 0) { report_divide_error(context); return; }
   const auto mask = value_mask(width);
   if (width >= 8) {
-    const __int128 dividend = (static_cast<__int128>(static_cast<std::int64_t>(context->registers[2])) << 64) |
-                              static_cast<unsigned __int128>(context->registers[0]);
-    context->registers[0] = static_cast<std::uint64_t>(dividend / divisor_value);
-    context->registers[2] = static_cast<std::uint64_t>(dividend % divisor_value);
+    const auto wide = divide_wide_signed(context->registers[2], context->registers[0], divisor);
+    if (wide.overflow) { report_divide_error(context); return; }
+    context->registers[0] = wide.quotient;
+    context->registers[2] = wide.remainder;
     return;
   }
   const auto high = sign_extend(context->registers[2], width);
   const auto low = context->registers[0] & mask;
-  const __int128 dividend = (static_cast<__int128>(high) << (width * 8)) | static_cast<unsigned __int128>(low);
-  context->registers[0] = static_cast<std::uint64_t>(dividend / divisor_value) & mask;
-  context->registers[2] = static_cast<std::uint64_t>(dividend % divisor_value) & mask;
+  const auto dividend = (static_cast<std::uint64_t>(high) << (width * 8)) | low;
+  const auto wide = divide_wide_signed(high < 0 ? ~0ull : 0ull, dividend,
+                                       static_cast<std::uint64_t>(divisor_value));
+  if (wide.overflow) { report_divide_error(context); return; }
+  context->registers[0] = wide.quotient & mask;
+  context->registers[2] = wide.remainder & mask;
 }
 
 

@@ -11,6 +11,14 @@ adaptations of third-party code identified below.
 
 ## Adapted source
 
+`runtime/pcrecomp/gdidc.c` is adapted from `runtime/win32hle/gdidc.c` in
+[PCRecomp](https://github.com/sp00nznet/pcrecomp) commit
+`a85ea970f9e0640ab6546d2ca7a01fccb132973d`, copyright 2026 sp00nz, MIT;
+see `third_party/pcrecomp-LICENSE.txt`. Its packed 1-bit and 4-bit DIB reads
+were adapted using the high-bit-first expansion in SDL's `src/video/SDL_bmp.c`,
+[SDL](https://github.com/libsdl-org/SDL) commit `98d1f3a45aae568ccd6ed5fec179330f47d4d356`,
+copyright 1997–2025 Sam Lantinga, zlib license; see `third_party/SDL2-LICENSE.txt`.
+
 Several Win32 shims in `runtime/recomp_runtime.cpp` are adapted from
 `shim/src/kernel32.c` and `shim/src/ole32.c` in
 [igi-recomp](https://github.com/HenryKun55/igi-recomp), copyright 2026

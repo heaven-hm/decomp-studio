@@ -38,7 +38,10 @@ if(RECOMP_PCRECOMP_SOURCE)
     set_tests_properties(pcrecomp_${test_name} PROPERTIES
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   endforeach()
-  add_library(pcrecomp_stateless_crt_provider STATIC ${PCRECOMP_HLE_SOURCES}
+  set(PCRECOMP_PROVIDER_SOURCES ${PCRECOMP_HLE_SOURCES})
+  list(FILTER PCRECOMP_PROVIDER_SOURCES EXCLUDE REGEX "/gdidc\\.c$")
+  list(APPEND PCRECOMP_PROVIDER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/pcrecomp/gdidc.c")
+  add_library(pcrecomp_stateless_crt_provider STATIC ${PCRECOMP_PROVIDER_SOURCES}
     runtime/recomp_runtime.cpp runtime/pcrecomp_stateless_crt.cpp)
   target_compile_features(pcrecomp_stateless_crt_provider PRIVATE cxx_std_20)
   target_include_directories(pcrecomp_stateless_crt_provider PRIVATE runtime "${PCRECOMP_HLE_DIR}"
@@ -51,6 +54,12 @@ if(RECOMP_PCRECOMP_SOURCE)
   target_link_libraries(pcrecomp_stateless_crt_test PRIVATE pcrecomp_stateless_crt_provider)
   add_test(NAME pcrecomp_stateless_crt COMMAND pcrecomp_stateless_crt_test)
   set_tests_properties(pcrecomp_stateless_crt PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
+  add_executable(pcrecomp_indexed_bitmap_test tests/compat/pcrecomp_indexed_bitmap_test.c)
+  target_include_directories(pcrecomp_indexed_bitmap_test PRIVATE "${PCRECOMP_HLE_DIR}"
+    "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+  target_link_libraries(pcrecomp_indexed_bitmap_test PRIVATE pcrecomp_stateless_crt_provider)
+  add_test(NAME pcrecomp_indexed_bitmap COMMAND pcrecomp_indexed_bitmap_test)
+  set_tests_properties(pcrecomp_indexed_bitmap PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   find_program(PCRECOMP_MINGW_CC i686-w64-mingw32-gcc)
   if(PCRECOMP_MINGW_CC)
     add_test(NAME pcrecomp_pe32_fixture COMMAND ${Python3_EXECUTABLE}

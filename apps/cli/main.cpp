@@ -1029,12 +1029,20 @@ int command_autorecomp(const std::filesystem::path& input, const std::filesystem
       log_file.flush();
       if (!report.standard_output.empty()) display.note("program produced " +
                                                         std::to_string(report.standard_output.size()) + " bytes");
-      display.finish(report.exit_code == 0,
+      // A NON-ZERO EXIT IS NOT A FAILURE. The run stage executes the candidate and cannot
+      // know what status the program is supposed to return -- only the differential
+      // comparison against the reference can answer that. Treating `!= 0` as a failed port
+      // marked every program that legitimately exits non-zero as broken, which is exactly
+      // what the verification stage was fixed for one round earlier; this was the same bug
+      // in a second place, and it made `dominosasolver` report AUTORECOMP FAILED while its
+      // own `verified` line in the same output said `yes`.
+      display.finish(true,
                      "exit code " + std::to_string(report.exit_code) + ", " +
                          std::to_string(report.standard_output.size()) + " bytes of output");
       if (report.exit_code != 0) {
-        display.note("the program ran but exited non-zero, so the port is not verified");
-        fail_step("the translated program exited with code " + std::to_string(report.exit_code));
+        display.note("the program exited " + std::to_string(report.exit_code) +
+                     "; whether that is CORRECT is decided by the comparison against the "
+                     "reference, not by the status alone");
       }
     } catch (const std::exception& error) {
       display.finish(false, error.what());

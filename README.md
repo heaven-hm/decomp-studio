@@ -1,8 +1,8 @@
-# Decomp Studio
+# RevEng-Studio
 
-**Recover, recompile, and verify software for the future.**
+**Reverse engineer, reconstruct, recompile, and verify software.**
 
-Decomp Studio (formerly Recomp Studio; earlier roadmap name Recomp-Agent) is a general-purpose hybrid decompilation
+RevEng-Studio is a general-purpose hybrid decompilation
 and static recompilation project, with an initial focus on preserving 2D and 3D
 games. It combines machine-level translation with external analysis providers
 and aims to produce source and native executables whose behavior can be tested
@@ -37,9 +37,9 @@ original game files and a scripted Enter key. This is not the standard
 ## How it compares
 
 These tools overlap and can complement one another; this table compares their
-published focus with Decomp Studio's **planned** workflow, not their maturity.
+published focus with RevEng-Studio's **planned** workflow, not their maturity.
 
-| Project | Published focus | Decomp Studio's direction |
+| Project | Published focus | RevEng-Studio's direction |
 | --- | --- | --- |
 | [rev.ng](https://rev.ng/) | Binary analysis and high-level decompilation across several architectures. | Combine its analysis artifacts with other providers, low-level recompilation and game-runtime verification. The adapter is experimental. |
 | [decompdecomp](https://github.com/n-delic/decompdecomp) | AI-assisted game decompilation targeting matching, byte-for-byte rebuilds. | Aim for observable behavioral equivalence and native outputs; AI is optional and exact original machine-code matching is not the goal. |
@@ -80,7 +80,7 @@ build/recomp-studio doctor
 build/recomp-studio autorecomp /path/to/game.exe --output /tmp/recomp-game --buildrun --timeout 5
 ```
 
-The executable is currently named `recomp-studio`; the project name change does not
+The executable is currently named `reveng-studio`; the project name change does not
 rename the CLI yet. Use a legally obtained executable and assets. Generated output is experimental;
 a built executable is not necessarily functional. Run `build/recomp-studio --help`
 for commands and `ctest --test-dir build --output-on-failure` for tests.

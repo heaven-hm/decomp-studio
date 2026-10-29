@@ -82,7 +82,16 @@ never been shown a contradiction has not been shown to detect one.
   lifter already emits it (`return_from_guest_function(context, N)` in
   `core/semantics/x86_64_lifter.cpp`). A function with no `ret` at all -- one that ends in a
   `jmp`, or a thunk -- is reported `unknown` rather than defaulted to cdecl.
-  The provider's `calling_convention` field is **not yet read**, so the two are not compared.
+  The provider's `calling_convention` field **is now read and compared**, per function, from
+  the same JSON object as its address -- reading the two in separate passes could pair an
+  address with a neighbouring entry's convention and never say so. The comparison reports
+  `agreed`, `disagreed`, `provider_unstated`, and names every conflict with both sides'
+  spelling. **Silence is not corroboration**: a provider that states no convention is counted
+  `provider_unstated`, never `agreed`. Measured on `arith.exe`: an empty record gives
+  `agreed 0, provider_unstated 36`; a record claiming `__stdcall` for all 36 gives
+  `disagreed 36` with each conflict named; a record claiming `__cdecl` gives `agreed 35,
+  disagreed 1` -- the one disagreement being the function whose own code has no `ret`, so the
+  machine states nothing while the provider states something.
 - **`flags`, `body_bytes` and `references` are not compared either.**
 - **It has no rev.ng input.** The external-process `revng-run` adapter preserves a raw rev.ng
   artifact, but parsing and reconciling that artifact are not implemented -- so rev.ng is not

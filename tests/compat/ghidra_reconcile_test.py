@@ -119,6 +119,47 @@ if agreed and isinstance(agreed.get("conventions"), dict):
           "unknown" not in agreed["conventions"] or agreed["conventions"]["unknown"] < len(local_addresses),
           "every function was reported unknown, so the `ret` scan is not reading anything")
 
+# THE CONVENTION COMPARISON. It must distinguish agreement, disagreement and SILENCE --
+# a provider that states nothing has not corroborated anything.
+def with_conventions(name):
+    record = json.dumps({"schema_version": 1, "functions":
+                         [{"address": a, "name": "f", "calling_convention": name}
+                          for a in local_addresses]})
+    return run(record)[0]
+
+agreeing = with_conventions("__cdecl")
+check("conventions/agreement-detected", agreeing is not None and agreeing.get("convention_comparison", {}).get("agreed", 0) > 0,
+      "a record claiming cdecl agreed with nothing")
+if agreeing:
+    comparison = agreeing["convention_comparison"]
+    check("conventions/agreement-not-universal", comparison["disagreed"] >= 1,
+          "a convention was claimed for a function whose own code states none, and it was "
+          "counted as agreement")
+
+wrong = with_conventions("__stdcall")
+check("conventions/disagreement-detected", wrong is not None and wrong.get("convention_comparison", {}).get("disagreed", 0) > 0,
+      "a record claiming stdcall for cdecl functions reported no disagreement")
+if wrong:
+    conflicts = wrong["convention_comparison"]["conflicts"]
+    check("conventions/conflicts-are-named", len(conflicts) == wrong["convention_comparison"]["disagreed"],
+          f"{len(conflicts)} conflicts named for {wrong['convention_comparison']['disagreed']} disagreements")
+    check("conventions/conflict-names-both-sides",
+          all("provider=" in c and "local=" in c for c in conflicts),
+          "a conflict does not say which side said what")
+    check("conventions/disagreement-does-not-block-address-agreement",
+          wrong["agreed"] == len(local_addresses),
+          "a convention disagreement changed the ADDRESS reconciliation, which is a separate fact")
+
+# SILENCE IS NOT CORROBORATION: the empty record states no convention, so every function is
+# `provider_unstated` and NONE is agreed.
+silent = json.loads(subprocess.run([CLI, FIXTURE, "/dev/null"], capture_output=True, text=True).stdout) if False else None
+empty_record = json.dumps({"schema_version": 1, "functions": []})
+empty_run, _ = run(empty_record)
+if empty_run:
+    comparison = empty_run.get("convention_comparison", {})
+    check("conventions/silence-is-not-agreement", comparison.get("agreed", 0) == 0,
+          "a provider that stated nothing was counted as agreeing")
+
 for line in PASSES:
     print("PASS " + line)
 for line in FAILURES:

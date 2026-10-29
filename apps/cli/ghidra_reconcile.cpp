@@ -39,21 +39,36 @@ std::string read_file(const std::string& path) {
   return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
-std::set<std::uint64_t> provider_addresses(const std::string& record) {
+// One provider function, as the record states it. The address and the convention come from
+// the SAME JSON object, which is why this returns a map rather than two independent scans:
+// two scans over the same text can pair an address with a neighbouring entry's convention
+// and never say so.
+struct ProviderFunction {
+  std::uint64_t address{};
+  std::string convention;
+};
+
+std::map<std::uint64_t, ProviderFunction> provider_functions(const std::string& record) {
   const auto json = nlohmann::json::parse(record);
   if (!json.is_object() || !json.contains("functions") || !json["functions"].is_array())
     throw std::runtime_error("provider record must contain a functions array");
-  std::set<std::uint64_t> addresses;
+  std::map<std::uint64_t, ProviderFunction> functions;
   for (const auto& function : json["functions"]) {
     if (!function.is_object() || !function.contains("address") || !function["address"].is_string())
       throw std::runtime_error("function address must be a hexadecimal string");
     const auto text = function["address"].get<std::string>();
     if (text.empty() || text.size() > 16 || text.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
       throw std::runtime_error("invalid function address");
-    if (!addresses.insert(std::stoull(text, nullptr, 16)).second)
+    ProviderFunction fact;
+    fact.address = std::stoull(text, nullptr, 16);
+    // The convention is OPTIONAL: a record may not carry one, and an absent field is
+    // "unstated" rather than a disagreement.
+    if (function.contains("calling_convention") && function["calling_convention"].is_string())
+      fact.convention = function["calling_convention"].get<std::string>();
+    if (!functions.emplace(fact.address, fact).second)
       throw std::runtime_error("duplicate function address");
   }
-  return addresses;
+  return functions;
 }
 
 }  // namespace
@@ -100,7 +115,12 @@ int main(int argc, char** argv) {
       local_conventions[address] = fact;
     }
 
-    const auto provider = provider_addresses(read_file(argv[2]));
+    const auto provider_map = provider_functions(read_file(argv[2]));
+    std::set<std::uint64_t> provider;
+    for (const auto& [address, fact] : provider_map) {
+      (void)fact;
+      provider.insert(address);
+    }
 
     std::vector<std::uint64_t> agreed;
     std::vector<std::uint64_t> provider_only;
@@ -154,13 +174,58 @@ int main(int argc, char** argv) {
       (void)address;
       tally[fact.convention] += 1;
     }
+
+    // COMPARE the two sides' conventions where both stated one, and REPORT the result.
+    // Nothing is rewritten: the rule is that a convention is not changed without an ABI
+    // test, so a disagreement is evidence for that test rather than a reason to act. A
+    // provider that states no convention for a function is counted as `unstated`, NOT as
+    // agreement -- silence is not corroboration.
+    std::size_t conventions_agreed = 0;
+    std::size_t conventions_disagreed = 0;
+    std::size_t conventions_unstated = 0;
+    std::vector<std::string> disagreements;
+    for (const auto& [address, local_fact] : local_conventions) {
+      const auto found = provider_map.find(address);
+      if (found == provider_map.end() || found->second.convention.empty()) {
+        ++conventions_unstated;
+        continue;
+      }
+      // The provider may spell it `__stdcall` where this project says `stdcall`; compare on
+      // the name with leading underscores removed so the two vocabularies can be compared
+      // at all, and say so rather than silently normalising into agreement.
+      const auto normalise = [](std::string name) {
+        while (!name.empty() && name.front() == '_') name.erase(name.begin());
+        for (auto& character : name) character = static_cast<char>(std::tolower(character));
+        return name;
+      };
+      if (normalise(found->second.convention) == normalise(local_fact.convention)) {
+        ++conventions_agreed;
+      } else {
+        ++conventions_disagreed;
+        std::ostringstream pair;
+        pair << std::hex << address << ":provider=" << found->second.convention
+             << ",local=" << local_fact.convention;
+        disagreements.push_back(pair.str());
+      }
+    }
+    // CLOSE the conventions object first, THEN emit the comparison as its sibling. The
+    // first ordering emitted the comparison before the tally had filled the object, which
+    // produced valid-looking output that no JSON parser would accept: the tally keys landed
+    // after the closing brace. Order is the whole difference between a record and garbage.
     bool first_convention = true;
     for (const auto& [name, count] : tally) {
       if (!first_convention) std::cout << ',';
       first_convention = false;
       std::cout << '"' << name << "\":" << count;
     }
-    std::cout << "}}\n";
+    std::cout << "},\"convention_comparison\":{\"agreed\":" << conventions_agreed
+              << ",\"disagreed\":" << conventions_disagreed
+              << ",\"provider_unstated\":" << conventions_unstated << ",\"conflicts\":[";
+    for (std::size_t index = 0; index < disagreements.size(); ++index) {
+      if (index != 0) std::cout << ',';
+      std::cout << '"' << disagreements[index] << '"';
+    }
+    std::cout << "]}}\n";  // close convention_comparison, then the record
     // ANY unresolved disagreement is a finding, not a success. The first rule here was
     // `agreed.empty() && !provider.empty()`, which exited zero whenever the two sides
     // agreed on ANYTHING -- so a record that agreed on 36 functions and invented a 37th

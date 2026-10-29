@@ -170,6 +170,9 @@ add_executable(ghidra-reconcile apps/cli/ghidra_reconcile.cpp core/binary/pe.cpp
 target_compile_features(ghidra-reconcile PRIVATE cxx_std_20)
 target_include_directories(ghidra-reconcile PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(ghidra-reconcile PRIVATE ${RECOMP_LIBRARIES})
+add_test(NAME frame_recovery COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/frame_recovery_test.py $<TARGET_FILE:recomp-studio>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/bin/arith.exe 36)
 add_test(NAME ghidra_reconcile COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_reconcile_test.py $<TARGET_FILE:ghidra-reconcile>
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c)

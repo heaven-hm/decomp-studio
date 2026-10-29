@@ -294,6 +294,14 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   for (const auto& entry : census.unsupported) unresolved_entries.insert(entry.first_function_entry);
   const auto unresolved_functions = unresolved_entries.size();
 
+  // How many functions state their own frame size in the prologue. This is the only SHAPE
+  // fact recovered today; everything else about a function is behaviour.
+  std::size_t functions_with_frame = 0;
+  for (const auto& [address, function] : discovery.functions()) {
+    (void)address;
+    if (function.frame_known) ++functions_with_frame;
+  }
+
   if (json) {
     std::cout << "{\"status\":\"ok\",\"architecture\":\"" << executable.architecture_name()
               << "\",\"format\":\"" << executable.format_name()
@@ -314,6 +322,8 @@ int command_coverage(const std::filesystem::path& input, bool json) {
               << ",\"high_level_functions\":0"
               << ",\"low_level_fallback_functions\":" << discovery.functions().size()
               << ",\"unresolved_functions\":" << unresolved_functions
+              // The first recovered fact about function SHAPE rather than behaviour.
+              << ",\"functions_with_recovered_frame\":" << functions_with_frame
               << ",\"unsupported\":[";
     for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
       const auto& entry = census.unsupported[index];
@@ -342,7 +352,9 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             // §13 requires the delivered source to be reported as TWO categories, never one.
             << "high-level:     0 functions (no recovered signatures or types exist)\n"
             << "low-level:      " << discovery.functions().size() << " functions (machine-level translation)\n"
-            << "unresolved:     " << unresolved_functions << " functions\n";
+            << "unresolved:     " << unresolved_functions << " functions\n"
+            << "frames:         " << functions_with_frame << " of " << discovery.functions().size()
+            << " functions have a frame size recovered from their prologue\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;

@@ -39,6 +39,13 @@ int main() {
   assert(source.find("High-level reconstruction") != std::string::npos);
   assert(source.find("std::uint32_t") != std::string::npos);
   assert(source.find("context->registers[0]") != std::string::npos);
+  assert(source.find("return_from_guest_function(context, 0)") != std::string::npos);
+
+  auto xor_instruction = instruction("xor");
+  xor_instruction.operands = {destination, destination};
+  leaf.instructions[leaf.entry] = xor_instruction;
+  assert(!recomp::semantics::recognize_constant_return(leaf).has_value());
+  leaf.instructions[leaf.entry] = move;
 
   leaf.instructions.emplace(leaf.entry + 6, instruction("nop"));
   assert(recomp::semantics::recognize_constant_return(leaf).has_value());

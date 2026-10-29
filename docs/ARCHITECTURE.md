@@ -59,7 +59,7 @@ of a specific function at a specific address.
 
 `core/semantics/high_level_reconstruction.cpp` contains the first deliberately
 narrow readable-source recognizer. It accepts only a complete function body
-containing `mov eax/rax, immediate` (or `xor eax/rax, eax`) followed by `ret`,
+containing `mov eax/rax, immediate` followed by `ret`,
 ignoring alignment `nop`/`endbr` instructions. The generated helper is emitted
 only for that exact evidence-backed shape and records the guest address as
 provenance. `translate --source-style readable` selects this path; the default

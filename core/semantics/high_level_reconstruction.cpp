@@ -37,14 +37,6 @@ std::optional<ConstantReturnFunction> recognize_constant_return(
     return ConstantReturnFunction{function.entry,
                                   static_cast<std::uint64_t>(move.operands[1].immediate_value), width};
   }
-  if (move.mnemonic == "xor" && move.operands.size() == 2 &&
-      move.operands[0].kind == discovery::Operand::Kind::Register &&
-      move.operands[1].kind == discovery::Operand::Kind::Register &&
-      move.operands[0].register_name == move.operands[1].register_name &&
-      (move.operands[0].register_name == "eax" || move.operands[0].register_name == "rax")) {
-    const int width = move.operands[0].register_name == "rax" ? 8 : 4;
-    return ConstantReturnFunction{function.entry, 0, width};
-  }
   return std::nullopt;
 }
 
@@ -60,6 +52,7 @@ std::string render_constant_return(const ConstantReturnFunction& function,
   output << "static void " << guest_name << "(GuestContext* context) {\n"
          << "  context->registers[0] = high_level_" << std::hex << function.address << std::dec
          << "();\n"
+         << "  return_from_guest_function(context, 0);\n"
          << "  return;\n}\n";
   return output.str();
 }

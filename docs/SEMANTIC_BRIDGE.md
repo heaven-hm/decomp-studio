@@ -79,6 +79,5 @@ never been shown a contradiction has not been shown to detect one.
   `flags`, `body_bytes` and `references`; those are **not yet compared**. Calling conventions
   are the next fact worth reconciling, and the rule for them is already fixed: a convention
   is not changed without an ABI test.
-- **It has no rev.ng input**, because there is no rev.ng adapter -- and per
-  `docs/UPSTREAM_COMPONENTS.md` any future one must be an external process, since rev.ng is
-  GPLv2.
+- **It has no rev.ng input**: the external-process `revng-run` adapter preserves a raw
+  artifact, but parsing and reconciling that artifact are not implemented.

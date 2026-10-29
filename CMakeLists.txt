@@ -121,6 +121,11 @@ if(RECOMP_PCRECOMP_SOURCE AND PCRECOMP_MINGW_CC AND RECOMP_ENABLE_UNICORN AND UN
 endif()
 add_executable(ghidra-import apps/cli/ghidra_import.cpp core/common/sha256.cpp)
 add_executable(ghidra-run apps/cli/ghidra_run.cpp core/common/sha256.cpp)
+add_executable(revng-run apps/cli/revng_run.cpp core/common/sha256.cpp)
+target_compile_features(revng-run PRIVATE cxx_std_20)
+target_include_directories(revng-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME revng_run COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/revng_run_test.py $<TARGET_FILE:revng-run>)
 target_compile_features(ghidra-run PRIVATE cxx_std_20)
 target_include_directories(ghidra-run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME ghidra_run COMMAND ${Python3_EXECUTABLE}

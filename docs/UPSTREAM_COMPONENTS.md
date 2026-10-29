@@ -96,9 +96,13 @@ but narrow, and it is recorded here rather than relied on silently.
 
 ## What is deliberately NOT used
 
-- **rev.ng** -- assigned high-level source reconstruction by the directive. **No adapter
-  exists and no rev.ng code is present.** Its licence has now been established, and the
-  answer decides the integration mechanism:
+- **rev.ng** -- assigned high-level source reconstruction by the directive. `revng-run`
+  invokes the documented `quick artifact emit-c-as-single-file` command as an external
+  process and records input and artifact hashes. It preserves the raw YAML artifact and
+  marks its association and behavior unverified. The adapter has been tested against a
+  controlled stand-in; no rev.ng executable is installed here, so actual PE support and
+  output remain untested. No rev.ng code is linked into the core. Its license informs
+  the integration mechanism:
 
   **rev.ng is GPLv2, and its own README says why**: "rev.ng depends on certain on GPLv2
   components (in particular, QEMU), so the project is GPLv2-licensed as a whole"

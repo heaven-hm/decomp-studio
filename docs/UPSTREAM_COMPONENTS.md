@@ -140,3 +140,7 @@ but narrow, and it is recorded here rather than relied on silently.
 `tools/ghidra/DecompileAll.java` in the same analysis session and reports the
 resulting `_decompiled.c` path. This is Ghidra pseudocode for investigation;
 it is not a compilable reconstruction or behavioral verification.
+The run writes `analysis-provenance.json` with hashes of the input and emitted
+artifacts, and refuses to write that record if the input hash changes during
+the run. These hashes record observed files; they do not authenticate Ghidra or
+prove that an export was derived from that binary.

@@ -1,4 +1,5 @@
 #include "core/common/sha256.hpp"
+#include "third_party/nlohmann/json.hpp"
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,14 @@
 extern char** environ;
 namespace fs = std::filesystem;
 
+static std::string file_sha256(const fs::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) throw std::runtime_error("cannot read " + path.string());
+  const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), {});
+  if (file.bad()) throw std::runtime_error("failed reading " + path.string());
+  return recomp::common::sha256(bytes);
+}
+
 int main(int argc, char** argv) {
   if (argc != 5 && !(argc == 6 && std::string(argv[5]) == "--decompile")) {
     std::cerr << "usage: ghidra-run <analyzeHeadless> <pcrecomp script directory> <binary> <new output directory> [--decompile]\n";
@@ -21,6 +30,7 @@ int main(int argc, char** argv) {
     const auto scripts = fs::absolute(argv[2]);
     const auto binary = fs::canonical(argv[3]);
     const auto output = fs::absolute(argv[4]);
+    const auto binary_hash = file_sha256(binary);
     std::ifstream script(scripts / "ExportFunctions.java", std::ios::binary);
     if (!script) throw std::runtime_error("cannot read ExportFunctions.java");
     std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(script)), {});
@@ -62,6 +72,18 @@ int main(int argc, char** argv) {
     const auto decompiled = output / (name + "_decompiled.c");
     if (decompile && (!fs::is_regular_file(decompiled) || fs::file_size(decompiled) == 0))
       throw std::runtime_error("Ghidra produced no decompiler output; inspect the output logs");
+    if (file_sha256(binary) != binary_hash)
+      throw std::runtime_error("input binary changed during Ghidra analysis");
+    nlohmann::json manifest = {{"schema_version", 1}, {"binary_sha256", binary_hash},
+      {"function_export_sha256", file_sha256(exported)},
+      {"binary_export_association", "unverified"},
+      {"export_script_sha256", recomp::common::sha256(bytes)}};
+    if (decompile) {
+      manifest["decompiled_sha256"] = file_sha256(decompiled);
+      manifest["decompile_script_sha256"] = "801c4ffdc18697311298b4bb95edf3f8255abc216fa94f1536f40a0a37392c1e";
+    }
+    std::ofstream report(output / "analysis-provenance.json", std::ios::binary);
+    if (!(report << manifest.dump(2) << '\n')) throw std::runtime_error("cannot write analysis provenance");
     std::cout << exported.string() << '\n';
     if (decompile) std::cout << decompiled.string() << '\n';
     return 0;

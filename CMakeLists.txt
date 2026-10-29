@@ -38,6 +38,15 @@ if(RECOMP_PCRECOMP_SOURCE)
     set_tests_properties(pcrecomp_${test_name} PROPERTIES
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   endforeach()
+  find_program(PCRECOMP_MINGW_CC i686-w64-mingw32-gcc)
+  if(PCRECOMP_MINGW_CC)
+    add_test(NAME pcrecomp_pe32_fixture COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_fixture_test.py
+      ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c
+      ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${PKG_CONFIG_EXECUTABLE} ${CMAKE_OSX_SYSROOT})
+    set_tests_properties(pcrecomp_pe32_fixture PROPERTIES
+      ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
+  endif()
 endif()
 
 # Unicorn (GPL-2.0) powers the differential verification backend. It is optional

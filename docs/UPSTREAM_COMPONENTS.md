@@ -67,6 +67,14 @@ address space and global register file, whereas Recomp Studio uses `GuestContext
 The memory, callback and thread contracts must be bridged before that runtime can
 serve Recomp Studio guests.
 
+With `i686-w64-mingw32-gcc` and Python Capstone installed, the optional
+`pcrecomp_pe32_fixture` test also compiles the project's arithmetic fixture to
+PE32, runs PCRecomp's generator, builds its generated C with `win32hle`, and
+checks the native output. It uses the original PE as the upstream host's image
+input. The expected output is a fixture oracle, not an independent execution
+of the original Windows binary; this test does not establish game support or
+high-level source reconstruction.
+
 **Its own NOTICE demonstrates the file-level rule this document insists on.** The repository
 carries a `LICENSES/` directory and a `NOTICE` that lists each exception by PATH:
 `tools/assets/is3extract.py` (the PKWARE DCL explode section) is a Python port of zlib's

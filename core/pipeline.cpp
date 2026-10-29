@@ -125,6 +125,17 @@ RunReport capture_process(const std::string& command, const std::filesystem::pat
 // machinery for a format the project controls. A missing field returns an empty
 // string rather than inventing a default, because the question being asked is
 // "what did the input image call itself", and a guess is not an answer.
+// The driver that can actually reach the target. A mingw triple needs the mingw DRIVER,
+// because `clang++ -target <triple>` does not know where that toolchain's headers live --
+// measured as `fatal error: 'cmath' file not found`. Declaring a target and being able to
+// build one are different things, and this is where the difference is made.
+std::string compiler_for(const common::Configuration& configuration) {
+  if (const auto triple = common::target_triple_for(configuration.target);
+      triple.find("mingw") != std::string::npos) {
+    return triple + "-g++";
+  }
+  return configuration.compiler;
+}
 std::string manifest_string_field(const std::filesystem::path& project, const std::string& field) {
   const auto text = read_whole_file(project / "recomp-manifest.json");
   const auto key = "\"" + field + "\": \"";
@@ -325,7 +336,8 @@ TranslateReport translate(const std::filesystem::path& input, const std::filesys
   return report;
 }
 
-BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration) {
+BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration,
+                  bool enforce_source_manifest) {
   const auto guest_source = output_directory / "guest.cpp";
   const auto runtime_source = output_directory / "recomp_runtime.cpp";
   if (!std::filesystem::exists(guest_source) || !std::filesystem::exists(runtime_source))
@@ -333,19 +345,25 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
 
   // The build consumes exactly the source translate recorded. If a file no longer
   // matches its manifest hash, compiling it would produce a binary the manifest
-  // does not describe, so the build fails closed instead.
-  const auto verified_sources = read_source_manifest(output_directory);
-  for (const auto& entry : verified_sources) {
-    const auto path = output_directory / entry.path;
-    if (!std::filesystem::exists(path))
-      throw std::runtime_error("source file listed in recomp-source-manifest.json is missing: " + entry.path);
-    const auto actual = sha256_of_file(path);
-    if (actual != entry.sha256) {
-      throw std::runtime_error("source hash mismatch for " + entry.path + ": manifest records " +
-                               entry.sha256 + ", file is " + actual +
-                               ". The delivered source no longer matches its manifest; run translate again "
-                               "rather than building source the manifest does not describe.");
+  // does not describe, so the build fails closed instead. An explicit opt-out is
+  // reserved for tests that mutate a generated source on purpose; the build
+  // manifest then records the hashes actually compiled rather than the stale ones.
+  auto verified_sources = read_source_manifest(output_directory);
+  if (enforce_source_manifest) {
+    for (const auto& entry : verified_sources) {
+      const auto path = output_directory / entry.path;
+      if (!std::filesystem::exists(path))
+        throw std::runtime_error("source file listed in recomp-source-manifest.json is missing: " + entry.path);
+      const auto actual = sha256_of_file(path);
+      if (actual != entry.sha256) {
+        throw std::runtime_error("source hash mismatch for " + entry.path + ": manifest records " +
+                                 entry.sha256 + ", file is " + actual +
+                                 ". The delivered source no longer matches its manifest; run translate again "
+                                 "rather than building source the manifest does not describe.");
+      }
     }
+  } else {
+    for (auto& entry : verified_sources) entry.sha256 = sha256_of_file(output_directory / entry.path);
   }
 
   const auto built_executable = output_directory / "recomp-guest";
@@ -357,11 +375,19 @@ BuildReport build(const std::filesystem::path& output_directory, const common::C
   const auto optimization = std::filesystem::file_size(guest_source) >= kLargeGuestSourceBytes
                                 ? "-O0"
                                 : "-O2";
-  std::vector<std::string> arguments{configuration.compiler, "-std=c++20", optimization, "-w", "-I",
+  // A MINGW TARGET NEEDS THE MINGW DRIVER, not `clang++ -target`.
+  //
+  // Measured: `clang++ -std=c++20 ... -target i686-w64-mingw32` fails with
+  //   recomp_runtime.hpp:3:10: fatal error: 'cmath' file not found
+  // because clang does not know where the mingw headers and libraries are. The mingw driver
+  // does, and it selects the same triple, so the target is reached through it instead. This is
+  // the difference between declaring a target and being able to build one.
+  std::vector<std::string> arguments{compiler_for(configuration), "-std=c++20", optimization, "-w", "-I",
                                      output_directory.string(), "-o", built_executable.string(),
                                      guest_source.string(), runtime_source.string()};
   const auto triple = common::target_triple_for(configuration.target);
-  if (!triple.empty()) {
+  // The mingw DRIVER already selects its triple; passing -target to it is not meaningful.
+  if (!triple.empty() && triple.find("mingw") == std::string::npos) {
     arguments.push_back("-target");
     arguments.push_back(triple);
   }
@@ -412,7 +438,7 @@ void write_project_configuration(const common::Configuration& configuration,
                                  const std::filesystem::path& output_directory) {
   std::ofstream output(output_directory / "recomp-config.toml");
   output << "# Generated by recomp-studio; consumed by the build command.\n";
-  output << "compiler = \"" << configuration.compiler << "\"\n";
+  output << "compiler = \"" << compiler_for(configuration) << "\"\n";
   output << "source_style = \"" << configuration.source_style << "\"\n";
   output << "source_mode = \"" << configuration.source_mode << "\"\n";
   output << "source_quality = \"" << configuration.source_quality << "\"\n";

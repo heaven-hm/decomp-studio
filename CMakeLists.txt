@@ -171,6 +171,9 @@ add_executable(ghidra-reconcile apps/cli/ghidra_reconcile.cpp core/binary/pe.cpp
 target_compile_features(ghidra-reconcile PRIVATE cxx_std_20)
 target_include_directories(ghidra-reconcile PRIVATE ${RECOMP_INCLUDE_DIRS})
 target_link_libraries(ghidra-reconcile PRIVATE ${RECOMP_LIBRARIES})
+add_test(NAME frame_recovery COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/frame_recovery_test.py $<TARGET_FILE:recomp-studio>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/bin/arith.exe 36)
 add_test(NAME ghidra_reconcile COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/ghidra_reconcile_test.py $<TARGET_FILE:ghidra-reconcile>
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c)
@@ -327,7 +330,13 @@ add_test(NAME real_application_corpus
 # absence is visible in the summary instead of hidden behind a pass.
 set_tests_properties(real_application_corpus PROPERTIES SKIP_RETURN_CODE 77)
 
-set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 1800)
+# MEASURED, not guessed: this test recompiles, executes and differentially verifies 33
+# fixtures and takes 13m12s on an IDLE machine. The previous limit of 1800s left less than
+# 2.3x headroom, and under the load this repository actually sees -- several agents building
+# concurrently -- it timed out rather than failing, which reads as a defect in the code when
+# it is a limit set too close to the measurement. 3600s is that measurement with the same
+# margin the run ceiling uses.
+set_tests_properties(fixture_recompile_end_to_end PROPERTIES TIMEOUT 3600)
 set_tests_properties(negative_inputs PROPERTIES TIMEOUT 900)
 set_tests_properties(coverage_census PROPERTIES TIMEOUT 900)
 set_tests_properties(import_compatibility PROPERTIES TIMEOUT 900)
@@ -348,6 +357,9 @@ add_executable(high_level_reconstruction_test
 target_compile_features(high_level_reconstruction_test PRIVATE cxx_std_20)
 target_include_directories(high_level_reconstruction_test PRIVATE ${RECOMP_INCLUDE_DIRS})
 add_test(NAME high_level_reconstruction COMMAND high_level_reconstruction_test)
+add_test(NAME readable_accessor_end_to_end COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/readable_leaf_test.py
+  $<TARGET_FILE:recomp-studio> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/readable_accessor.c argument)
 add_test(NAME readable_leaf_end_to_end COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/readable_leaf_test.py
   $<TARGET_FILE:recomp-studio> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/readable_leaf.c)

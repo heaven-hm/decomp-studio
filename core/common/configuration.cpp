@@ -107,6 +107,11 @@ std::string target_triple_for(const std::string& target) {
   if (target == "native") return {};
   if (target == "macos-arm64" || target == "arm64") return "arm64-apple-macos11";
   if (target == "macos-x86_64" || target == "x86_64") return "x86_64-apple-macos11";
+  // Windows targets. The triples are the mingw-w64 ones, which is what this host has.
+  // Whether the generated RUNTIME compiles for them is a separate question and is answered by
+  // attempting it rather than by declaring it here -- see docs/IMPLEMENTATION_PLAN.md.
+  if (target == "windows-x86" || target == "win32") return "i686-w64-mingw32";
+  if (target == "windows-x64" || target == "win64") return "x86_64-w64-mingw32";
   if (target == "linux-arm64") return "aarch64-unknown-linux-gnu";
   if (target == "linux-x86_64") return "x86_64-unknown-linux-gnu";
   if (target == "wasm") return "wasm32-unknown-unknown";

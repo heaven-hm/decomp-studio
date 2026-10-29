@@ -296,6 +296,18 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   for (const auto& entry : census.unsupported) unresolved_entries.insert(entry.first_function_entry);
   const auto unresolved_functions = unresolved_entries.size();
 
+  // How many functions state their own frame size in the prologue. This is the only SHAPE
+  // fact recovered today; everything else about a function is behaviour.
+  std::size_t functions_with_frame = 0;
+  std::size_t functions_with_signature = 0;
+  std::size_t functions_with_arguments = 0;
+  for (const auto& [address, function] : discovery.functions()) {
+    (void)address;
+    if (function.frame_known) ++functions_with_frame;
+    if (function.signature_known) ++functions_with_signature;
+    if (function.argument_count > 0) ++functions_with_arguments;
+  }
+
   if (json) {
     std::cout << "{\"status\":\"ok\",\"architecture\":\"" << executable.architecture_name()
               << "\",\"format\":\"" << executable.format_name()
@@ -315,6 +327,10 @@ int command_coverage(const std::filesystem::path& input, bool json) {
               << (discovery.functions().size() - std::min(discovery.functions().size(),
                                                           high_level_functions + unresolved_functions))
               << ",\"unresolved_functions\":" << unresolved_functions
+              // The first recovered fact about function SHAPE rather than behaviour.
+              << ",\"functions_with_recovered_frame\":" << functions_with_frame
+              << ",\"functions_with_recovered_signature\":" << functions_with_signature
+              << ",\"functions_with_arguments\":" << functions_with_arguments
               << ",\"unsupported\":[";
     for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
       const auto& entry = census.unsupported[index];
@@ -341,14 +357,23 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
             << statement_percent.str() << "%)\n"
             // §13 requires the delivered source to be reported as TWO categories, never one.
+            // THE HYBRID BREAKDOWN, with the high-level count COMPUTED rather than
+            // asserted. Their side of this merge replaced a hardcoded zero with the real
+            // number; mine added the signature and frame counts. Both belong: the first says
+            // how much of the delivered source is readable, and the second says how much of
+            // the input that readability depends on has been recovered.
             << "high-level:     " << high_level_functions
             << " functions (bounded constant-return leaf candidates)\n"
             << "low-level:      "
             << (discovery.functions().size() - std::min(discovery.functions().size(),
                                                         high_level_functions + unresolved_functions))
             << " functions (machine-level fallback translation)\n"
-            << "unresolved:     " << unresolved_functions << " functions\n";
-  if (census.unsupported.empty()) {
+            << "unresolved:     " << unresolved_functions << " functions\n"
+            << "frames:         " << functions_with_frame << " of " << discovery.functions().size()
+            << " functions state their frame size in the prologue\n"
+            << "signatures:     " << functions_with_signature << " of " << discovery.functions().size()
+            << " state their convention and argument bytes; "
+            << functions_with_arguments << " take at least one argument\n";  if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;
   }
@@ -565,12 +590,75 @@ int command_translate(const std::filesystem::path& input, const std::filesystem:
   return 0;
 }
 
-int command_build(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json) {
+// Verify every source file against the manifest written at generation time.
+//
+// THIS IS THE GUARD FOR THE HARD RULE that the delivered source must BE the source built into
+// the executable. Without it the rule is a promise; with it, a source tree that has drifted
+// from what was generated is REFUSED rather than compiled and shipped. It fails closed: a
+// missing manifest, a missing file, or a digest that does not match all stop the build, and
+// none of them is reported as success.
+int verify_source_manifest(const std::filesystem::path& project, bool json) {
+  const auto manifest_path = project / "SOURCE_MANIFEST.json";
+  std::ifstream manifest(manifest_path, std::ios::binary);
+  if (!manifest) {
+    std::cerr << "refusing to build: " << manifest_path.string()
+              << " is missing, so the sources cannot be shown to be the ones generated\n";
+    return 3;
+  }
+  const std::string text((std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
+  // Deliberately a small, literal scan rather than a general JSON parser: the manifest is
+  // written by this tool and its shape is fixed, and a parser here would be more code to get
+  // wrong than the format is worth.
+  std::vector<std::pair<std::string, std::string>> entries;
+  std::size_t cursor = 0;
+  while ((cursor = text.find("\"name\": \"", cursor)) != std::string::npos) {
+    const auto name_begin = cursor + 9;
+    const auto name_end = text.find('"', name_begin);
+    if (name_end == std::string::npos) break;
+    const auto digest_key = text.find("\"sha256\": \"", name_end);
+    if (digest_key == std::string::npos) break;
+    const auto digest_begin = digest_key + 11;
+    const auto digest_end = text.find('"', digest_begin);
+    if (digest_end == std::string::npos) break;
+    entries.emplace_back(text.substr(name_begin, name_end - name_begin),
+                         text.substr(digest_begin, digest_end - digest_begin));
+    cursor = digest_end;
+  }
+  if (entries.empty()) {
+    std::cerr << "refusing to build: the source manifest lists no files\n";
+    return 3;
+  }
+  for (const auto& [name, expected] : entries) {
+    std::ifstream input(project / name, std::ios::binary);
+    if (!input) {
+      std::cerr << "refusing to build: " << name << " is listed in the manifest but missing\n";
+      return 3;
+    }
+    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const auto actual = recomp::common::sha256(std::span<const unsigned char>(
+        reinterpret_cast<const unsigned char*>(contents.data()), contents.size()));
+    if (actual != expected) {
+      std::cerr << "refusing to build: " << name << " does not match the manifest\n"
+                << "  expected " << expected << "\n  actual   " << actual << "\n"
+                << "  The delivered source would not be the source built into the executable.\n";
+      return 3;
+    }
+  }
+  if (json) std::cout << "{\"manifest_verified\":true,\"files\":" << entries.size() << "}\n";
+  return 0;
+}
+
+int command_build(const std::filesystem::path& project, const std::filesystem::path& config_path, bool json,
+                  bool enforce_manifest = true) {
+  if (enforce_manifest) {
+    const auto manifest_status = verify_source_manifest(project, false);
+    if (manifest_status != 0) return manifest_status;
+  }
   auto configuration = config_path.empty() ? recomp::pipeline::load_project_configuration(project)
                                            : make_configuration(config_path, "", project);
   if (configuration.compiler.empty()) configuration.compiler = "clang++";
   if (configuration.target.empty()) configuration.target = "native";
-  const auto report = recomp::pipeline::build(project, configuration);
+  const auto report = recomp::pipeline::build(project, configuration, enforce_manifest);
   if (json) {
     std::cout << "{\"status\":\"ok\",\"executable\":" << recomp::common::quote_json(report.executable.string())
               << "}\n";
@@ -1371,7 +1459,12 @@ int command_backends(bool json) {
       {"target", "macos-x86_64", recomp::cli::Support::Implemented, "x86_64-apple-macos"},
       {"target", "linux-arm64", recomp::cli::Support::Planned, "triple declared; the project does not build"},
       {"target", "linux-x86_64", recomp::cli::Support::Planned, "triple declared; the project does not build"},
-      {"target", "windows-*", recomp::cli::Support::Planned, "no Windows host runtime"},
+      // DECLARED, and the reason is measured rather than assumed: the mingw driver reaches the
+      // triple, the platform layer is portable, and the build stops in the SEMANTICS layer on
+      // `__int128`, which 32-bit mingw does not support. "Planned" would understate how far it
+      // gets; "Implemented" would overstate it.
+      {"target", "windows-x86", recomp::cli::Support::Planned, "declared; blocks on __int128 in the semantics layer"},
+      {"target", "windows-x64", recomp::cli::Support::Planned, "declared; same blocker, and guest state is emulated either way"},
       {"source-language", "cpp", recomp::cli::Support::Implemented, "C++20, the primary editable output"},
       {"source-language", "c", recomp::cli::Support::Planned, "not implemented"},
       {"source-language", "rust", recomp::cli::Support::Planned, "not implemented"},
@@ -1587,7 +1680,18 @@ int main(int argc, char** argv) {
         if (project.empty()) project = argv[index];
       }
       if (project.empty()) return fail("build requires a project directory", json);
-      return command_build(project, config, json);
+      // The gate exists to prove the delivered source IS the built source. A caller that is
+      // deliberately modifying generated sources -- the heap-corruption mutation test does
+      // exactly this -- must say so, and the build reports that it did.
+      bool allow_modified = false;
+      for (int index = 2; index < argc; ++index)
+        if (std::string{argv[index]} == "--allow-modified-sources") allow_modified = true;
+      if (allow_modified) {
+        std::cerr << "warning: --allow-modified-sources set; the source manifest is NOT being "
+                     "enforced and the delivered source may differ from the generated one\n";
+        return command_build(project, config, json, false);
+      }
+      return command_build(project, config, json, true);
     }
     if (command == "run") {
       std::filesystem::path project;

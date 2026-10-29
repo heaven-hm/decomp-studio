@@ -103,6 +103,7 @@ Concretely, what the project has and does not have:
 | integer and pointer widths | implemented (`guest_pointer_width`, 4 or 8) |
 | struct layout, field offsets, packing | **not implemented** |
 | recovered types from Ghidra | **imported as text, not reconciled** |
+| **function SIGNATURES** | **implemented** -- convention, argument bytes and argument count |
 | compile-time layout assertions | **not implemented** |
 
 A consequence worth stating: the delivered source contains **no recovered type names**. A
@@ -110,6 +111,34 @@ reader sees `context->registers[1]` and `load_guest_memory(context, address, 4)`
 `GameVector`. That is honest low-level recompilation -- `docs/ARCHITECTURE.md` classifies it
 as such -- and it is **not** the "readable source" the long-term objective describes. Closing
 that gap is what the type-recovery work is for, and it is not started.
+
+## Signatures, which are the input readable source needs
+
+`coverage` now recovers, for each function, the fact that makes readable source possible at
+all: **how many arguments it takes and who removes them**. Both come from the function's own
+`ret`:
+
+| encoding | meaning | recorded as |
+|---|---|---|
+| `ret` | the CALLER removes the arguments (cdecl) | `caller_cleans_stack` |
+| `ret N` | the FUNCTION removes N bytes (stdcall/thiscall) | `argument_bytes = N`, `argument_count = N/4` |
+
+`N/4` is the argument count for a 32-bit guest because each argument occupies four bytes. The
+BYTE count is recorded as well, so a reader can apply the right width rather than trusting the
+division on a 64-bit guest.
+
+**It is the function stating its own signature, not an inference from how often it touches the
+stack**, which is why it can be trusted where a heuristic could not.
+
+MEASURED, and one number looked wrong until it was checked:
+
+    gunroar.exe     2837 of 3579 functions have a signature; 1194 take an argument
+    igi.exe         9339 of 9475 have a signature; only 15 take an argument
+
+The IGI figure looked implausible for x86 until the generated source was read: it contains
+**13,489 plain `ret`** and only **29** with an adjustment. IGI's own functions genuinely use
+cdecl -- stdcall is used for the Win32 API, which this runtime shims -- so 15 is a measurement
+and not a bug. Checking the artifact rather than the number is what settled it.
 
 ## The rule that governs changes here
 

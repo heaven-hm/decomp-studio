@@ -42,6 +42,32 @@ struct RecoveredFunction {
   std::map<std::uint64_t, DecodedInstruction> instructions;
   std::set<std::uint64_t> block_starts;
   std::set<std::uint64_t> tail_call_targets;
+
+  // THE FRAME SIZE, recovered from the function's own prologue.
+  //
+  // This is the smallest piece of the type-and-layout recovery the directive asks for, and it
+  // is the one piece that can be recovered with certainty rather than inferred: a function
+  // that adjusts the stack pointer by N bytes at entry has a frame of at least N bytes, and
+  // the instruction states N. It is the first fact about a function's SHAPE -- as opposed to
+  // its behaviour -- that this project records.
+  //
+  // It is a LOWER BOUND, and that is stated rather than glossed: a function may reserve more
+  // through a second adjustment, and a function with no adjustment has a frame of zero bytes
+  // which means "none reserved here", not "no frame".
+  std::uint64_t frame_bytes{};
+  bool frame_known{};
+
+  // THE SIGNATURE, which is what makes readable source possible at all.
+  //
+  // A function's `ret N` states how many bytes of arguments it removes, and for a 32-bit
+  // guest each argument occupies four, so N/4 IS the argument count -- stated by the function
+  // rather than inferred from how many times it happens to touch the stack. `ret` with no
+  // operand means the CALLER cleans up (cdecl) and states no count, which is recorded as
+  // unknown rather than assumed to be zero.
+  std::uint32_t argument_bytes{};
+  std::uint32_t argument_count{};
+  bool signature_known{};
+  bool caller_cleans_stack{};
 };
 
 class FunctionDiscovery {

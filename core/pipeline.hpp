@@ -49,7 +49,8 @@ struct RunReport {
 
 TranslateReport translate(const std::filesystem::path& input, const std::filesystem::path& output_directory,
                           const common::Configuration& configuration);
-BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration);
+BuildReport build(const std::filesystem::path& output_directory, const common::Configuration& configuration,
+                  bool enforce_source_manifest = true);
 RunReport run(const std::filesystem::path& output_directory);
 void write_manifest(const TranslateReport& report, const std::filesystem::path& output_directory);
 void write_project_configuration(const common::Configuration& configuration, const std::filesystem::path& output_directory);

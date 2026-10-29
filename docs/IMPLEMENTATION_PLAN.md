@@ -164,6 +164,87 @@ rather than enabled-and-failing: a default configuration that fails six tests is
 that states why it cannot run them. The command to enable them is recorded above so that a host
 without the conflict can run them in one step.
 
+## The GUI game corpus, MEASURED
+
+Fifteen graphical games -- 11 PE32 and 4 PE32+ -- run through `autorecomp --buildrun`. **None
+completes**, and the reason each one stops is worth recording because it changed while this was
+being measured:
+
+| game | first blocker | kind |
+|---|---|---|
+| `gunroar` | 82 imports without shims | **runtime surface** |
+| `parsec47` | 99 imports | **runtime surface** |
+| `tumiki_fighters` | 95 imports | **runtime surface** |
+| `snake` | 92 imports | **runtime surface** |
+| `ikachan` | 21 imports | **runtime surface** |
+| `cavestory` | `iretd` | lifter |
+| `generally` | `cvtpd2ps` | lifter |
+| `herocore` | `fbstp` | lifter |
+| `noiz2sa` | `das` | lifter |
+| `rrootage` | `movd` | lifter |
+| `torus_trooper` | `aad` | lifter |
+| `warning_forever` | `cmpltpd` | lifter |
+| `cannonball` | `cvttpd2dq` | lifter |
+| `opentyrian` | `cmpnless` | lifter |
+| `pixeltetris` | `movntps` | lifter |
+
+### What the first pass showed, and why the second pass is different
+
+The first pass had **twelve of fifteen** stopping on the LIFTER, and the two commonest causes
+were `jcxz` (four games) and `arpl` (three). Both are now implemented:
+
+- **`jcxz`** is the 16-BIT form of the counter test. It was folded into the 32-bit `jecxz`
+  path, which takes the branch whenever the upper bits are non-zero with CX itself zero -- a
+  different program. It now masks to the low half.
+- **`arpl`** adjusts a selector's requested privilege level. It was implemented for a REGISTER
+  destination and **three games still stopped on it**, because `arpl [ebp-4], ax` is the
+  common form and a memory destination is a read-modify-write. Both forms are now handled.
+- **`fdisi8087_nop`** is the x87 no-op range. Its defined effect on a processor that has the
+  features it disables is NOTHING, and refusing it stopped three games on an instruction whose
+  whole purpose is to do nothing.
+
+MEASURED: `gunroar`, `parsec47` and `tumiki_fighters` went from stopping on the lifter to
+**lifting 100%**, and `herocore` went from 20,058 unsupported instructions to 2,147.
+
+**THE CONSTRAINT MOVED.** Those three games now stop on **82, 99 and 95 missing imports** --
+the Windows runtime surface -- not on the translation. That is a different problem with a
+different shape: a lifter gap is a few instructions, and a GUI runtime surface is hundreds of
+functions. Recording which one is binding matters more than the count of games that fail.
+
+## Issue #67: the Windows target, measured to its actual blocker
+
+§4 asks for Windows targets and says to distinguish **host native ISA** from **retained guest
+state emulation**. Both are done here by attempting the build rather than by declaring support.
+
+**Two real blockers were removed, and the third is recorded with its exact error.**
+
+1. **The driver.** `clang++ -target i686-w64-mingw32` fails with
+   `fatal error: 'cmath' file not found` -- clang does not know where that toolchain's headers
+   are. The generated build now uses the mingw **driver** (`i686-w64-mingw32-g++`), which
+   selects the same triple and knows its own sysroot. *Declaring a target and being able to
+   build one are different things.*
+
+2. **The platform layer.** The runtime included `sys/mman.h` and `unistd.h` unconditionally.
+   The host-specific surface turned out to be **two includes and ONE call site**: the guest
+   address space is a single anonymous mapping, `mmap` on POSIX and `VirtualAlloc(MEM_RESERVE)`
+   on Windows. That is now `#ifdef _WIN32`, so the runtime compiles further than before on a
+   Windows target.
+
+3. **`__int128`, which is the actual blocker.** 32-bit mingw does not support it, and the
+   runtime uses it in **10 places** -- every 64x64 multiply, divide and carry/overflow
+   computation in the instruction semantics. That is the honest reason the Windows target does
+   not build today, and it is a property of the SEMANTICS layer rather than of the runtime.
+
+**The target is therefore DECLARED and the driver REACHES it, and the build stops in the
+semantics layer.** Reporting "Windows supported" on the strength of a triple in a table would be
+exactly the confusion the issue names.
+
+**AND THE HONEST READING OF THE TARGET ITSELF**: even once it builds, compiling x86-32 guest
+semantics with a 64-bit compiler is NOT a native x64 port. The guest state is emulated in a
+`GuestContext` either way; what changes is the host pointer width. That distinction is recorded
+rather than glossed, because the issue explicitly forbids relabelling guest-state C++ as native
+source.
+
 ## Known gaps, recorded rather than implied
 
 - **No type recovery.** No struct layout, no field offsets, no `static_assert` on layout.

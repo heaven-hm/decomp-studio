@@ -184,4 +184,60 @@ std::string render_high_level(const HighLevelFunction& function,
   return {};
 }
 
+std::optional<ArgumentReturnFunction> recognize_argument_return(
+    const discovery::RecoveredFunction& function) {
+  std::vector<const discovery::DecodedInstruction*> body;
+  for (const auto& [address, instruction] : function.instructions) {
+    (void)address;
+    if (!ignorable(instruction)) body.push_back(&instruction);
+  }
+  if (body.size() != 2 ||
+      (body.back()->mnemonic != "ret" && body.back()->mnemonic != "retq") ||
+      !body.back()->operands.empty())
+    return std::nullopt;
+
+  const auto& move = *body.front();
+  if (move.mnemonic != "mov" || move.operands.size() != 2) return std::nullopt;
+  const auto& destination = move.operands[0];
+  const auto& source = move.operands[1];
+  if (destination.kind != discovery::Operand::Kind::Register ||
+      (destination.register_name != "eax" && destination.register_name != "rax"))
+    return std::nullopt;
+  if (source.kind != discovery::Operand::Kind::Memory) return std::nullopt;
+  // A bare `[esp+4]` or `[esp+8]` -- one base register, no index. Anything more complex is a
+  // different shape and stays in the fallback rather than being approximated.
+  if (source.base_register_name != "esp" && source.base_register_name != "rsp")
+    return std::nullopt;
+  if (!source.index_register_name.empty()) return std::nullopt;
+  // At function entry ESP points at the return address, so every aligned displacement of at
+  // least 4 past it names a stack argument. EBP-relative bodies are refused: the body does
+  // not establish a frame, so the slot would belong to the caller, not this function.
+  if (source.displacement < 4 || (source.displacement - 4) % 4 != 0) return std::nullopt;
+  const auto index = static_cast<std::uint32_t>((source.displacement - 4) / 4);
+  const int width = destination.register_name == "rax" ? 8 : 4;
+  return ArgumentReturnFunction{function.entry, index, width};
+}
+
+std::string render_argument_return(const ArgumentReturnFunction& function,
+                                   const std::string& guest_name) {
+  std::ostringstream output;
+  const auto type = integer_type(function.width_bytes);
+  output << "// High-level reconstruction: returns stack argument " << function.argument_index
+         << "; provenance 0x" << std::hex << function.address << std::dec
+         << ". The argument's TYPE is not recovered, so it is a plain integer.\n";
+  output << "static " << type << " high_level_" << std::hex << function.address << std::dec
+         << "(const " << type << " arg" << function.argument_index << ") { return arg"
+         << function.argument_index << "; }\n";
+  // The caller reads the SAME stack slot the original did, so the readable function is fed
+  // from the guest stack rather than from a value invented to make it compile.
+  const auto offset = 4 + function.argument_index * 4;
+  output << "static void " << guest_name << "(GuestContext* context) {\n"
+         << "  context->registers[0] = high_level_" << std::hex << function.address << std::dec
+         << "(static_cast<" << type << ">(load_guest_memory(context, mask_guest_address(context->registers[4] + "
+         << std::dec << offset << "), " << function.width_bytes << ")));\n"
+         << "  return_from_guest_function(context, 0);\n"
+         << "  return;\n}\n";
+  return output.str();
+}
+
 }  // namespace recomp::semantics

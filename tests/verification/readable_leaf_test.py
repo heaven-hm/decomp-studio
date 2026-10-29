@@ -8,7 +8,8 @@ import subprocess
 import sys
 import tempfile
 
-cli, fixture = sys.argv[1:]
+cli, fixture = sys.argv[1], sys.argv[2]
+EXPECT = sys.argv[3] if len(sys.argv) > 3 else "constant"
 
 def run(*args):
     return subprocess.run(args, text=True, capture_output=True, check=True)
@@ -32,6 +33,12 @@ with tempfile.TemporaryDirectory(prefix="recomp-readable-") as directory:
     guest_source = (project / "guest.cpp").read_text()
     assert "Source classification: high-level verified" in guest_source
     assert "Source classification: low-level fallback" in guest_source
+
+    # WHICH shape was recognised matters: a test that only checks the classification would
+    # pass if the constant recogniser fired on an accessor, which would be the wrong
+    # reconstruction. The accessor fixture must be labelled as an argument return.
+    if EXPECT == "argument":
+        assert "Recognizer: stack-argument-return" in guest_source, guest_source[:400]
 
     # The delivered source must be the source the manifest describes.
     manifest = json.loads((project / "recomp-source-manifest.json").read_text())

@@ -585,6 +585,53 @@ void FunctionDiscovery::discover() {
         address = next_address;
       }
     }
+    // THE FRAME SIZE, from the prologue. Two encodings cover what a compiler emits:
+    //   sub esp, N      /  sub rsp, N          the immediate states the frame
+    //   lea esp, [esp-N]/  lea rsp, [rsp-N]    the same adjustment written differently
+    // Both are read from the FIRST block only, because a later adjustment is not the frame
+    // this function reserves on entry.
+    for (const auto& [address, instruction] : function.instructions) {
+      (void)address;
+      if (instruction.mnemonic != "sub" && instruction.mnemonic != "lea") continue;
+      if (instruction.operands.size() < 2) continue;
+      const auto& destination = instruction.operands[0];
+      const bool is_stack_pointer = destination.kind == Operand::Kind::Register &&
+                                    (destination.register_name == "esp" || destination.register_name == "rsp");
+      if (!is_stack_pointer) continue;
+      const auto& source = instruction.operands[1];
+      if (source.kind == Operand::Kind::Immediate && instruction.mnemonic == "sub") {
+        function.frame_bytes = source.immediate_value;
+        function.frame_known = true;
+      } else if (source.kind == Operand::Kind::Memory && instruction.mnemonic == "lea" &&
+                 (source.base_register_name == "esp" || source.base_register_name == "rsp") &&
+                 source.index_register_name.empty() && source.displacement < 0) {
+        // `lea esp, [esp-N]` is the same adjustment written as an address computation, and a
+        // compiler emits it when N is small. The displacement is negative because the stack
+        // grows down, so the magnitude is the frame.
+        function.frame_bytes = static_cast<std::uint64_t>(-source.displacement);
+        function.frame_known = true;
+      }
+      break;  // only the prologue's own adjustment counts
+    }
+
+    // THE SIGNATURE, from the epilogue. `ret N` is the function stating its own argument
+    // bytes; `ret` alone is cdecl, where the caller cleans and no count is stated.
+    for (const auto& [address, instruction] : function.instructions) {
+      (void)address;
+      if (instruction.mnemonic != "ret") continue;
+      function.signature_known = true;
+      if (!instruction.operands.empty() &&
+          instruction.operands[0].kind == Operand::Kind::Immediate) {
+        function.argument_bytes = static_cast<std::uint32_t>(instruction.operands[0].immediate_value);
+        // Four bytes per argument on a 32-bit guest. The pointer width is not known here, so
+        // this is only meaningful for PE32 -- and it is recorded as a byte count as well, so a
+        // reader can apply the right width rather than trusting the division.
+        function.argument_count = function.argument_bytes / 4;
+      } else {
+        function.caller_cleans_stack = true;
+      }
+      break;
+    }
     functions_.emplace(entry, std::move(function));
   }
 }

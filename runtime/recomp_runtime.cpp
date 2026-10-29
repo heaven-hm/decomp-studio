@@ -29,9 +29,17 @@
 extern char** environ;
 #include <ctime>
 #include <string>
+#include <vector>
+// THE PLATFORM LAYER, and it is deliberately this small. The guest address space is one
+// anonymous, unreserved mapping; on a POSIX host that is `mmap`, and on Windows it is
+// `VirtualAlloc` with MEM_RESERVE. Nothing else in the runtime is host-specific, which is why
+// a Windows target is a handful of lines rather than a porting project.
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
-#include <vector>
+#endif
 #include <functional>
 
 // Compile the unmodified MIT scanner in callback mode. Its standard-input
@@ -6577,6 +6585,17 @@ bool map_guest_memory(std::uint64_t bytes) {
   // One byte per 4 KiB page: 2 MiB for the 8 GiB space, against the mapping it describes.
   guest_page_dirty = static_cast<std::uint8_t*>(std::calloc(
       static_cast<std::size_t>(guest_memory_size >> kGuestPageShift), sizeof(std::uint8_t)));
+#ifdef _WIN32
+  // MEM_RESERVE alone commits nothing; pages are committed on first touch, which is what
+  // MAP_NORESERVE asks for on the other side. The address is chosen by the system, exactly as
+  // it is with a null hint to mmap.
+  guest_memory = static_cast<std::uint8_t*>(
+      VirtualAlloc(nullptr, static_cast<SIZE_T>(guest_memory_size), MEM_RESERVE, PAGE_READWRITE));
+  if (guest_memory == nullptr) {
+    guest_memory_size = 0;
+    return false;
+  }
+#else
   guest_memory = static_cast<std::uint8_t*>(mmap(nullptr, static_cast<std::size_t>(guest_memory_size),
                                                  PROT_READ | PROT_WRITE,
                                                  MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0));
@@ -6585,6 +6604,7 @@ bool map_guest_memory(std::uint64_t bytes) {
     guest_memory_size = 0;
     return false;
   }
+#endif
   return true;
 }
 

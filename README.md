@@ -80,8 +80,7 @@ build/recomp-studio doctor
 build/recomp-studio autorecomp /path/to/game.exe --output /tmp/recomp-game --buildrun --timeout 5
 ```
 
-The executable is currently named `reveng-studio`; the project name change does not
-rename the CLI yet. Use a legally obtained executable and assets. Generated output is experimental;
+The repository and documentation use the RevEng-Studio name. The CLI executable remains `recomp-studio` until its build target and implementation are renamed. Use a legally obtained executable and assets. Generated output is experimental;
 a built executable is not necessarily functional. Run `build/recomp-studio --help`
 for commands and `ctest --test-dir build --output-on-failure` for tests.
 

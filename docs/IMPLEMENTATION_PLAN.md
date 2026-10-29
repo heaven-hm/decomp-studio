@@ -125,13 +125,31 @@ without the conflict can run them in one step.
 
 Per the directive, never merged into one percentage:
 
+§13 requires the delivered source to be reported as TWO categories, never one, and `coverage`
+now reports all three counts in both its text and JSON output:
+
+    high-level:     0 functions (no recovered signatures or types exist)
+    low-level:      36 functions (machine-level translation)
+    unresolved:     0 functions
+
+The middle line is the honest answer and the first line is the important one: **every
+recovered function is machine-level translation and NONE is semantic reconstruction**, because
+there is no type recovery. Classifying all of it as readable source would be exactly the
+confusion the directive names.
+
+The counts are computed, not asserted. On `clipjar.exe`: **0 high-level, 15,426 low-level,
+11 unresolved** across 28 unsupported instruction classes -- so the unresolved counter fires
+on a program that has unresolved functions, and a run that reports zero is reporting a
+measurement rather than a constant.
+
 | metric | how to obtain it |
 |---|---|
 | decoding coverage | `coverage` |
 | function discovery coverage | `coverage` -- recovered function count |
 | lifting coverage | `coverage` -- unsupported classes by mnemonic |
-| high-level reconstruction coverage | **not measurable yet: no type recovery** |
-| low-level fallback coverage | all recovered functions are low-level fallbacks today |
+| high-level reconstruction coverage | `coverage` -- `high_level_functions`, currently **0** |
+| low-level fallback coverage | `coverage` -- `low_level_fallback_functions` |
+| unresolved functions | `coverage` -- `unresolved_functions` |
 | compilation success | the build stage's exit status |
 | runtime execution success | the run stage's exit status |
 | differential verification success | the `Verdict` |

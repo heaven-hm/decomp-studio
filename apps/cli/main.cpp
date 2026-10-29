@@ -286,6 +286,14 @@ int command_coverage(const std::filesystem::path& input, bool json) {
   std::ostringstream percent;
   percent << std::fixed << std::setprecision(2) << census.coverage_percent();
 
+  // A function is UNRESOLVED when at least one of its instructions could not be lifted. It is
+  // counted per FUNCTION rather than per instruction because the source is delivered per
+  // function: a function containing one unlifted instruction is not usable as source, however
+  // small the instruction fraction.
+  std::set<std::uint64_t> unresolved_entries;
+  for (const auto& entry : census.unsupported) unresolved_entries.insert(entry.first_function_entry);
+  const auto unresolved_functions = unresolved_entries.size();
+
   if (json) {
     std::cout << "{\"status\":\"ok\",\"architecture\":\"" << executable.architecture_name()
               << "\",\"format\":\"" << executable.format_name()
@@ -295,6 +303,17 @@ int command_coverage(const std::filesystem::path& input, bool json) {
               << ",\"unsupported_instructions\":" << census.unsupported_instructions
               << ",\"coverage_percent\":" << percent.str()
               << ",\"unsupported_class_count\":" << census.unsupported.size()
+              // THE HYBRID-SOURCE BREAKDOWN the directive requires, reported separately
+              // rather than folded into one success figure.
+              //
+              // "high-level reconstructed" means a function with a RECOVERED SIGNATURE or
+              // TYPE that a reader could follow as source. Nothing here qualifies: there is
+              // no type recovery, so every recovered function is machine-level translation.
+              // Saying so is the point -- classifying all of it as semantic reconstruction
+              // would be exactly the confusion the directive names.
+              << ",\"high_level_functions\":0"
+              << ",\"low_level_fallback_functions\":" << discovery.functions().size()
+              << ",\"unresolved_functions\":" << unresolved_functions
               << ",\"unsupported\":[";
     for (std::size_t index = 0; index < census.unsupported.size(); ++index) {
       const auto& entry = census.unsupported[index];
@@ -319,7 +338,11 @@ int command_coverage(const std::filesystem::path& input, bool json) {
             // rest is the migration still to do, and it is a measured fraction
             // rather than an impression.
             << "ir statements:  " << statements.total << " (" << statements.structured << " structured, "
-            << statement_percent.str() << "%)\n";
+            << statement_percent.str() << "%)\n"
+            // §13 requires the delivered source to be reported as TWO categories, never one.
+            << "high-level:     0 functions (no recovered signatures or types exist)\n"
+            << "low-level:      " << discovery.functions().size() << " functions (machine-level translation)\n"
+            << "unresolved:     " << unresolved_functions << " functions\n";
   if (census.unsupported.empty()) {
     std::cout << "coverage:       complete — every recovered instruction lifts\n";
     return 0;

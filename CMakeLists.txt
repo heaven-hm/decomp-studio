@@ -348,3 +348,6 @@ add_executable(high_level_reconstruction_test
 target_compile_features(high_level_reconstruction_test PRIVATE cxx_std_20)
 target_include_directories(high_level_reconstruction_test PRIVATE ${RECOMP_INCLUDE_DIRS})
 add_test(NAME high_level_reconstruction COMMAND high_level_reconstruction_test)
+add_test(NAME readable_leaf_end_to_end COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/verification/readable_leaf_test.py
+  $<TARGET_FILE:recomp-studio> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/readable_leaf.c)

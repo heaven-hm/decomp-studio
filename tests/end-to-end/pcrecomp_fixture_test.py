@@ -29,9 +29,11 @@ def main():
              "-fno-stack-protector", "-fno-tree-vectorize", "-fno-tree-slp-vectorize",
              "-Wl,--no-insert-timestamp", "-Wl,-e,recomp_entry", "-Wl,--subsystem,console",
              "-o", str(image), str(fixture), "-lkernel32", "-lgcc"])
-        run([sys.executable, "-m", "tools", str(image), "--all", "--output", str(generated)], cwd=upstream)
+        run([sys.executable, "-m", "tools", str(image), "--all", "--split", "3",
+             "--output", str(generated)], cwd=upstream)
         sources = sorted(generated.glob("recomp_*.c"))
-        if not sources or any("RECOMP_TODO" in source.read_text() for source in sources):
+        failure_markers = ("RECOMP_TODO", "/* ERROR lifting ", "/* FAILED */")
+        if not sources or any(marker in source.read_text() for source in sources for marker in failure_markers):
             raise RuntimeError("PCRecomp did not produce complete fixture source")
         driver = root / "main.c"
         driver.write_text('#include "host.h"\nint main(int argc, char **argv) { return recomp_host_main(argc, argv); }\n')
@@ -39,7 +41,8 @@ def main():
         flags = shlex.split(run([pkg_config, "--cflags", "--libs", "sdl2", "SDL2_ttf"]).stdout)
         executable = root / "arith-native"
         sysroot = ["-isysroot", sdk[0]] if sdk else []
-        run([cc, *sysroot, "-O1", f"-I{hle}", f"-I{recomp}", f"-I{generated}", *core,
+        run([cc, *sysroot, "-O1", f"-I{hle}", f"-I{recomp}", f"-I{generated}",
+             "-include", str(generated / "recomp_funcs.h"), *core,
              str(driver), *(str(path) for path in sources), *flags, "-lpthread", "-lm", "-o", str(executable)])
         output = run([str(executable), str(image)]).stdout.replace("\r\n", "\n")
         expected = ("arith:start\nprimes<200=46\nfib(20)=6765\ngcd(1071,462)=21\n"

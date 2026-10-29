@@ -38,12 +38,17 @@ if(RECOMP_PCRECOMP_SOURCE)
     set_tests_properties(pcrecomp_${test_name} PROPERTIES
       ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   endforeach()
-  add_executable(pcrecomp_stateless_crt_test ${PCRECOMP_HLE_SOURCES}
-    runtime/recomp_runtime.cpp runtime/pcrecomp_stateless_crt.cpp tests/compat/pcrecomp_stateless_crt_test.cpp)
-  target_compile_features(pcrecomp_stateless_crt_test PRIVATE cxx_std_20)
-  target_include_directories(pcrecomp_stateless_crt_test PRIVATE runtime "${PCRECOMP_HLE_DIR}"
+  add_library(pcrecomp_stateless_crt_provider STATIC ${PCRECOMP_HLE_SOURCES}
+    runtime/recomp_runtime.cpp runtime/pcrecomp_stateless_crt.cpp)
+  target_compile_features(pcrecomp_stateless_crt_provider PRIVATE cxx_std_20)
+  target_include_directories(pcrecomp_stateless_crt_provider PRIVATE runtime "${PCRECOMP_HLE_DIR}"
     "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
-  target_link_libraries(pcrecomp_stateless_crt_test PRIVATE PkgConfig::PCRECOMP_SDL Threads::Threads m)
+  target_link_libraries(pcrecomp_stateless_crt_provider PUBLIC PkgConfig::PCRECOMP_SDL Threads::Threads m)
+  add_executable(pcrecomp_stateless_crt_test tests/compat/pcrecomp_stateless_crt_test.cpp)
+  target_compile_features(pcrecomp_stateless_crt_test PRIVATE cxx_std_20)
+  target_include_directories(pcrecomp_stateless_crt_test PRIVATE "${PCRECOMP_HLE_DIR}"
+    "${RECOMP_PCRECOMP_SOURCE}/runtime/recomp32")
+  target_link_libraries(pcrecomp_stateless_crt_test PRIVATE pcrecomp_stateless_crt_provider)
   add_test(NAME pcrecomp_stateless_crt COMMAND pcrecomp_stateless_crt_test)
   set_tests_properties(pcrecomp_stateless_crt PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
   find_program(PCRECOMP_MINGW_CC i686-w64-mingw32-gcc)
@@ -119,6 +124,13 @@ set_source_files_properties(runtime/recomp_runtime.cpp PROPERTIES COMPILE_OPTION
 
 add_executable(recomp-studio ${RECOMP_SOURCES})
 if(RECOMP_PCRECOMP_SOURCE AND PCRECOMP_MINGW_CC AND RECOMP_ENABLE_UNICORN AND UNICORN_INCLUDE_DIR AND UNICORN_LIBRARY)
+  add_test(NAME pcrecomp_crt_bridge_pe32 COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_crt_bridge_test.py
+    ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/pcrecomp_crt_bridge.c
+    ${PCRECOMP_MINGW_CC} ${CMAKE_C_COMPILER} ${CMAKE_CXX_COMPILER} ${PKG_CONFIG_EXECUTABLE}
+    $<TARGET_FILE:pcrecomp_stateless_crt_provider> $<TARGET_FILE:recomp-studio> ${CMAKE_OSX_SYSROOT})
+  set_tests_properties(pcrecomp_crt_bridge_pe32 PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy" TIMEOUT 120)
   add_test(NAME pcrecomp_pe32_unicorn_reference COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/end-to-end/pcrecomp_fixture_test.py
     ${RECOMP_PCRECOMP_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/apps/arith.c
